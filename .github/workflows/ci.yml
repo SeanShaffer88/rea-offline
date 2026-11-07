@@ -21,10 +21,28 @@ jobs:
         continue-on-error: true
         run: cargo clippy --all-targets
 
-      - name: Build (diagnostics as annotations)
+      # Compile and test with diagnostics mirrored as check-run annotations,
+      # so failures are readable from the run page without the log download.
+      # `build.json` is kept as an artifact either way.
+      - name: Build (annotated)
         run: python3 scripts/ci-annotate.py build --release
-      - name: Test
-        run: cargo test --release
+      - name: Test with diagnostics captured
+        shell: bash
+        run: |
+          set +e
+          cargo test --release --message-format=json > test.json
+          status=$?
+          python3 scripts/ci-annotate.py --parse test.json
+          exit $status
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics-${{ matrix.os }}
+          path: |
+            build.json
+            test.json
+          if-no-files-found: ignore
 
       - name: Smoke test
         shell: bash
