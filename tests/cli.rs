@@ -142,7 +142,11 @@ fn sample_kinds_and_errors() {
     assert_eq!(run(&dir, &["sample", "s.ps1", "--kind", "script"]).code, 0);
     let script = run(&dir, &["scan", "s.ps1", "--format", "text"]);
     assert_eq!(script.code, 0);
-    assert!(script.stdout.contains("capability strings"), "{}", script.stdout);
+    // The text report spells severity in words rather than printing rule
+    // titles verbatim, so assert on the decision, not on one phrasing.
+    assert!(script.stdout.contains("risk score"), "{}", script.stdout);
+    assert!(script.stdout.contains("STR001") || script.stdout.contains("Capability"),
+            "capability findings must reach the text report: {}", script.stdout);
     assert_ne!(run(&dir, &["sample", "x.exe", "--kind", "elf"]).code, 0);
 
     let missing = run(&dir, &["scan", "definitely-not-here.exe"]);
