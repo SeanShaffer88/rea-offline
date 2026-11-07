@@ -166,6 +166,9 @@ impl PeBuilder {
         // Section table.
         let sec = opt + 240;
         let mut last_end = 0u64;
+        // Sections get consecutive raw extents (as a real linker lays them
+        // out); overlapping extents would make overlay arithmetic nonsense.
+        let mut raw_cursor = 0x200u32;
         for (i, (name, vsize, rawsize, chars)) in sections.iter().enumerate() {
             let off = sec + i * 40;
             let nb = name.as_bytes();
@@ -174,9 +177,13 @@ impl PeBuilder {
             let va = 0x1000u32 * (i as u32 + 1);
             d[off + 12..off + 16].copy_from_slice(&va.to_le_bytes());
             d[off + 16..off + 20].copy_from_slice(&rawsize.to_le_bytes());
-            d[off + 20..off + 24].copy_from_slice(&(0x200u32).to_le_bytes());
+            d[off + 20..off + 24].copy_from_slice(&raw_cursor.to_le_bytes());
             d[off + 36..off + 40].copy_from_slice(&chars.to_le_bytes());
-            last_end = last_end.max(0x200 + *rawsize as u64);
+            last_end = last_end.max((raw_cursor + *rawsize) as u64);
+            raw_cursor += rawsize.max(0x200);
+        }
+        if d.len() < last_end as usize {
+            d.resize(last_end as usize, 0);
         }
 
         // Authenticode certificate table is a *file offset*, placed past EOF
@@ -187,7 +194,6 @@ impl PeBuilder {
             d[dd + 36..dd + 40].copy_from_slice(&8u32.to_le_bytes());
         }
         if !self.overlay.is_empty() {
-            if d.len() < last_end as usize { d.resize(last_end as usize, 0); }
             d.extend_from_slice(&self.overlay);
         }
         d

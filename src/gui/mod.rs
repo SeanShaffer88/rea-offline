@@ -136,6 +136,8 @@ fn percent_decode(text: &str) -> String {
 
 fn view_from(query: &[(String, String)]) -> View {
     let mut view = View::default();
+    // The report root starts open; `collapse=.` (ROOT_KEY) closes it.
+    view.expanded.push(tree::ROOT_KEY.to_string());
     for (key, value) in query {
         match key.as_str() {
             "expand" => {
@@ -200,9 +202,12 @@ fn state_params(view: &View) -> Vec<String> {
     if let Some(selected) = &view.selected {
         params.push(format!("select={}", encode(selected)));
     }
-    for path in &view.expanded {
-        params.push(format!("expand={}", encode(path)));
-    }
+    // Note: expansion state is owned by the page visitor, not by the link
+    // generator — see `export_expansion` below. Keeping it out of here is
+    // what stops the links from growing on every click.
+    // Expansion is appended by the caller from `open_paths` (the nodes that
+    // are actually open on this page), never from the visitor's whole history
+    // — otherwise every click would make the URL longer.
     params
 }
 
@@ -249,7 +254,33 @@ fn html_escape(text: &str) -> String {
 pub fn page_html(page: &Page, query: &str) -> String {
     let parsed = parse_query(query);
     let view = view_from(&parsed);
+    // Only nodes that are both open and currently visible count as state;
+    // anything else is history and would just bloat the next URL.
     let rows = tree::rows(&page.tree, &view);
+    let visible_dirs: Vec<&str> = rows.iter().filter(|r| r.is_dir).map(|r| r.path.as_str()).collect();
+    let open_paths: Vec<String> = view
+        .expanded
+        .iter()
+        .filter(|p| p.as_str() == tree::ROOT_KEY || visible_dirs.iter().any(|v| v == &p.as_str()))
+        .cloned()
+        .collect();
+    // Search reveals matches anywhere in the tree, so those nodes are open
+    // even if the visitor never clicked them (mirrored from `tree::rows`).
+    let mut open_paths = open_paths;
+    if !view.filter.is_empty() {
+        let mut cursor = 0usize;
+        for row in &rows {
+            let _ = cursor;
+            cursor += 1;
+            if row.is_dir && rows.iter().any(|other| {
+                other.depth == row.depth + 1 && other.path.starts_with(&format!("{}/", row.path))
+            }) {
+                open_paths.push(row.path.clone());
+            }
+        }
+        open_paths.sort();
+        open_paths.dedup();
+    }
     // The SVG uses a 0..100 viewBox, so the layout runs in "percent" units
     // and the browser scales it to the pane: no JS, no resize handling.
     let banner = tree::treemap(&page.tree, 100.0, 100.0, &view, 1.2);
@@ -301,8 +332,13 @@ pub fn page_html(page: &Page, query: &str) -> String {
     // else (search, filters, sort, selection) is carried along.
     let with_expansion = |path: &str, expand: bool| -> String {
         let mut params = state_params(&view);
-        // The current expansion entry for this path is superseded.
-        params.retain(|p| p != &format!("expand={}", encode(path)));
+        // Carry the open nodes, but not this one: the clicked node's state is
+        // what the next page changes.
+        for open in &open_paths {
+            if open != path {
+                params.push(format!("expand={}", encode(open)));
+            }
+        }
         params.push(format!(
             "{}={}",
             if expand { "expand" } else { "collapse" },
@@ -310,11 +346,17 @@ pub fn page_html(page: &Page, query: &str) -> String {
         ));
         format!("/view?{}", params.join("&"))
     };
+    let expand_all = |params: &mut Vec<String>| {
+        for path in &open_paths {
+            params.push(format!("expand={}", encode(path)));
+        }
+    };
     let base = |extra: &str| -> String {
         let mut params = state_params(&view);
         if !extra.is_empty() {
             params.push(extra.to_string());
         }
+        expand_all(&mut params);
         format!("/view?{}", params.join("&"))
     };
     body.push_str(&toggle(
@@ -356,6 +398,7 @@ pub fn page_html(page: &Page, query: &str) -> String {
             SortColumn::Format => "format",
         };
         let mut params = state_params(&view);
+        expand_all(&mut params);
         params.push(format!("sort={key}"));
         params.push(format!("dir={}", if descending { "desc" } else { "asc" }));
         format!(

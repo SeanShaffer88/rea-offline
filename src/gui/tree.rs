@@ -213,7 +213,7 @@ impl Default for View {
             hide_clean: false,
             // The root is opened by default (the grid would be a single line
             // otherwise) but the state is explicit so a link can collapse it.
-            expanded: vec!["".to_string(), ROOT_KEY.to_string()],
+            expanded: Vec::new(),
             selected: None,
         }
     }
@@ -283,8 +283,12 @@ fn walk(
     } else {
         format!("{report_prefix}/{}", node.name)
     };
+    // A search opens whatever it has to in order to show its matches:
+    // making the user expand folders to find the file they just typed the
+    // name of would be hostile.
     let expanded = view.expanded.iter().any(|e| e == &self_path)
-        || (depth == 0 && view.expanded.iter().any(|e| e.is_empty()));
+        || (depth == 0 && view.expanded.iter().any(|e| e.is_empty()))
+        || (!needle.is_empty() && subtree_has_match(node, needle, view));
     let matching_files: Vec<&Artifact> =
         node.files.iter().filter(|f| passes(f, needle, view)).collect();
     let visible_children: Vec<&DirNode> = node
