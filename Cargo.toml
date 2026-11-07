@@ -1,0 +1,18 @@
+[package]
+name = "rea-offline"
+version = "0.1.0"
+edition = "2021"
+description = "Universal offline Windows client & REA analysis engine (no Hyper-V / Sandbox required)"
+license = "MIT"
+repository = "https://github.com/SeanShaffer88/rea-offline"
+
+# Zero external dependencies by design: this tool targets air-gapped machines.
+# `cargo build --release` must succeed with no network access whatsoever.
+
+[[bin]]
+name = "rea-offline"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
