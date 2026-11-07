@@ -180,7 +180,7 @@ impl PeBuilder {
             d[off + 20..off + 24].copy_from_slice(&raw_cursor.to_le_bytes());
             d[off + 36..off + 40].copy_from_slice(&chars.to_le_bytes());
             last_end = last_end.max((raw_cursor + *rawsize) as u64);
-            raw_cursor += rawsize.max(0x200);
+            raw_cursor += (*rawsize).max(0x200);
         }
         if d.len() < last_end as usize {
             d.resize(last_end as usize, 0);
