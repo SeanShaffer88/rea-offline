@@ -45,6 +45,34 @@ jobs:
             test.json
           if-no-files-found: ignore
 
+      # When the build breaks, post the actual compiler/test output to the
+      # diagnostics issue. Annotations alone truncate the interesting part,
+      # and job logs are not readable from every environment.
+      - name: Report failure to diagnostics issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set +e
+          body=$(python3 scripts/ci-report.py --max-lines 120)
+          if [ -z "$body" ]; then echo "no diagnostics captured"; exit 0; fi
+          issue=$(
+            gh issue list --label ci-diagnostics --state open --limit 1 \
+              --json number --jq '.[0].number'
+          )
+          if [ -z "$issue" ] || [ "$issue" = "null" ]; then
+            echo "no diagnostics issue; skipping"; exit 0
+          fi
+          {
+            echo "### Failed: \`${{ matrix.os }}\` @ \`${GITHUB_SHA:0:7}\`"
+            echo
+            echo '```text'
+            echo "$body"
+            echo '```'
+          } > comment.md
+          gh issue comment "$issue" --body-file comment.md
+
       - name: Smoke test
         shell: bash
         run: |
