@@ -853,7 +853,8 @@ mod tests {
         assert_eq!(tree.size, 1000);
         assert_eq!(tree.file_count, 4);
         assert_eq!(tree.worst, Some(Tint::High), "worst finding anywhere wins");
-        assert_eq!(tree.children.len(), 2, "sub/ and files at root");
+        assert_eq!(tree.children.len(), 1, "only sub/ is a directory");
+        assert_eq!(tree.files.len(), 1, "a.dll lives at the root");
         let sub = tree.children.iter().find(|c| c.name == "sub").unwrap();
         assert_eq!(sub.size, 900);
         assert_eq!(sub.file_count, 3);

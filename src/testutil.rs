@@ -142,6 +142,15 @@ impl PeBuilder {
             dll_rva += 0x40;
         }
 
+        // The import scaffolding lives inside the first section, so that
+        // section must be big enough even if the caller asked for a tiny one
+        // (a real linker would do the same).
+        let mut sections = self.sections.clone();
+        if !descriptors.is_empty() && !sections.is_empty() {
+            const NEEDED: u32 = 0x800;
+            sections[0].1 = sections[0].1.max(NEEDED);
+            sections[0].2 = sections[0].2.max(NEEDED);
+        }
         if !descriptors.is_empty() {
             // Descriptors: OriginalFirstThunk, Name, FirstThunk.
             for (oft, name) in &descriptors {
@@ -157,7 +166,7 @@ impl PeBuilder {
         // Section table.
         let sec = opt + 240;
         let mut last_end = 0u64;
-        for (i, (name, vsize, rawsize, chars)) in self.sections.iter().enumerate() {
+        for (i, (name, vsize, rawsize, chars)) in sections.iter().enumerate() {
             let off = sec + i * 40;
             let nb = name.as_bytes();
             d[off..off + nb.len().min(8)].copy_from_slice(&nb[..nb.len().min(8)]);

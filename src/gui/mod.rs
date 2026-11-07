@@ -643,8 +643,12 @@ mod tests {
         assert!(!expanded.contains("readme.txt"), "hide_clean must drop the clean file");
 
         let filtered = page_html(&page, "filter=readme");
-        assert!(filtered.contains("readme.txt"));
-        assert!(!filtered.contains("a.exe"));
+        let grid = {
+            let body = filtered.split("<tbody>").nth(1).unwrap_or("");
+            body.split("</tbody>").next().unwrap_or("").to_string()
+        };
+        assert!(grid.contains("readme.txt"), "{grid}");
+        assert!(!grid.contains("a.exe"), "the grid honours the search: {grid}");
 
         let selected = page_html(&page, "select=bin%2Fa.exe");
         assert!(selected.contains("SHA-256: aa"), "details pane shows hashes");
