@@ -12,7 +12,7 @@
 //! a throwaway directory, and a redirected per-user environment
 //! (`TEMP`/`APPDATA`/`USERPROFILE`-style vars point inside the sandbox).
 
-use crate::util::{extension_lower, new_id, temp_root};
+use crate::util::{new_id, temp_root};
 use crate::{Error, Result};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -106,7 +106,7 @@ impl Sandbox {
         if !installer.exists() { return Err(Error::NotFound(installer.to_path_buf())); }
         #[cfg(windows)]
         {
-            match extension_lower(installer).as_str() {
+            match crate::util::extension_lower(installer).as_str() {
                 "exe" => return Ok((installer.to_path_buf(), args.to_vec())),
                 "msi" => {
                     let mut a = vec![

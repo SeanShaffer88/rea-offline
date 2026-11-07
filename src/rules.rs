@@ -154,27 +154,42 @@ fn has_import(pe: &PeInfo, needle: &str) -> bool {
         .any(|f| bare_function(f).eq_ignore_ascii_case(needle))
 }
 
+/// Record one finding. Takes `&mut Vec` explicitly rather than capturing a
+/// closure: closures with several arguments cannot always infer the
+/// late-bound lifetime of a `&'static str` rule id.
+#[allow(clippy::too_many_arguments)]
+fn add(
+    out: &mut Vec<Finding>,
+    file: &FileAnalysis,
+    rule: &'static str,
+    title: String,
+    severity: Severity,
+    category: &'static str,
+    score: u64,
+    evidence: String,
+) {
+    out.push(Finding {
+        rule,
+        title,
+        severity,
+        category,
+        score,
+        file: file.path.clone(),
+        evidence,
+    });
+}
+
 /// Evaluate every rule against one file. Deterministic order: the rules run
 /// in a fixed sequence and findings are returned in rule order.
 pub fn evaluate_file(file: &FileAnalysis, t: &Thresholds) -> Vec<Finding> {
-    let mut out = Vec::new();
-    let mut push = |rule: &'static str, title: String, severity: Severity,
-                    category: &'static str, score: u64, evidence: String| {
-        out.push(Finding {
-            rule,
-            title,
-            severity,
-            category,
-            score,
-            file: file.path.clone(),
-            evidence,
-        });
-    };
-
+    let mut out: Vec<Finding> = Vec::new();
     if let Some(pe) = &file.pe {
         // --- Hardening -----------------------------------------------------
+        // A free function records findings, never a closure: closures with
+        // several arguments cannot reliably infer the late-bound lifetime of
+        // a `&'static str` rule id.
         if !pe.signed {
-            push(
+            add(&mut out, file,
                 "PE001",
                 "Executable is not Authenticode-signed".into(),
                 Severity::Low,
@@ -183,7 +198,7 @@ pub fn evaluate_file(file: &FileAnalysis, t: &Thresholds) -> Vec<Finding> {
                 "no certificate table (signature validity still needs WinVerifyTrust/REA)".into(),
             );
         } else {
-            push(
+            add(&mut out, file,
                 "PE000",
                 "Authenticode certificate table present".into(),
                 Severity::Info,
@@ -193,7 +208,7 @@ pub fn evaluate_file(file: &FileAnalysis, t: &Thresholds) -> Vec<Finding> {
             );
         }
         if !pe.mitigations.aslr_dynamic_base {
-            push(
+            add(&mut out, file,
                 "PE002",
                 "No ASLR (DYNAMIC_BASE unset)".into(),
                 Severity::Medium,
@@ -203,7 +218,7 @@ pub fn evaluate_file(file: &FileAnalysis, t: &Thresholds) -> Vec<Finding> {
             );
         }
         if !pe.mitigations.nx_compat {
-            push(
+            add(&mut out, file,
                 "PE003",
                 "No NX/DEP compatibility (NX_COMPAT unset)".into(),
                 Severity::Medium,
@@ -213,7 +228,7 @@ pub fn evaluate_file(file: &FileAnalysis, t: &Thresholds) -> Vec<Finding> {
             );
         }
         if pe.mitigations.no_seh {
-            push(
+            add(&mut out, file,
                 "PE004",
                 "SEH disabled (NO_SEH)".into(),
                 Severity::Low,
@@ -226,7 +241,7 @@ pub fn evaluate_file(file: &FileAnalysis, t: &Thresholds) -> Vec<Finding> {
         // --- Sections ------------------------------------------------------
         for s in &pe.section_details {
             if s.executable && s.writable {
-                push(
+                add(&mut out, file,
                     "PE100",
                     format!("Writable + executable section '{}'", s.name),
                     Severity::High,
@@ -236,7 +251,7 @@ pub fn evaluate_file(file: &FileAnalysis, t: &Thresholds) -> Vec<Finding> {
                 );
             }
             if s.raw_size >= t.min_section_bytes && s.entropy > t.packed_entropy {
-                push(
+                add(&mut out, file,
                     "PE110",
                     format!("High-entropy section '{}'", s.name),
                     Severity::Medium,
@@ -248,7 +263,7 @@ pub fn evaluate_file(file: &FileAnalysis, t: &Thresholds) -> Vec<Finding> {
         }
         for (name, packer) in PACKER_SECTIONS {
             if pe.sections.iter().any(|s| s.eq_ignore_ascii_case(name)) {
-                push(
+                add(&mut out, file,
                     "PE130",
                     format!("Packer section layout ({packer})"),
                     Severity::High,
@@ -260,7 +275,7 @@ pub fn evaluate_file(file: &FileAnalysis, t: &Thresholds) -> Vec<Finding> {
         }
         // An executable section with no code is a classic unpacking stub.
         if pe.executable_sections.is_empty() && !pe.sections.is_empty() {
-            push(
+            add(&mut out, file,
                 "PE131",
                 "No executable sections".into(),
                 Severity::Medium,
@@ -272,7 +287,7 @@ pub fn evaluate_file(file: &FileAnalysis, t: &Thresholds) -> Vec<Finding> {
 
         // --- Overlay / appended data ---------------------------------------
         if pe.overlay_size >= t.overlay_bytes {
-            push(
+            add(&mut out, file,
                 "PE120",
                 "Data appended after the last section".into(),
                 Severity::Medium,
@@ -284,7 +299,7 @@ pub fn evaluate_file(file: &FileAnalysis, t: &Thresholds) -> Vec<Finding> {
 
         // --- Imports -------------------------------------------------------
         if pe.imported_functions.is_empty() {
-            push(
+            add(&mut out, file,
                 "PE170",
                 "No imported functions".into(),
                 Severity::Medium,
@@ -295,7 +310,7 @@ pub fn evaluate_file(file: &FileAnalysis, t: &Thresholds) -> Vec<Finding> {
         } else {
             for (apis, label) in INJECTION_SETS {
                 if apis.iter().all(|a| has_import(pe, a)) {
-                    push(
+                    add(&mut out, file,
                         "PE140",
                         format!("Injection API set present ({label})"),
                         Severity::High,
@@ -307,7 +322,7 @@ pub fn evaluate_file(file: &FileAnalysis, t: &Thresholds) -> Vec<Finding> {
             }
             let anti: Vec<&str> = ANTI_DEBUG_APIS.iter().copied().filter(|a| has_import(pe, a)).collect();
             if !anti.is_empty() {
-                push(
+                add(&mut out, file,
                     "PE141",
                     "Anti-debugging API present".into(),
                     Severity::Medium,
@@ -318,7 +333,7 @@ pub fn evaluate_file(file: &FileAnalysis, t: &Thresholds) -> Vec<Finding> {
             }
             let ordinals = pe.imported_functions.iter().filter(|f| bare_function(f).starts_with('#')).count();
             if ordinals > 0 && ordinals == pe.imported_functions.len() {
-                push(
+                add(&mut out, file,
                     "PE150",
                     "All imports resolved by ordinal".into(),
                     Severity::Medium,
@@ -332,7 +347,7 @@ pub fn evaluate_file(file: &FileAnalysis, t: &Thresholds) -> Vec<Finding> {
         // --- Metadata sanity ----------------------------------------------
         const EPOCH_1990: u32 = 631_152_000;
         if pe.timestamp != 0 && !(EPOCH_1990..=crate::util::unix_secs() as u32 + 86_400).contains(&pe.timestamp) {
-            push(
+            add(&mut out, file,
                 "PE160",
                 "Implausible compile timestamp".into(),
                 Severity::Low,
@@ -342,7 +357,7 @@ pub fn evaluate_file(file: &FileAnalysis, t: &Thresholds) -> Vec<Finding> {
             );
         }
         if pe.timestamp == 0 {
-            push(
+            add(&mut out, file,
                 "PE161",
                 "Zeroed compile timestamp".into(),
                 Severity::Low,
@@ -355,7 +370,7 @@ pub fn evaluate_file(file: &FileAnalysis, t: &Thresholds) -> Vec<Finding> {
 
     // --- Whole-file heuristics ---------------------------------------------
     if file.size >= t.min_packed_bytes && file.entropy > 7.5 {
-        push(
+        add(&mut out, file,
             "ENT001",
             "Whole file is high entropy".into(),
             Severity::Medium,
@@ -365,7 +380,7 @@ pub fn evaluate_file(file: &FileAnalysis, t: &Thresholds) -> Vec<Finding> {
         );
     }
     if file.pe.is_none() && matches!(file.format.as_str(), "PE" | "ELF") {
-        push(
+        add(&mut out, file,
             "FMT001",
             "Extension/format mismatch".into(),
             Severity::Low,
@@ -386,7 +401,7 @@ pub fn evaluate_file(file: &FileAnalysis, t: &Thresholds) -> Vec<Finding> {
         }
         let sev = if matches.len() >= 3 { Severity::Medium } else { Severity::Low };
         let score = if matches.len() >= 3 { 8 } else { 4 };
-        push(
+        add(&mut out, file,
             "STR001",
             format!("Capability strings: {category}"),
             sev,

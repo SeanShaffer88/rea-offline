@@ -14,7 +14,9 @@
 //! Non-Windows builds keep the same lifecycle as a file-backed no-op so
 //! the workflow and tests run anywhere.
 
-use crate::{Error, Result};
+use crate::Result;
+#[cfg(windows)]
+use crate::Error;
 use std::path::{Path, PathBuf};
 
 pub struct RegistrySandbox {
