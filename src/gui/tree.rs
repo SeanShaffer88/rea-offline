@@ -573,7 +573,7 @@ fn layout_items<'a>(
         return;
     }
     let scale = (width * height) / total as f64;
-    let mut areas: Vec<f64> = items.iter().map(|i| i.size as f64 * scale).collect();
+    let areas: Vec<f64> = items.iter().map(|i| i.size as f64 * scale).collect();
 
     let mut cx = x;
     let mut cy = y;

@@ -496,7 +496,13 @@ fn u64le(d: &[u8], off: usize) -> Option<u64> {
     d.get(off..off + 8).map(|s| u64::from_le_bytes([s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]]))
 }
 
-struct Section { name: String, virtual_address: u32, virtual_size: u32, raw_ptr: u32, raw_size: u32, characteristics: u32 }
+struct Section {
+    name: String,
+    virtual_address: u32,
+    virtual_size: u32,
+    raw_ptr: u32,
+    raw_size: u32,
+}
 
 /// Parse a PE image already in memory (used by tests, fixtures and callers
 /// that hold bytes rather than a path).
@@ -576,7 +582,6 @@ fn parse_pe(data: &[u8]) -> Option<PeInfo> {
             virtual_address: u32le(data, off + 12).unwrap_or(0),
             raw_size,
             raw_ptr,
-            characteristics,
         });
     }
     // Overlay: trailing bytes past the final section, minus the

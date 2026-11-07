@@ -9,34 +9,33 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-const HELP: &str = "\
-rea-offline — Universal Offline Windows Client & REA Analysis Engine
+const HELP: &str = r#"rea-offline — Universal Offline Windows Client & REA Analysis Engine
 Runs on every Windows edition (incl. Home): no Hyper-V, no Windows Sandbox,
 no drivers, no network.
 
 USAGE:
   rea-offline scan     <path> [--output report.json] [--rea <path>]
   rea-offline sandbox  <installer.exe|.msi> [options] [-- <installer args>...]
+  rea-offline gui      <path> [--port 8787] [--no-open] [--output page.html]
   rea-offline snapshot <dir> [--output snap.json]
   rea-offline diff     <before.json> <after.json>
   rea-offline purge    <rea_sandbox_dir> [--force]
   rea-offline doctor   [--rea <path>]
   rea-offline sample   <out.exe> [--kind pe|script]
-  rea-offline gui      <path> [--port 8787] [--no-open] [--output page.html]
 
 OUTPUT (any command that produces a report):
   --output <file>       Write the report here instead of stdout
   --format <fmt>        json (default) | text | markdown
   --fail-on <level>     Exit 2 when the verdict reaches info|low|medium|high|critical
                         (use in CI to gate on a risk level)
-  --quiet               Suppress the 'report written to' notice
+  --quiet               Suppress the "report written to" notice
 
 SANDBOX OPTIONS:
   --rea <path>          Local REA executable / Node entry point
   --timeout <secs>      Installer timeout (default 300)
   --memory-mb <MB>      Job Object process-memory ceiling (default 1024)
   --max-processes <N>   Job Object active-process ceiling (default 32, 0 = none)
-  --sandbox-root <dir>  Sandbox location (default %TEMP%\\rea_sandbox_<id>)
+  --sandbox-root <dir>  Sandbox location (default %TEMP%\rea_sandbox_<id>)
   --keep                Keep sandbox files afterwards (hive still unmounts)
 
 GUI OPTIONS:
@@ -46,13 +45,13 @@ GUI OPTIONS:
                         (shareable, JavaScript-free snapshot of the window)
 
 EXAMPLES:
-  rea-offline scan \"C:\\Program Files\\SomeApp\" --output report.json
+  rea-offline scan "C:\Program Files\SomeApp" --output report.json
   rea-offline scan sample.exe --format text
-  rea-offline sandbox setup.msi --output report.json -- /quiet
-  rea-offline scan Downloads\\setup.exe --fail-on high --quiet
   rea-offline gui "C:\Program Files\SomeApp"
   rea-offline gui Downloads --output window.html --no-open
-";
+  rea-offline sandbox setup.msi --output report.json -- /quiet
+  rea-offline scan Downloads\setup.exe --fail-on high --quiet
+"#;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();

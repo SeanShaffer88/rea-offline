@@ -28,12 +28,11 @@
 pub mod tree;
 
 use crate::json::Value;
-use crate::rules::Severity;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
 use std::time::Duration;
-use tree::{SortColumn, Tint, TreemapScope, View};
+use tree::{SortColumn, TreemapScope, View};
 
 /// Everything the page needs, computed once per request.
 pub struct Page {
