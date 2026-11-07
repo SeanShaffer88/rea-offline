@@ -160,6 +160,42 @@ fn sample_kinds_and_errors() {
 }
 
 #[test]
+fn gui_renders_a_window_and_can_reopen_a_report() {
+    let dir = workdir("gui");
+    let sample = dir.join("sample.exe");
+    run(&dir, &["sample", sample.to_str().unwrap()]);
+
+    // Static page (no server, no browser needed).
+    let page = run(&dir, &["gui", ".", "--output", "window.html", "--no-open"]);
+    assert_eq!(page.code, 0, "{}", page.stderr);
+    let html = std::fs::read_to_string(dir.join("window.html")).unwrap();
+    assert!(html.starts_with("<!doctype html>"));
+    assert!(html.contains("<svg"), "treemap present");
+    assert!(html.contains("sample.exe"), "grid lists the analyzed file");
+    assert!(html.contains("risk score"), "footer carries the summary");
+    assert!(html.contains("class=\"verdict-"), "verdict chip present");
+    assert!(!html.contains("<script"), "no JavaScript by design");
+
+    // Reopening an archived report must produce the same window.
+    let scan = run(&dir, &["scan", ".", "--output", "archived.json", "--quiet"]);
+    assert_eq!(scan.code, 0, "{}", scan.stderr);
+    let reopened = run(
+        &dir,
+        &["gui", "archived.json", "--from-report", "--output", "reopened.html", "--no-open"],
+    );
+    assert_eq!(reopened.code, 0, "{}", reopened.stderr);
+    let again = std::fs::read_to_string(dir.join("reopened.html")).unwrap();
+    assert!(again.contains("sample.exe"));
+    assert!(again.contains("<svg"));
+
+    // A filter in the URL survives into the rendered page.
+    let page = rea_offline::gui::page_from_report_file(&dir.join("archived.json")).unwrap();
+    let filtered = rea_offline::gui::page_html(&page, "filter=sample&hide_clean=1");
+    assert!(filtered.contains("filter=sample"), "state round-trips into links");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn doctor_reports_a_working_build() {
     let dir = workdir("doctor");
     let doctor = run(&dir, &["doctor"]);

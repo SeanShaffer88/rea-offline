@@ -17,6 +17,7 @@ USAGE:
   rea-offline scan     <path> [--output report.json] [--rea <path>]
   rea-offline sandbox  <installer.exe|.msi> [options] [-- <installer args>...]
   rea-offline gui      <path> [--port 8787] [--no-open] [--output page.html]
+                       [--from-report]  (open an archived report.json instead)
   rea-offline snapshot <dir> [--output snap.json]
   rea-offline diff     <before.json> <after.json>
   rea-offline purge    <rea_sandbox_dir> [--force]
@@ -43,12 +44,14 @@ GUI OPTIONS:
   --no-open             Do not launch a browser; just print the URL
   --output <file>       Write the rendered page to a file and exit
                         (shareable, JavaScript-free snapshot of the window)
+  --from-report         Treat <path> as a report.json written by a previous run
 
 EXAMPLES:
   rea-offline scan "C:\Program Files\SomeApp" --output report.json
   rea-offline scan sample.exe --format text
   rea-offline gui "C:\Program Files\SomeApp"
   rea-offline gui Downloads --output window.html --no-open
+  rea-offline gui report.json --from-report
   rea-offline sandbox setup.msi --output report.json -- /quiet
   rea-offline scan Downloads\setup.exe --fail-on high --quiet
 "#;
@@ -287,7 +290,11 @@ fn run(args: &[String]) -> rea_offline::Result<u8> {
         }
         "gui" => {
             let target = need(0, "path")?;
-            let page = rea_offline::gui::page_for_path(&target, p.get("rea").map(PathBuf::from))?;
+            let page = if p.has("from-report") {
+                rea_offline::gui::page_from_report_file(&target)?
+            } else {
+                rea_offline::gui::page_for_path(&target, p.get("rea").map(PathBuf::from))?
+            };
             if let Some(path) = p.get("output") {
                 std::fs::write(path, page_html_for(&page))?;
                 if !p.has("quiet") {

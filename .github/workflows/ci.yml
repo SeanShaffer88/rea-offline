@@ -44,6 +44,15 @@ jobs:
               | while IFS= read -r line; do echo "::error::${line:0:900}"; done
           fi
           exit $status
+      - name: Upload binary
+        if: always() && success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rea-offline-${{ matrix.os }}
+          path: |
+            target/release/rea-offline
+            target/release/rea-offline.exe
+          if-no-files-found: warn
       - name: Upload diagnostics
         if: always()
         uses: actions/upload-artifact@v4
@@ -89,6 +98,17 @@ jobs:
           # 4. Report on real source files (mixed, non-binary content).
           "$EXE" scan src --output repo.json --quiet
           test -s repo.json
+
+          # 4b. The GUI renders the same decision as a static page.
+          "$EXE" gui . --output window.html --no-open
+          test -s window.html
+          grep -q '<svg' window.html
+          grep -q 'class="verdict-' window.html
+          grep -q 'risk score' window.html
+          # Graph output must agree with the CLI's own verdict.
+          "$EXE" scan . --output repo-verdict.json --quiet
+          verdict=$(grep -o '"verdict": "[a-z]*"' repo-verdict.json | head -1 | cut -d'"' -f4)
+          grep -qi "verdict-$verdict" window.html
 
           # 5. Snapshot + diff round trip.
           mkdir -p tree && printf 'one' > tree/a.txt

@@ -640,6 +640,22 @@ fn respond(stream: &mut TcpStream, status: &str, content_type: &str, body: &[u8]
     stream.flush()
 }
 
+/// Reopen an archived report (the JSON a previous run wrote) in the window.
+/// This is what makes the GUI useful offline *after* the fact: an operator
+/// can hand a report to a colleague and they get the same picture without
+/// rescanning the machine.
+pub fn page_from_report_file(path: &Path) -> crate::Result<Page> {
+    let text = std::fs::read_to_string(path)?;
+    let report = crate::json::parse(&text)?;
+    let name = report
+        .get("report")
+        .and_then(|r| r.get("target"))
+        .and_then(Value::as_str)
+        .unwrap_or(&path.display().to_string())
+        .to_string();
+    Ok(Page::new(report, &name))
+}
+
 /// Convenience for the CLI: scan `target`, then plot it.
 pub fn page_for_path(target: &Path, rea_path: Option<std::path::PathBuf>) -> crate::Result<Page> {
     let report = crate::app::mode_scan(crate::app::ScanOptions {
