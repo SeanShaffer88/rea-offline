@@ -71,9 +71,42 @@ def parse_stream(lines, errors_state):
     return 0
 
 
+def annotate_test_output(lines):
+    """Turn `cargo test` harness output into annotations.
+
+    libtest writes its results to stderr as plain text; without this the
+    interesting part (which test failed and why) only lives in the job log.
+    """
+    errors = 0
+    block_name = None
+    captured = []
+    for line in lines:
+        stripped = line.rstrip("\n")
+        if stripped.startswith("---- ") and stripped.endswith(" stdout ----"):
+            if block_name and errors <= MAX_ERRORS:
+                emit("error", f"{block_name}: {' | '.join(captured[:6])}"[:MAX_MESSAGE])
+            block_name = stripped[5:-len(" stdout ----")]
+            captured = []
+            errors += 1
+        elif block_name is not None:
+            if stripped.startswith("failures:"):
+                block_name = None
+                continue
+            if stripped.strip():
+                captured.append(stripped.strip())
+        elif "panicked at" in stripped:
+            errors += 1
+            if errors <= MAX_ERRORS:
+                emit("error", stripped[:MAX_MESSAGE])
+    if block_name and errors <= MAX_ERRORS:
+        emit("error", f"{block_name}: {' | '.join(captured[:6])}"[:MAX_MESSAGE])
+    return errors
+
+
 def main(argv):
     if argv and argv[0] == "--parse":
         path = argv[1] if len(argv) > 1 else "build.json"
+        stderr_path = argv[3] if len(argv) > 3 and argv[2] == "--stderr" else None
         try:
             with open(path, encoding="utf-8", errors="replace") as handle:
                 lines = handle.readlines()
@@ -83,7 +116,18 @@ def main(argv):
             return 0
         state = []
         parse_stream(lines, state)
-        print(f"[ci-annotate] parsed {path}: {state[0] if state else 0} errors", flush=True)
+        failures = 0
+        if stderr_path:
+            try:
+                with open(stderr_path, encoding="utf-8", errors="replace") as handle:
+                    failures = annotate_test_output(handle.readlines())
+            except OSError as exc:
+                emit("error", f"cannot read {stderr_path}: {exc}")
+        print(
+            f"[ci-annotate] parsed {path}: {state[0] if state else 0} compile errors, "
+            f"{failures} test failures",
+            flush=True,
+        )
         return 0
     cmd = ["cargo", *argv, "--message-format=json"]
     print(f"[ci-annotate] running: {' '.join(cmd)}", flush=True)

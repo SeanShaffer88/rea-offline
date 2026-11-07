@@ -30,9 +30,9 @@ jobs:
         shell: bash
         run: |
           set +e
-          cargo test --release --message-format=json > test.json
+          cargo test --release --message-format=json > test.json 2> test.stderr.txt
           status=$?
-          python3 scripts/ci-annotate.py --parse test.json
+          python3 scripts/ci-annotate.py --parse test.json --stderr test.stderr.txt
           exit $status
       - name: Upload diagnostics
         if: always()
