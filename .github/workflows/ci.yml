@@ -58,12 +58,14 @@ jobs:
           body=$(python3 scripts/ci-report.py --max-lines 120)
           if [ -z "$body" ]; then echo "no diagnostics captured"; exit 0; fi
           issue=$(
-            gh issue list --label ci-diagnostics --state open --limit 1 \
-              --json number --jq '.[0].number'
+            gh issue list --state open --limit 50 --search 'CI diagnostics in:title' \
+              --json number,title \
+              --jq '[.[] | select(.title == "CI diagnostics (automation)")][0].number'
           )
           if [ -z "$issue" ] || [ "$issue" = "null" ]; then
             echo "no diagnostics issue; skipping"; exit 0
           fi
+          echo "posting to issue #$issue" 
           {
             echo "### Failed: \`${{ matrix.os }}\` @ \`${GITHUB_SHA:0:7}\`"
             echo
