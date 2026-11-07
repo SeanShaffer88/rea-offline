@@ -154,6 +154,29 @@ fn has_import(pe: &PeInfo, needle: &str) -> bool {
         .any(|f| bare_function(f).eq_ignore_ascii_case(needle))
 }
 
+/// Indicator categories come from the string scanner as borrowed strings;
+/// findings store `&'static str` so reports stay cheap to copy. Map the
+/// known set and fall back to `capability` for anything new.
+fn static_category(category: &str) -> &'static str {
+    match category {
+        "network" => "network",
+        "execution" => "execution",
+        "memory" => "memory",
+        "injection" => "injection",
+        "persistence" => "persistence",
+        "anti-analysis" => "anti-analysis",
+        "obfuscation" => "obfuscation",
+        "crypto" => "crypto",
+        "signature" => "signature",
+        "hardening" => "hardening",
+        "packing" => "packing",
+        "metadata" => "metadata",
+        "loader" => "loader",
+        "masquerade" => "masquerade",
+        _ => "capability",
+    }
+}
+
 /// Record one finding. Takes `&mut Vec` explicitly rather than capturing a
 /// closure: closures with several arguments cannot always infer the
 /// late-bound lifetime of a `&'static str` rule id.
@@ -396,6 +419,7 @@ pub fn evaluate_file(file: &FileAnalysis, t: &Thresholds) -> Vec<Finding> {
         by_category.entry(ind.category.as_str()).or_default().push(ind.matched.as_str());
     }
     for (category, matches) in by_category {
+        let category: &'static str = static_category(category);
         if category == "obfuscation" || category == "crypto" {
             continue; // noisy and low-signal on their own
         }
