@@ -38,12 +38,36 @@ def emit(level, message, file=None, line=None, col=None):
 def parse_stream(lines, errors_state):
     """Annotate every diagnostic in `lines`; return the error count."""
     errors = warnings = 0
+    # `cargo test --message-format=json` interleaves libtest's plain-text
+    # output (stdout) with JSON. Failure blocks look like:
+    #   ---- module::test stdout ----
+    #   thread '...' panicked at src/x.rs:1:2:
+    #   assertion `left == right` failed
+    #     left: ...
+    #    right: ...
+    # so collect the whole block, not just the panic line.
+    block: list = []
+
+    def flush_block():
+        if block:
+            emit("error", " | ".join(block)[:MAX_MESSAGE])
+            block.clear()
+
     for raw in lines:
         raw = raw.strip()
-        # `cargo test --message-format=json` interleaves libtest's plain-text
-        # output (stdout) with JSON; failing that we would miss every test
-        # failure, which is exactly what happened the first time round.
-        if not raw.startswith("{") and ("panicked at" in raw or raw.startswith("---- ")):
+        if raw.startswith("---- ") and raw.endswith(" stdout ----"):
+            flush_block()
+            block.append(raw)
+            errors_state.append(0)
+            continue
+        if block:
+            if raw.startswith("failures:"):
+                flush_block()
+                continue
+            if raw and len(block) < 8:
+                block.append(raw)
+            continue
+        if not raw.startswith("{") and "panicked at" in raw:
             errors_state.append(0)
             emit("error", raw[:MAX_MESSAGE])
             continue
