@@ -33,6 +33,15 @@ jobs:
           cargo test --release --message-format=json > test.json 2> test.stderr.txt
           status=$?
           python3 scripts/ci-annotate.py --parse test.json --stderr test.stderr.txt
+          if [ $status -ne 0 ]; then
+            # Belt and braces: whatever the parser missed, surface the raw
+            # harness output verbatim (it is the only copy we can read).
+            tail -c 20000 test.stderr.txt \
+              | sed -e 's/%/%25/g' -e 's/\r$//' \
+              | grep -v '^\s*$' \
+              | tail -25 \
+              | while IFS= read -r line; do echo "::error::${line:0:900}"; done
+          fi
           exit $status
       - name: Upload diagnostics
         if: always()
@@ -43,56 +52,8 @@ jobs:
             build.json
             build.stderr.txt
             test.json
+            test.stderr.txt
           if-no-files-found: ignore
-
-      # When the build breaks, publish the actual compiler/test output.
-      # Three channels on purpose: workflow annotations truncate, artifacts
-      # can be unavailable to the token, and job logs need a download.
-      - name: Publish diagnostics
-        if: failure()
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set +e
-          python3 scripts/ci-report.py --max-lines 400 > diagnostics.txt
-          wc -l diagnostics.txt
-          # Channel A: commit to a throwaway branch.
-          git config user.name "rea-offline CI"
-          git config user.email "ci@users.noreply.github.com"
-          git checkout -q -B ci/diagnostics
-          cp diagnostics.txt rea-ci-diagnostics.txt
-          git add -f rea-ci-diagnostics.txt
-          git commit -q -m "CI diagnostics for ${GITHUB_SHA:0:7} (${{ matrix.os }})"
-          git push -q -f origin ci/diagnostics && echo "pushed ci/diagnostics"
-
-      - name: Report failure to diagnostics issue
-        if: failure()
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set +e
-          body=$(python3 scripts/ci-report.py --max-lines 120)
-          if [ -z "$body" ]; then echo "no diagnostics captured"; exit 0; fi
-          issue=$(
-            gh issue list --state open --limit 50 --search 'CI diagnostics in:title' \
-              --json number,title \
-              --jq '[.[] | select(.title == "CI diagnostics (automation)")][0].number'
-          )
-          if [ -z "$issue" ] || [ "$issue" = "null" ]; then
-            echo "no diagnostics issue; skipping"; exit 0
-          fi
-          echo "posting to issue #$issue" 
-          {
-            echo "### Failed: \`${{ matrix.os }}\` @ \`${GITHUB_SHA:0:7}\`"
-            echo
-            echo '```text'
-            echo "$body"
-            echo '```'
-          } > comment.md
-          gh issue comment "$issue" --body-file comment.md
-
       - name: Smoke test
         shell: bash
         run: |
