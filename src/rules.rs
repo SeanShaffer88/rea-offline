@@ -547,6 +547,8 @@ mod tests {
             path: "sample.exe".into(),
             size: 40_960,
             sha256: "0".repeat(64),
+            md5: "0".repeat(32),
+            imphash: Some("0".repeat(32)),
             format: "PE".into(),
             entropy: 6.0,
             pe,
