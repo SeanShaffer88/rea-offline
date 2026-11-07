@@ -103,7 +103,7 @@ jobs:
           "$EXE" gui . --output window.html --no-open
           test -s window.html
           grep -q '<svg' window.html
-          grep -q 'class="verdict-' window.html
+          grep -q 'chip verdict-' window.html
           grep -q 'risk score' window.html
           # Graph output must agree with the CLI's own verdict.
           "$EXE" scan . --output repo-verdict.json --quiet

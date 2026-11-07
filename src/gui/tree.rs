@@ -817,20 +817,6 @@ fn find_file<'a>(node: &'a DirNode, path: &str) -> Option<&'a Artifact> {
 mod tests {
     use super::*;
 
-    fn artifact(path: &str, size: u64, tint: Tint, risk: u64) -> Artifact {
-        Artifact {
-            path: path.to_string(),
-            size,
-            sha256: "a".repeat(64),
-            md5: "b".repeat(32),
-            imphash: None,
-            format: "PE".to_string(),
-            risk,
-            tint,
-            findings: Vec::new(),
-        }
-    }
-
     fn sample_report() -> Value {
         crate::json::parse(
             r#"{
