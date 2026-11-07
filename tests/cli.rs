@@ -173,7 +173,7 @@ fn gui_renders_a_window_and_can_reopen_a_report() {
     assert!(html.contains("<svg"), "treemap present");
     assert!(html.contains("sample.exe"), "grid lists the analyzed file");
     assert!(html.contains("risk score"), "footer carries the summary");
-    assert!(html.contains("class=\"verdict-"), "verdict chip present");
+    assert!(html.contains("chip verdict-"), "verdict chip present");
     assert!(!html.contains("<script"), "no JavaScript by design");
 
     // Reopening an archived report must produce the same window.
