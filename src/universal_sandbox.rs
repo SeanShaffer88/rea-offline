@@ -22,6 +22,8 @@ pub struct SandboxConfig {
     /// Explicit sandbox root; `None` → `%TEMP%\rea_sandbox_<id>`.
     pub root: Option<PathBuf>,
     pub memory_limit_mb: u64,
+    /// Job Object active-process ceiling (0 = no explicit limit).
+    pub max_processes: u32,
     pub timeout: Duration,
     /// Keep the sandbox directory after the run (still unmounts the hive).
     pub keep: bool,
@@ -29,7 +31,7 @@ pub struct SandboxConfig {
 
 impl Default for SandboxConfig {
     fn default() -> Self {
-        SandboxConfig { root: None, memory_limit_mb: 1024, timeout: Duration::from_secs(300), keep: false }
+        SandboxConfig { root: None, memory_limit_mb: 1024, max_processes: 32, timeout: Duration::from_secs(300), keep: false }
     }
 }
 
@@ -39,6 +41,23 @@ pub struct RunOutcome {
     pub timed_out: bool,
     pub duration_ms: u64,
     pub command: String,
+    /// Last bytes of the installer's captured stdout/stderr (lossy UTF-8).
+    pub stdout_tail: String,
+    pub stderr_tail: String,
+    pub stdout_bytes: u64,
+    pub stderr_bytes: u64,
+}
+
+/// Read up to the last 8 KiB of a captured log; returns (tail, total_bytes).
+pub fn read_log_tail(path: &Path) -> (String, u64) {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = match std::fs::File::open(path) { Ok(f) => f, Err(_) => return (String::new(), 0) };
+    let total = file.metadata().map(|m| m.len()).unwrap_or(0);
+    let window = total.min(8192);
+    if total > window { let _ = file.seek(SeekFrom::End(-(window as i64))); }
+    let mut buf = Vec::with_capacity(window as usize);
+    let _ = file.read_to_end(&mut buf);
+    (String::from_utf8_lossy(&buf).to_string(), total)
 }
 
 pub struct Sandbox {
@@ -112,11 +131,21 @@ impl Sandbox {
     pub fn run_installer(&self, installer: &Path, args: &[String]) -> Result<RunOutcome> {
         let (program, argv) = self.launch_spec(installer, args)?;
         let started = Instant::now();
+        let stdout_log = self.work_dir.join("installer.stdout.log");
+        let stderr_log = self.work_dir.join("installer.stderr.log");
         #[cfg(windows)]
-        let outcome = win::run(&program, &argv, &self.work_dir, &self.isolated_env(),
-                               self.config.memory_limit_mb, self.config.timeout)?;
+        let mut outcome = win::run(&program, &argv, &self.work_dir, &self.isolated_env(),
+                               self.config.memory_limit_mb, self.config.max_processes,
+                               self.config.timeout, &stdout_log, &stderr_log)?;
         #[cfg(not(windows))]
-        let outcome = portable::run(&program, &argv, &self.work_dir, &self.isolated_env(), self.config.timeout)?;
+        let mut outcome = portable::run(&program, &argv, &self.work_dir, &self.isolated_env(),
+                                        self.config.timeout, &stdout_log, &stderr_log)?;
+        let (stdout_tail, stdout_bytes) = read_log_tail(&stdout_log);
+        let (stderr_tail, stderr_bytes) = read_log_tail(&stderr_log);
+        outcome.stdout_tail = stdout_tail;
+        outcome.stderr_tail = stderr_tail;
+        outcome.stdout_bytes = stdout_bytes;
+        outcome.stderr_bytes = stderr_bytes;
         Ok(RunOutcome {
             duration_ms: started.elapsed().as_millis() as u64,
             command: format!("{} {}", program.display(),
@@ -130,12 +159,15 @@ impl Sandbox {
 mod portable {
     use super::*;
     pub fn run(program: &Path, argv: &[String], cwd: &Path,
-               env: &[(String, String)], timeout: Duration) -> Result<RunOutcome> {
+               env: &[(String, String)], timeout: Duration,
+               stdout_log: &Path, stderr_log: &Path) -> Result<RunOutcome> {
+        let stdout_file = std::fs::File::create(stdout_log)?;
+        let stderr_file = std::fs::File::create(stderr_log)?;
         let mut cmd = std::process::Command::new(program);
         cmd.args(argv).current_dir(cwd)
             .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::inherit())
-            .stderr(std::process::Stdio::inherit());
+            .stdout(std::process::Stdio::from(stdout_file))
+            .stderr(std::process::Stdio::from(stderr_file));
         for (k, v) in env { cmd.env(k, v); }
         let mut child = cmd.spawn().map_err(|e| Error::Process(format!("spawn {}: {e}", program.display())))?;
         let deadline = Instant::now() + timeout;
@@ -144,12 +176,15 @@ mod portable {
                 Some(status) => return Ok(RunOutcome {
                     exit_code: status.code().map(|c| c as u32),
                     timed_out: false, duration_ms: 0, command: String::new(),
+                    stdout_tail: String::new(), stderr_tail: String::new(),
+                    stdout_bytes: 0, stderr_bytes: 0,
                 }),
                 None => {
                     if Instant::now() >= deadline {
                         let _ = child.kill();
                         let _ = child.wait();
-                        return Ok(RunOutcome { exit_code: None, timed_out: true, duration_ms: 0, command: String::new() });
+                        return Ok(RunOutcome { exit_code: None, timed_out: true, duration_ms: 0, command: String::new(),
+                            stdout_tail: String::new(), stderr_tail: String::new(), stdout_bytes: 0, stderr_bytes: 0 });
                     }
                     std::thread::sleep(Duration::from_millis(50));
                 }
@@ -168,6 +203,11 @@ mod win {
     const CREATE_SUSPENDED: u32 = 0x0000_0004;
     const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: u32 = 0x0000_2000;
     const JOB_OBJECT_LIMIT_PROCESS_MEMORY: u32 = 0x0000_0100;
+    const JOB_OBJECT_LIMIT_ACTIVE_PROCESS: u32 = 0x0000_0008;
+    const STARTF_USE_STDHANDLES: u32 = 0x0000_0100;
+    const CREATE_ALWAYS: u32 = 2;
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+    const FILE_SHARE_WRITE: u32 = 0x0000_0002;
     const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION: i32 = 9;
     const WAIT_OBJECT_0: u32 = 0;
     const WAIT_TIMEOUT: u32 = 0x0000_0102;
@@ -202,6 +242,13 @@ mod win {
         peak_job_memory_used: usize,
     }
     #[repr(C)]
+    struct SecurityAttributes {
+        length: u32,
+        security_descriptor: *mut core::ffi::c_void,
+        inherit_handle: i32,
+    }
+
+    #[repr(C)]
     #[derive(Default)]
     struct StartupInfoW {
         cb: u32, reserved: *mut u16, desktop: *mut u16, title: *mut u16,
@@ -221,6 +268,9 @@ mod win {
         fn SetInformationJobObject(job: Handle, class: i32, info: *const core::ffi::c_void, len: u32) -> i32;
         fn AssignProcessToJobObject(job: Handle, process: Handle) -> i32;
         fn TerminateJobObject(job: Handle, exit_code: u32) -> i32;
+        fn CreateFileW(name: *const u16, access: u32, share: u32,
+                       attrs: *const SecurityAttributes, disposition: u32,
+                       flags: u32, template: Handle) -> Handle;
         fn CreateProcessW(app: *const u16, cmdline: *mut u16, proc_attrs: *mut core::ffi::c_void,
                           thread_attrs: *mut core::ffi::c_void, inherit: i32, flags: u32,
                           env: *const core::ffi::c_void, cwd: *const u16,
@@ -248,7 +298,8 @@ mod win {
     }
 
     pub fn run(program: &Path, argv: &[String], cwd: &Path, env: &[(String, String)],
-               memory_limit_mb: u64, timeout: Duration) -> Result<RunOutcome> {
+               memory_limit_mb: u64, max_processes: u32, timeout: Duration,
+               stdout_log: &Path, stderr_log: &Path) -> Result<RunOutcome> {
         unsafe {
             // 1) Job Object with kill-on-close + memory ceiling.
             let job = HandleGuard(CreateJobObjectW(std::ptr::null_mut(), std::ptr::null()));
@@ -256,6 +307,10 @@ mod win {
             let mut limits = JobObjectExtendedLimitInformation::default();
             limits.basic_limit_information.limit_flags =
                 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_PROCESS_MEMORY;
+            if max_processes > 0 {
+                limits.basic_limit_information.limit_flags |= JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
+                limits.basic_limit_information.active_process_limit = max_processes;
+            }
             limits.process_memory_limit = (memory_limit_mb as usize).saturating_mul(1024 * 1024);
             if SetInformationJobObject(job.0, JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
                     &limits as *const _ as *const core::ffi::c_void,
@@ -284,10 +339,26 @@ mod win {
             let cwd_w = wide(cwd.as_os_str());
             let mut startup = StartupInfoW::default();
             startup.cb = std::mem::size_of::<StartupInfoW>() as u32;
+            // Capture installer stdout/stderr to log files via inheritable
+            // handles (STARTF_USESTDHANDLES); stdin stays null.
+            const GENERIC_WRITE: u32 = 0x4000_0000;
+            let sa = SecurityAttributes {
+                length: std::mem::size_of::<SecurityAttributes>() as u32,
+                security_descriptor: std::ptr::null_mut(),
+                inherit_handle: 1,
+            };
+            let stdout_h = HandleGuard(CreateFileW(wide(stdout_log.as_os_str()).as_ptr(),
+                GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, CREATE_ALWAYS, 0, NULL_HANDLE));
+            let stderr_h = HandleGuard(CreateFileW(wide(stderr_log.as_os_str()).as_ptr(),
+                GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, CREATE_ALWAYS, 0, NULL_HANDLE));
+            if stdout_h.0 == -1 || stderr_h.0 == -1 { return Err(last_err("CreateFileW")); }
+            startup.flags = STARTF_USE_STDHANDLES;
+            startup.std_output = stdout_h.0;
+            startup.std_error = stderr_h.0;
             let mut proc_info = ProcessInformation::default();
             const CREATE_UNICODE_ENVIRONMENT: u32 = 0x0000_0400;
             if CreateProcessW(app.as_ptr(), cmdline.as_mut_ptr(), std::ptr::null_mut(),
-                    std::ptr::null_mut(), 0, CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
+                    std::ptr::null_mut(), 1, CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
                     env_block.as_ptr() as *const core::ffi::c_void, cwd_w.as_ptr(),
                     &startup, &mut proc_info) == 0 {
                 return Err(last_err("CreateProcessW"));
@@ -302,7 +373,8 @@ mod win {
             // 4) Wait with timeout; on timeout kill the whole job tree.
             let millis = timeout.as_millis().min(u32::MAX as u128) as u32;
             let wait = WaitForSingleObject(process.0, millis);
-            let mut outcome = RunOutcome { exit_code: None, timed_out: false, duration_ms: 0, command: String::new() };
+            let mut outcome = RunOutcome { exit_code: None, timed_out: false, duration_ms: 0, command: String::new(),
+                stdout_tail: String::new(), stderr_tail: String::new(), stdout_bytes: 0, stderr_bytes: 0 };
             if wait == WAIT_TIMEOUT {
                 outcome.timed_out = true;
                 TerminateJobObject(job.0, 1);
@@ -315,5 +387,24 @@ mod win {
             Ok(outcome)
             // Guards close here: closing the job handle kills any stragglers.
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn log_tail_reads_last_bytes_and_total() {
+        let dir = std::env::temp_dir().join(format!("rea_offline_tail_{}", new_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("big.log");
+        std::fs::write(&log, vec![b'x'; 10_000]).unwrap();
+        let (tail, total) = read_log_tail(&log);
+        assert_eq!(total, 10_000);
+        assert_eq!(tail.len(), 8192);
+        let (empty, zero) = read_log_tail(&dir.join("missing.log"));
+        assert!(empty.is_empty() && zero == 0);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
