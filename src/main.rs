@@ -22,6 +22,7 @@ USAGE:
   rea-offline purge    <rea_sandbox_dir> [--force]
   rea-offline doctor   [--rea <path>]
   rea-offline sample   <out.exe> [--kind pe|script]
+  rea-offline gui      <path> [--port 8787] [--no-open] [--output page.html]
 
 OUTPUT (any command that produces a report):
   --output <file>       Write the report here instead of stdout
@@ -38,11 +39,19 @@ SANDBOX OPTIONS:
   --sandbox-root <dir>  Sandbox location (default %TEMP%\\rea_sandbox_<id>)
   --keep                Keep sandbox files afterwards (hive still unmounts)
 
+GUI OPTIONS:
+  --port <n>            Loopback port to serve the window on (default 8787)
+  --no-open             Do not launch a browser; just print the URL
+  --output <file>       Write the rendered page to a file and exit
+                        (shareable, JavaScript-free snapshot of the window)
+
 EXAMPLES:
   rea-offline scan \"C:\\Program Files\\SomeApp\" --output report.json
   rea-offline scan sample.exe --format text
   rea-offline sandbox setup.msi --output report.json -- /quiet
   rea-offline scan Downloads\\setup.exe --fail-on high --quiet
+  rea-offline gui "C:\\Program Files\\SomeApp"
+  rea-offline gui Downloads --output window.html --no-open
 ";
 
 fn main() -> ExitCode {
@@ -115,6 +124,7 @@ const VALUE_FLAGS: &[&str] = &[
     "format",
     "fail-on",
     "kind",
+    "port",
 ];
 
 fn parse(args: &[String]) -> Parsed {
@@ -276,6 +286,26 @@ fn run(args: &[String]) -> rea_offline::Result<u8> {
             emit(&json, &p, format)?;
             Ok(0)
         }
+        "gui" => {
+            let target = need(0, "path")?;
+            let page = rea_offline::gui::page_for_path(&target, p.get("rea").map(PathBuf::from))?;
+            if let Some(path) = p.get("output") {
+                std::fs::write(path, page_html_for(&page))?;
+                if !p.has("quiet") {
+                    eprintln!("[rea-offline] window written to {path} (static, no server)");
+                }
+                return Ok(0);
+            }
+            let port = match p.get("port") {
+                Some(value) => rea_offline::util::parse_number(value, "--port")?,
+                None => 8787u16,
+            };
+            if !p.has("no-open") {
+                open_browser(&format!("http://127.0.0.1:{port}/"));
+            }
+            rea_offline::gui::serve(page, port)?;
+            Ok(0)
+        }
         "sample" => {
             let out = need(0, "out.exe")?;
             let path = app::write_sample(&out, p.get("kind").unwrap_or("pe"))?;
@@ -286,6 +316,27 @@ fn run(args: &[String]) -> rea_offline::Result<u8> {
             "unknown command '{other}' (see --help)"
         ))),
     }
+}
+
+fn page_html_for(page: &rea_offline::gui::Page) -> String {
+    rea_offline::gui::page_html(page, "")
+}
+
+/// Best-effort: hand the URL to the platform's default browser. Failure is
+/// not an error — the URL is printed either way and can be pasted manually.
+fn open_browser(url: &str) {
+    #[cfg(target_os = "windows")]
+    let (program, args) = ("cmd", vec!["/C", "start", "", url]);
+    #[cfg(target_os = "macos")]
+    let (program, args) = ("open", vec![url]);
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let (program, args) = ("xdg-open", vec![url]);
+    let _ = std::process::Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
 }
 
 #[cfg(test)]
