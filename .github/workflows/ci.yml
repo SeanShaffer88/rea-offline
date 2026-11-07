@@ -41,6 +41,7 @@ jobs:
           name: diagnostics-${{ matrix.os }}
           path: |
             build.json
+            build.stderr.txt
             test.json
           if-no-files-found: ignore
 
