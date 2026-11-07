@@ -1,0 +1,49 @@
+# Architecture
+
+Implements the *Universal Offline Windows Client & REA Analysis Engine*
+blueprint. Pure Rust, **zero external dependencies** — a clean checkout
+builds on an air-gapped machine with nothing but a Rust toolchain.
+
+```
+User / CLI
+ ├─ Mode A: scan ───────────────────────────────► REA Bridge ──► JSON report
+ └─ Mode B: sandbox
+      1. prepare %TEMP%\rea_sandbox_<id>\  (install\ work\ tmp\)
+      2. registry hive mount (sandbox_reg.dat, best-effort, warned)
+      3. baseline SHA-256 snapshot of install\
+      4. installer in Job Object (suspended → assign → resume)
+      5. post-install snapshot → delta (added / modified / deleted)
+      6. REA analysis of install\  (external REA if found, else native)
+      7. unmount hive → purge sandbox → verify zero residue
+```
+
+## Modules
+
+| File | Blueprint module | Notes |
+|---|---|---|
+| `src/universal_sandbox.rs` | 1. Universal Sandbox Engine | Win32 Job Objects via direct FFI (`CreateJobObjectW`, `SetInformationJobObject`, `AssignProcessToJobObject`, `CreateProcessW` suspended). `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, process-memory ceiling, timeout → `TerminateJobObject`. Win7 SP1 → Win11, all editions incl. Home. POSIX fallback for dev/tests. |
+| `src/snapshot.rs` | 2. Zero-Driver Snapshot & Delta | Recursive walk + streaming SHA-256 (`src/sha256.rs`, FIPS 180-4, no crates). Symlinked dirs never followed. |
+| `src/registry_sandbox.rs` | 3. Registry Virtualization | `RegLoadKeyW`/`RegUnLoadKeyW` of `sandbox_reg.dat` under `HKEY_USERS\REA_SANDBOX_<id>`; Drop-unmount. |
+| `src/rea_bridge.rs` | 4. REA Engine Bridge | Invokes local REA CLI/Node (`--rea`, `REA_PATH`, or PATH probe) with `--format json`; merges with built-in native analyzer (PE headers/sections/imports, section lists, Shannon entropy, capability-indicator strings, risk score). |
+| `src/cleanup.rs` | 5. Cleanup & Purge | Unmount → retrying recursive delete → existence verification. Refuses non-`rea_sandbox_*` paths without `--force`. |
+| `src/json.rs`, `src/sha256.rs` | support | Std-only JSON + SHA-256 so the offline build needs no registry access. |
+
+## Security model & honest limits
+
+A Job Object is *containment*, not a hypervisor: it bounds lifetime
+(whole tree dies with the job), memory, and (with the timeout) wall
+clock, and the child gets a throwaway directory plus a redirected
+per-user environment. It does **not** stop a determined installer from
+writing elsewhere on disk or to the real registry if it runs elevated —
+no user-mode-only design on Windows Home can. Run untrusted installers
+from a standard (non-admin) account, and treat the delta + REA report
+as the inspection record. Registry hive mounting additionally needs
+`SeRestorePrivilege` (typically admin) and a valid hive file; when
+unavailable the run continues with environment redirection and the
+report carries a `registry_warning` field rather than failing silently.
+
+## Offline REA
+
+Set `REA_PATH` or pass `--rea C:\path\to\rea` (executable or Node `.js`
+entry). If REA is absent, the native analyzer still produces hashes,
+formats, PE metadata, indicators and a 0–100 risk score.
