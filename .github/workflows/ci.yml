@@ -1,5 +1,6 @@
 name: CI
 on: [push, pull_request]
+
 jobs:
   test:
     strategy:
@@ -9,11 +10,121 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test --release
-      - run: cargo build --release
-      - name: Smoke test (scan)
+        with:
+          components: clippy, rustfmt
+
+      # Advisory: printed for reviewers, not build-blocking.
+      - name: rustfmt (advisory)
+        continue-on-error: true
+        run: cargo fmt --all -- --check
+      - name: clippy (advisory)
+        continue-on-error: true
+        run: cargo clippy --all-targets
+
+      # Compile and test with diagnostics mirrored as check-run annotations,
+      # so failures are readable from the run page without the log download.
+      # `build.json` is kept as an artifact either way.
+      - name: Build (annotated)
+        run: python3 scripts/ci-annotate.py build --release
+      - name: Test with diagnostics captured
         shell: bash
         run: |
-          ./target/release/rea-offline scan . --output report.json || ./target/release/rea-offline.exe scan . --output report.json
-          test -s report.json
-          ./target/release/rea-offline doctor || ./target/release/rea-offline.exe doctor
+          set +e
+          cargo test --release --message-format=json > test.json 2> test.stderr.txt
+          status=$?
+          python3 scripts/ci-annotate.py --parse test.json --stderr test.stderr.txt
+          if [ $status -ne 0 ]; then
+            # Belt and braces: whatever the parser missed, surface the raw
+            # harness output verbatim (it is the only copy we can read).
+            tail -c 60000 test.json test.stderr.txt \
+              | sed -e 's/%/%25/g' -e 's/\r$//' -e 's/\x1b\[[0-9;]*m//g' \
+              | grep -v -E '^\s*$|^\{|Compiling|Finished|Running|Building' \
+              | grep -E 'FAILED|panicked|assertion|left:|right:|---- |test result|error' \
+              | tail -30 \
+              | while IFS= read -r line; do echo "::error::${line:0:900}"; done
+          fi
+          exit $status
+      - name: Upload binary
+        if: always() && success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rea-offline-${{ matrix.os }}
+          path: |
+            target/release/rea-offline
+            target/release/rea-offline.exe
+          if-no-files-found: warn
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics-${{ matrix.os }}
+          path: |
+            build.json
+            build.stderr.txt
+            test.json
+            test.stderr.txt
+          if-no-files-found: ignore
+      - name: Smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXE=./target/release/rea-offline
+          if [ -f "$EXE.exe" ]; then EXE="$EXE.exe"; fi
+
+          # 1. doctor must prove the build's hash primitives and rehearse the
+          #    sandbox lifecycle on this runner.
+          "$EXE" doctor --output doctor.json
+          grep -q '"sha256_selftest": true' doctor.json
+          grep -q '"md5_selftest": true' doctor.json
+          grep -q '"sandbox_rehearsal_ok": true' doctor.json
+
+          # 2. Build a synthetic sample, then scan it in every format.
+          "$EXE" sample sample.exe
+          for fmt in json text markdown; do
+            "$EXE" scan sample.exe --format "$fmt" --output "report.$fmt"
+            test -s "report.$fmt"
+          done
+          grep -q '"rules"' report.json
+          grep -q '"imphash"' report.json
+          grep -qi 'verdict' report.markdown
+          grep -q 'risk score' report.text
+
+          # 3. The risk gate must be able to fail a pipeline.
+          "$EXE" scan sample.exe --fail-on critical --quiet
+          if "$EXE" scan sample.exe --fail-on low --quiet; then
+            echo "expected --fail-on low to exit 2" >&2; exit 1
+          fi
+
+          # 4. Report on real source files (mixed, non-binary content).
+          "$EXE" scan src --output repo.json --quiet
+          test -s repo.json
+
+          # 4b. The GUI renders the same decision as a static page.
+          "$EXE" gui . --output window.html --no-open
+          test -s window.html
+          grep -q '<svg' window.html
+          grep -q 'chip verdict-' window.html
+          grep -q 'risk score' window.html
+          # Graph output must agree with the CLI's own verdict.
+          "$EXE" scan . --output repo-verdict.json --quiet
+          verdict=$(grep -o '"verdict": "[a-z]*"' repo-verdict.json | head -1 | cut -d'"' -f4)
+          grep -qi "verdict-$verdict" window.html
+
+          # 5. Snapshot + diff round trip.
+          mkdir -p tree && printf 'one' > tree/a.txt
+          "$EXE" snapshot tree --output before.json --quiet
+          printf 'two' > tree/b.txt
+          "$EXE" snapshot tree --output after.json --quiet
+          "$EXE" diff before.json after.json --output delta.json --quiet
+          grep -q 'b.txt' delta.json
+
+          # 6. Purge guard: refuse an arbitrary directory, then purge a real
+          #    sandbox layout and verify zero residue.
+          mkdir -p not_a_sandbox
+          if "$EXE" purge not_a_sandbox 2>/dev/null; then
+            echo "purge guard failed to refuse" >&2; exit 1
+          fi
+          test -d not_a_sandbox
+          mkdir -p "rea_sandbox_ci/install"
+          "$EXE" purge rea_sandbox_ci --quiet
+          test ! -d rea_sandbox_ci

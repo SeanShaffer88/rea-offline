@@ -39,6 +39,94 @@ How Mode B works (blueprint workflow):
 Utilities: `snapshot <dir>`, `diff <before.json> <after.json>`,
 `purge <rea_sandbox_dir>` (refuses non-sandbox paths without `--force`).
 
+**C. The window** — a WizTree-shaped view of an analysis: a sortable size
+grid on the left, a risk-coloured treemap on the right, and a details pane
+with hashes and the rules that fired:
+
+```bat
+rea-offline.exe gui "C:\Program Files\SomeApp"
+rea-offline.exe gui Downloads\setup.exe --port 9100
+rea-offline.exe gui report.json --from-report --output window.html --no-open
+```
+
+The window is served from `127.0.0.1` only and contains no JavaScript, no
+external assets and no write endpoints. See [`docs/GUI.md`](docs/GUI.md).
+
+## Reports
+
+Every command writes the same JSON (schema `3`) and can also render it for a
+human with `--format text` or `--format markdown`:
+
+```
+{
+  "schema_version": 3,
+  "verdict": "high",
+  "report": {
+    "file_count": 412,
+    "risk_score": 41,
+    "verdict": "high",
+    "summary": { "by_format": {...}, "unsigned_pe_files": 3, ... },
+    "rules": {
+      "score": 41,
+      "verdict": "high",
+      "by_severity": { "critical": 0, "high": 2, "medium": 4, ... },
+      "rules_fired": [ {"rule": "PE140", "title": "...", "severity": "high", "files": 1} ],
+      "findings": [ {
+        "rule": "PE140", "title": "Injection API set present (classic remote-thread injection)",
+        "severity": "high", "score": 22, "file": "bin/setup.exe",
+        "evidence": "VirtualAllocEx + WriteProcessMemory + CreateRemoteThread"
+      } ]
+    },
+    "files": [ {
+      "path": "bin/setup.exe", "size": 184320, "format": "PE",
+      "sha256": "...", "md5": "...", "imphash": "...",
+      "entropy": 7.61, "indicators": [...], "pe": {...}
+    } ]
+  }
+}
+```
+
+* **`sha256` / `md5`** — full-file hashes (SHA-256 is the one to trust;
+  MD5 is there because many feeds and blocklists still quote it).
+* **`imphash`** — MD5 over the normalized import list, the same value
+  `pefile`/VirusTotal produce, so a rebuild of a known family lines up even
+  when the file hash differs.
+* **`rules.findings`** — every point of the score is attributable to a named
+  rule with the evidence that triggered it. The rulebook is
+  [`src/rules.rs`](src/rules.rs) and is small enough to read in one sitting:
+  no signatures, no ML, no feeds.
+
+`--fail-on <level>` turns the verdict into an exit code (`2` when the verdict
+reaches the level), so the same report can gate a CI job or a deployment
+script:
+
+```bat
+rea-offline.exe scan Downloads\setup.exe --fail-on high --quiet
+```
+
+## Rule engine
+
+Findings come from data already in the report. Each rule has a stable id, a
+severity and a score contribution:
+
+| Rule | Fires when | Severity |
+|---|---|---|
+| `PE001` / `PE000` | Authenticode table absent / present | low / info |
+| `PE002` / `PE003` | No ASLR / no NX compatibility | medium |
+| `PE004` | SEH disabled | low |
+| `PE100` | Section is writable **and** executable | high |
+| `PE110` | Section entropy above 7.2 (≥ 1 KiB) | medium |
+| `PE120` | ≥ 4 KiB appended after the last section | medium |
+| `PE130` | Packer section layout (UPX, MPress, Themida, VMProtect, …) | high |
+| `PE131` | No executable section at all (unpacking stub) | medium |
+| `PE140` | Injection API combinations (remote thread, hollowing, APC) | high |
+| `PE141` | Anti-debugging APIs | medium |
+| `PE150` | Every import resolved by ordinal | medium |
+| `PE160` / `PE161` | Implausible / zeroed compile timestamp | low |
+| `PE170` | Empty import table | medium |
+| `ENT001` | Whole file above 7.5 entropy | medium |
+| `STR001` | Capability strings, rolled up per category | low–medium |
+
 ## REA integration
 
 REA ([morluto/rea](https://github.com/morluto/rea)) is invoked locally when
@@ -53,6 +141,21 @@ persistence/anti-analysis strings), a summary block, and a 0–100 risk
 score — the tool is fully functional offline either way. Mode B also
 diffs the whole sandbox tree, so files dropped into the redirected
 user profile are reported in `sandbox_delta`, not just `install\`.
+
+## Development
+
+```bat
+cargo test --release      :: unit + integration + CLI tests, no network
+cargo build --release
+```
+
+CI (`.github/workflows/ci.yml`) runs the tests on Windows **and** Linux, then
+smoke-tests the binary end to end: `doctor`, a synthetic-PE scan in all three
+formats, the `--fail-on` gate, a rendered window, snapshot/diff round trip and
+the purge guard. Compiler and test diagnostics are mirrored as check-run
+annotations and kept as artifacts, so a failure can be read without the job
+log. Builds are published as artifacts (`rea-offline-<os>`) on every green
+run.
 
 ## Build (air-gapped)
 
@@ -71,7 +174,10 @@ and Linux.
 | `src/universal_sandbox.rs` | Job Object sandbox engine |
 | `src/snapshot.rs` | Zero-driver snapshot & delta reconciliation |
 | `src/registry_sandbox.rs` | Offline registry hive mount/unmount |
-| `src/rea_bridge.rs` | REA bridge + native PE/static analyzer |
+| `src/rea_bridge.rs` | REA bridge + native PE/static analyzer (imphash, MD5) |
+| `src/rules.rs` | Rule engine, findings, score & verdict |
+| `src/render.rs`, `src/mdtable.rs` | Text / Markdown rendering |
+| `src/gui/` | WizTree-shaped window: tree, treemap, loopback server |
 | `src/cleanup.rs` | Cleanup & zero-residue purge controller |
 | `src/sha256.rs`, `src/json.rs` | Std-only SHA-256 / JSON (offline build) |
 | `docs/ARCHITECTURE.md` | Design, security model, honest limitations |
@@ -94,6 +200,21 @@ Created by Sean Shaffer
 MIT — see [LICENSE](LICENSE).
 
 ## Changelog
+
+### 0.4.0
+- **GUI** (`gui`): WizTree-shaped window — sortable size/risk grid, risk-coloured
+  treemap, details pane with hashes and findings; loopback-only, no JavaScript;
+  `--from-report` reopens archived reports.
+- **Rule engine** (`src/rules.rs`): 18 explainable rules, stable ids, severities,
+  and a 0–100 score where every point is attributable. `verdict` on every report.
+- **Hashes**: MD5 and **imphash** alongside SHA-256; `doctor` self-tests both.
+- **Human output**: `--format text|markdown`, `src/render.rs`, escaped Markdown tables.
+- **CLI contract**: `--fail-on <level>` (exit 2), `--output` keeps stdout clean,
+  `--format=value` form, `sample` fixtures, `gui --output` static pages.
+- **Tests**: 60+ unit/integration/CLI cases including an end-to-end hostile-binary
+  pipeline and a synthetic PE builder (`src/testutil.rs`).
+- **CI**: Windows + Linux on every push, annotated diagnostics, published binaries.
+
 
 ### 0.2.0
 - Deep PE parser: imported functions/ordinals, per-section entropy, mitigations, Authenticode presence, overlay detection; risk score factors in missing NX/ASLR, W+X sections, overlays.
