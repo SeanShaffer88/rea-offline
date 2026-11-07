@@ -254,33 +254,35 @@ fn html_escape(text: &str) -> String {
 pub fn page_html(page: &Page, query: &str) -> String {
     let parsed = parse_query(query);
     let view = view_from(&parsed);
-    // Only nodes that are both open and currently visible count as state;
-    // anything else is history and would just bloat the next URL.
+    // Only nodes that are open *and currently visible* count as state;
+    // anything else is history and would just make every URL longer.
     let rows = tree::rows(&page.tree, &view);
-    let visible_dirs: Vec<&str> = rows.iter().filter(|r| r.is_dir).map(|r| r.path.as_str()).collect();
-    let open_paths: Vec<String> = view
+    let visible_dirs: Vec<String> = rows
+        .iter()
+        .filter(|r| r.is_dir)
+        .map(|r| r.path.clone())
+        .collect();
+    let mut open_paths: Vec<String> = view
         .expanded
         .iter()
-        .filter(|p| p.as_str() == tree::ROOT_KEY || visible_dirs.iter().any(|v| v == &p.as_str()))
+        .filter(|p| {
+            p.as_str() == tree::ROOT_KEY || visible_dirs.iter().any(|v| v == *p)
+        })
         .cloned()
         .collect();
-    // Search reveals matches anywhere in the tree, so those nodes are open
-    // even if the visitor never clicked them (mirrored from `tree::rows`).
-    let mut open_paths = open_paths;
+    // A search opens the way to its matches even if the visitor never
+    // clicked those nodes (the tree does the same; this mirrors it so the
+    // links stay consistent with what is on screen).
     if !view.filter.is_empty() {
-        let mut cursor = 0usize;
-        for row in &rows {
-            let _ = cursor;
-            cursor += 1;
-            if row.is_dir && rows.iter().any(|other| {
-                other.depth == row.depth + 1 && other.path.starts_with(&format!("{}/", row.path))
-            }) {
+        for row in rows.iter().filter(|r| r.is_dir) {
+            let prefix = format!("{}/", row.path);
+            if rows.iter().any(|other| other.depth == row.depth + 1 && other.path.starts_with(&prefix)) {
                 open_paths.push(row.path.clone());
             }
         }
-        open_paths.sort();
-        open_paths.dedup();
     }
+    open_paths.sort();
+    open_paths.dedup();
     // The SVG uses a 0..100 viewBox, so the layout runs in "percent" units
     // and the browser scales it to the pane: no JS, no resize handling.
     let banner = tree::treemap(&page.tree, 100.0, 100.0, &view, 1.2);

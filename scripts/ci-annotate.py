@@ -87,7 +87,12 @@ def parse_stream(lines, errors_state):
         rendered = diag.get("rendered") or text
         spans = [s for s in diag.get("spans", []) if s.get("is_primary")]
         span = spans[0] if spans else {}
-        snippet = rendered.split("\n")[0][:MAX_MESSAGE]
+        # Keep the `expected/got` lines: without them an E0308 annotation says
+        # "mismatched types" and nothing else, which is useless.
+        lines = rendered.split("\n")
+        snippet = " | ".join(
+            line.strip() for line in lines[:12] if line.strip()
+        )[:MAX_MESSAGE]
         if level == "error":
             errors += 1
             if errors <= MAX_ERRORS:
