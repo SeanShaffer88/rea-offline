@@ -50,7 +50,7 @@ EXAMPLES:
   rea-offline scan sample.exe --format text
   rea-offline sandbox setup.msi --output report.json -- /quiet
   rea-offline scan Downloads\\setup.exe --fail-on high --quiet
-  rea-offline gui "C:\\Program Files\\SomeApp"
+  rea-offline gui "C:\Program Files\SomeApp"
   rea-offline gui Downloads --output window.html --no-open
 ";
 
