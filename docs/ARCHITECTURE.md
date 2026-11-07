@@ -11,7 +11,8 @@ User / CLI
       1. prepare %TEMP%\rea_sandbox_<id>\  (install\ work\ tmp\)
       2. registry hive mount (sandbox_reg.dat, best-effort, warned)
       3. baseline SHA-256 snapshot of install\
-      4. installer in Job Object (suspended → assign → resume)
+      4. installer in Job Object (suspended → assign → resume),
+         stdout/stderr captured to work\installer.*.log (tails in report)
       5. post-install snapshot → delta (added / modified / deleted),
          plus a whole-sandbox delta catching drops into the redirected
          profile (tmp/ work/ and the hive file are filtered out)

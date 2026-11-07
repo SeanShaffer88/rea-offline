@@ -85,6 +85,37 @@ fn sandbox_delta_catches_drops_outside_install_dir() {
 
 #[cfg(unix)]
 #[test]
+fn sandbox_captures_installer_output_and_exit_code() {
+    use rea_offline::app::{mode_sandbox, SandboxOptions};
+    use rea_offline::universal_sandbox::SandboxConfig;
+    let dir = tmp_dir("outcap");
+    let script = dir.join("noisy_installer.sh");
+    std::fs::write(&script, "#!/bin/sh\necho 'installing widgets...'\necho 'warning: widget quota low' >&2\nexit 3\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let root = std::env::temp_dir().join(format!("rea_sandbox_{}", rea_offline::util::new_id()));
+    let mut config = SandboxConfig::default();
+    config.root = Some(root.clone());
+    let report = mode_sandbox(SandboxOptions {
+        installer: script,
+        installer_args: vec![],
+        output: None,
+        rea_path: None,
+        sandbox: config,
+    }).unwrap();
+    let execution = report.get("execution").expect("execution block");
+    let text = format!("{execution:?}");
+    assert!(text.contains("installing widgets"), "stdout tail captured: {text}");
+    assert!(text.contains("widget quota low"), "stderr tail captured: {text}");
+    // The installer file itself is analyzed as evidence too.
+    let installer_report = report.get("installer_report").expect("installer report");
+    assert!(installer_report.get("file_count").is_some());
+    assert!(!root.exists(), "sandbox purged after run");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
 fn sandbox_runs_harmless_program_and_captures_delta() {
     use rea_offline::app::{mode_sandbox, SandboxOptions};
     use rea_offline::universal_sandbox::SandboxConfig;

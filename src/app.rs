@@ -109,9 +109,11 @@ fn run_sandbox_inner(opts: &SandboxOptions, sandbox: &Sandbox, install_dir: &Pat
     sandbox_delta.modified.retain(|e| !is_internal(&e.path));
     sandbox_delta.deleted.retain(|e| !is_internal(&e.path));
     sandbox_delta.unchanged.retain(|e| !is_internal(&e.path));
-    // 5. REA inspection of exactly what the installer changed.
+    // 5. REA inspection of exactly what the installer changed, plus the
+    // installer binary itself (its own PE/scripts are evidence too).
     let bridge = ReaBridge::new(ReaConfig { rea_path: opts.rea_path.clone(), timeout: None });
     let rea_report = bridge.analyze(install_dir)?;
+    let installer_report = bridge.analyze(&opts.installer).ok();
     Ok(Value::obj(vec![
         ("schema_version", Value::num(2)),
         ("mode", Value::str("sandbox-installer")),
@@ -122,13 +124,51 @@ fn run_sandbox_inner(opts: &SandboxOptions, sandbox: &Sandbox, install_dir: &Pat
             ("exit_code", outcome.exit_code.map(|c| Value::num(c as u64)).unwrap_or(Value::Null)),
             ("timed_out", Value::Bool(outcome.timed_out)),
             ("duration_ms", Value::num(outcome.duration_ms)),
+            ("stdout_tail", Value::str(outcome.stdout_tail.clone())),
+            ("stderr_tail", Value::str(outcome.stderr_tail.clone())),
+            ("stdout_bytes", Value::num(outcome.stdout_bytes)),
+            ("stderr_bytes", Value::num(outcome.stderr_bytes)),
         ])),
+        ("installer_report", installer_report.map(|r| r.to_json()).unwrap_or(Value::Null)),
         ("delta", delta.to_json()),
         // Files changed outside install\ but inside the sandbox (e.g. the
         // redirected profile). Anything changed outside the sandbox tree
         // itself is, by definition, not visible to this zero-driver view.
         ("sandbox_delta", sandbox_delta.to_json()),
         ("report", rea_report.to_json()),
+    ]))
+}
+
+/// Preflight checks for an offline machine: platform, temp/sandbox
+/// writability (a full create→purge rehearsal), REA discovery.
+pub fn mode_doctor(rea_path: Option<PathBuf>) -> Result<Value> {
+    let bridge = ReaBridge::new(ReaConfig { rea_path, timeout: None });
+    let rea_found = bridge.resolved_rea_path();
+    // Rehearse the sandbox lifecycle in miniature.
+    let rehearsal = (|| -> Result<bool> {
+        let dir = crate::util::temp_root().join(format!("rea_sandbox_{}", crate::util::new_id()));
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(dir.join("doctor.txt"), b"ok")?;
+        Ok(CleanupController::purge_dir(&dir, false)?.verified_zero_residue)
+    })();
+    Ok(Value::obj(vec![
+        ("schema_version", Value::num(2)),
+        ("mode", Value::str("doctor")),
+        ("version", Value::str(env!("CARGO_PKG_VERSION"))),
+        ("os", Value::str(std::env::consts::OS)),
+        ("arch", Value::str(std::env::consts::ARCH)),
+        ("windows_job_objects", Value::Bool(cfg!(windows))),
+        ("registry_hive_mount", Value::str(if cfg!(windows) {
+            "available (requires SeRestorePrivilege + a valid hive file)"
+        } else { "not applicable on this OS" })),
+        ("temp_dir", Value::str(crate::util::temp_root().display().to_string())),
+        ("sandbox_rehearsal_ok", match &rehearsal { Ok(ok) => Value::Bool(*ok), Err(_) => Value::Bool(false) }),
+        ("sandbox_rehearsal_error", rehearsal.err().map(|e| Value::str(e.to_string())).unwrap_or(Value::Null)),
+        ("rea", match rea_found {
+            Some(p) => Value::obj(vec![("found", Value::Bool(true)), ("path", Value::str(p.display().to_string()))]),
+            None => Value::obj(vec![("found", Value::Bool(false)),
+                ("path", Value::str("native analyzer fallback (fully functional offline)"))]),
+        }),
     ]))
 }
 

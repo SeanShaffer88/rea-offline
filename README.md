@@ -99,3 +99,9 @@ MIT — see [LICENSE](LICENSE).
 - Deep PE parser: imported functions/ordinals, per-section entropy, mitigations, Authenticode presence, overlay detection; risk score factors in missing NX/ASLR, W+X sections, overlays.
 - Mode B whole-sandbox delta (`sandbox_delta`) for profile-redirected drops.
 - `schema_version: 2` on reports, report `summary` block, `--version` flag.
+
+### 0.3.0
+- Installer stdout/stderr captured to sandbox log files; tails + byte counts in the report's `execution` block.
+- Mode B also analyzes the installer binary itself (`installer_report`).
+- Job Object active-process ceiling (`--max-processes`, default 32).
+- New `doctor` preflight command (platform, sandbox create/purge rehearsal, REA discovery).

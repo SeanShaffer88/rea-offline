@@ -17,12 +17,14 @@ USAGE:
   rea-offline snapshot <dir> [--output snap.json]
   rea-offline diff    <before.json> <after.json>
   rea-offline purge   <rea_sandbox_dir> [--force]
+  rea-offline doctor  [--rea <path>]
 
 SANDBOX OPTIONS:
   --output <file>       Write the JSON report here (default: stdout)
   --rea <path>          Local REA executable / Node entry point
   --timeout <secs>      Installer timeout (default 300)
   --memory-mb <MB>      Job Object process-memory ceiling (default 1024)
+  --max-processes <N>   Job Object active-process ceiling (default 32, 0 = none)
   --sandbox-root <dir>  Sandbox location (default %TEMP%\\rea_sandbox_<id>)
   --keep                Keep sandbox files afterwards (hive still unmounts)
 
@@ -54,7 +56,7 @@ fn parse(args: &[String]) -> Parsed {
             break;
         } else if let Some(flag) = a.strip_prefix("--") {
             // Flags that take a value consume the next token.
-            if matches!(flag, "output" | "rea" | "timeout" | "memory-mb" | "sandbox-root")
+            if matches!(flag, "output" | "rea" | "timeout" | "memory-mb" | "max-processes" | "sandbox-root")
                 && i + 1 < args.len() {
                 p.flags.push((flag.to_string(), Some(args[i + 1].clone())));
                 i += 2;
@@ -115,6 +117,10 @@ fn run(args: &[String]) -> rea_offline::Result<()> {
                 config.memory_limit_mb = v.parse().map_err(|_| {
                     rea_offline::Error::InvalidInput("--memory-mb must be a number".into()) })?;
             }
+            if let Some(v) = p.get("max-processes") {
+                config.max_processes = v.parse().map_err(|_| {
+                    rea_offline::Error::InvalidInput("--max-processes must be a number".into()) })?;
+            }
             if let Some(v) = p.get("sandbox-root") { config.root = Some(PathBuf::from(v)); }
             config.keep = p.has("keep");
             app::mode_sandbox(app::SandboxOptions {
@@ -124,6 +130,11 @@ fn run(args: &[String]) -> rea_offline::Result<()> {
                 rea_path: p.get("rea").map(PathBuf::from),
                 sandbox: config,
             })?;
+            Ok(())
+        }
+        "doctor" => {
+            let json = app::mode_doctor(p.get("rea").map(PathBuf::from))?;
+            println!("{}", json.to_string_pretty());
             Ok(())
         }
         "snapshot" => {

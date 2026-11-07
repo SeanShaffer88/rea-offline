@@ -201,6 +201,9 @@ pub struct ReaBridge {
 impl ReaBridge {
     pub fn new(config: ReaConfig) -> ReaBridge { ReaBridge { config } }
 
+    /// The REA executable that would be used, if any (for `doctor`).
+    pub fn resolved_rea_path(&self) -> Option<PathBuf> { self.resolve_rea() }
+
     fn resolve_rea(&self) -> Option<PathBuf> {
         if let Some(p) = &self.config.rea_path {
             if p.exists() { return Some(p.clone()); }
