@@ -61,6 +61,15 @@ fn primary_report(root: &Value) -> Option<&Value> {
     root.get("report")
         .filter(|r| r.get("file_count").is_some())
         .or_else(|| root.get("installer_report").filter(|r| r.get("file_count").is_some()))
+        // Also accept a bare analysis body (what `ReaReport::to_json`
+        // produces) so the renderer works on a sub-report too.
+        .or_else(|| {
+            if root.get("file_count").is_some() && root.get("files").is_some() {
+                Some(root)
+            } else {
+                None
+            }
+        })
 }
 
 fn pad(label: &str) -> String {
