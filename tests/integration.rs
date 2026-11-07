@@ -53,6 +53,38 @@ fn purge_removes_sandbox_tree_and_verifies() {
 
 #[cfg(unix)]
 #[test]
+fn sandbox_delta_catches_drops_outside_install_dir() {
+    use rea_offline::app::{mode_sandbox, SandboxOptions};
+    use rea_offline::universal_sandbox::SandboxConfig;
+    let dir = tmp_dir("profiledrop");
+    let script = dir.join("fake_installer.sh");
+    // Installers commonly write into the (redirected) user profile, not
+    // the install dir — the whole-sandbox delta must surface that.
+    std::fs::write(&script, "#!/bin/sh\nprintf 'profile payload' > \"$REASANDBOX/profile_drop.txt\"\nprintf 'scratch' > \"$REASANDBOX/tmp/scratch.txt\"\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let root = std::env::temp_dir().join(format!("rea_sandbox_{}", rea_offline::util::new_id()));
+    let mut config = SandboxConfig::default();
+    config.root = Some(root.clone());
+    config.keep = true;
+    let report = mode_sandbox(SandboxOptions {
+        installer: script,
+        installer_args: vec![],
+        output: None,
+        rea_path: None,
+        sandbox: config,
+    }).unwrap();
+    let sandbox_delta = report.get("sandbox_delta").expect("sandbox_delta in report");
+    let added = sandbox_delta.get("added").expect("added list");
+    let text = format!("{added:?}");
+    assert!(text.contains("profile_drop.txt"), "profile drop must be reported: {text}");
+    assert!(!text.contains("scratch.txt"), "tmp/ bookkeeping must be filtered out: {text}");
+    CleanupController::purge_dir(&root, false).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
 fn sandbox_runs_harmless_program_and_captures_delta() {
     use rea_offline::app::{mode_sandbox, SandboxOptions};
     use rea_offline::universal_sandbox::SandboxConfig;
