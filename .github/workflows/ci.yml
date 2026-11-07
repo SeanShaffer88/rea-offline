@@ -16,3 +16,4 @@ jobs:
         run: |
           ./target/release/rea-offline scan . --output report.json || ./target/release/rea-offline.exe scan . --output report.json
           test -s report.json
+          ./target/release/rea-offline doctor || ./target/release/rea-offline.exe doctor
