@@ -45,9 +45,27 @@ jobs:
             test.json
           if-no-files-found: ignore
 
-      # When the build breaks, post the actual compiler/test output to the
-      # diagnostics issue. Annotations alone truncate the interesting part,
-      # and job logs are not readable from every environment.
+      # When the build breaks, publish the actual compiler/test output.
+      # Three channels on purpose: workflow annotations truncate, artifacts
+      # can be unavailable to the token, and job logs need a download.
+      - name: Publish diagnostics
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set +e
+          python3 scripts/ci-report.py --max-lines 400 > diagnostics.txt
+          wc -l diagnostics.txt
+          # Channel A: commit to a throwaway branch.
+          git config user.name "rea-offline CI"
+          git config user.email "ci@users.noreply.github.com"
+          git checkout -q -B ci/diagnostics
+          cp diagnostics.txt rea-ci-diagnostics.txt
+          git add -f rea-ci-diagnostics.txt
+          git commit -q -m "CI diagnostics for ${GITHUB_SHA:0:7} (${{ matrix.os }})"
+          git push -q -f origin ci/diagnostics && echo "pushed ci/diagnostics"
+
       - name: Report failure to diagnostics issue
         if: failure()
         env:
