@@ -36,7 +36,7 @@ jobs:
           if [ $status -ne 0 ]; then
             # Belt and braces: whatever the parser missed, surface the raw
             # harness output verbatim (it is the only copy we can read).
-            tail -c 60000 test.stderr.txt \
+            tail -c 60000 test.json test.stderr.txt \
               | sed -e 's/%/%25/g' -e 's/\r$//' -e 's/\x1b\[[0-9;]*m//g' \
               | grep -v -E '^\s*$|Compiling|Finished|Running|Building' \
               | grep -E 'FAILED|panicked|assertion|left:|right:|---- |test result|error' \

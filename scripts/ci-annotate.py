@@ -40,8 +40,15 @@ def parse_stream(lines, errors_state):
     errors = warnings = 0
     for raw in lines:
         raw = raw.strip()
+        # `cargo test --message-format=json` interleaves libtest's plain-text
+        # output (stdout) with JSON; failing that we would miss every test
+        # failure, which is exactly what happened the first time round.
+        if not raw.startswith("{") and ("panicked at" in raw or raw.startswith("---- ")):
+            errors_state.append(0)
+            emit("error", raw[:MAX_MESSAGE])
+            continue
         if not raw.startswith("{"):
-            continue  # non-JSON chatter (progress bars, "Compiling ...")
+            continue  # non-JSON chatter; harness failures are handled below
         try:
             msg = json.loads(raw)
         except json.JSONDecodeError:
