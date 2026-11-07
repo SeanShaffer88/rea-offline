@@ -45,10 +45,14 @@ REA ([morluto/rea](https://github.com/morluto/rea)) is invoked locally when
 found via `--rea <path>`, the `REA_PATH` environment variable, or a PATH
 probe (executable or Node `.js` entry). Its JSON is merged into the report
 under `rea_external`. When REA is absent, the native analyzer still
-produces SHA-256 hashes, format detection, PE headers/sections/imports,
-Shannon entropy (packed-binary heuristic), capability indicators
-(network/execution/injection/persistence/anti-analysis strings), and a
-0–100 risk score — the tool is fully functional offline either way.
+produces SHA-256 hashes, format detection, deep PE analysis (imported
+functions incl. ordinals, per-section entropy, ASLR/NX/CFG mitigations,
+Authenticode presence, overlay size), Shannon entropy (packed-binary
+heuristic), capability indicators (network/execution/injection/
+persistence/anti-analysis strings), a summary block, and a 0–100 risk
+score — the tool is fully functional offline either way. Mode B also
+diffs the whole sandbox tree, so files dropped into the redirected
+user profile are reported in `sandbox_delta`, not just `install\`.
 
 ## Build (air-gapped)
 
@@ -88,3 +92,10 @@ Created by Sean Shaffer
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Changelog
+
+### 0.2.0
+- Deep PE parser: imported functions/ordinals, per-section entropy, mitigations, Authenticode presence, overlay detection; risk score factors in missing NX/ASLR, W+X sections, overlays.
+- Mode B whole-sandbox delta (`sandbox_delta`) for profile-redirected drops.
+- `schema_version: 2` on reports, report `summary` block, `--version` flag.

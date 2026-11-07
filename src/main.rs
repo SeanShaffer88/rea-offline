@@ -82,6 +82,10 @@ fn run(args: &[String]) -> rea_offline::Result<()> {
         println!("{HELP}");
         return Ok(());
     };
+    if matches!(cmd.as_str(), "-V" | "--version" | "version") {
+        println!("rea-offline {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
     if matches!(cmd.as_str(), "-h" | "--help" | "help") {
         println!("{HELP}");
         return Ok(());

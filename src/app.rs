@@ -21,6 +21,7 @@ pub fn mode_scan(opts: ScanOptions) -> Result<Value> {
     let bridge = ReaBridge::new(ReaConfig { rea_path: opts.rea_path, timeout: None });
     let report = bridge.analyze(&opts.target)?;
     let json = Value::obj(vec![
+        ("schema_version", Value::num(2)),
         ("mode", Value::str("local-scan")),
         ("generated_unix", Value::num(unix_secs())),
         ("report", report.to_json()),
@@ -87,15 +88,32 @@ pub fn mode_sandbox(opts: SandboxOptions) -> Result<Value> {
 fn run_sandbox_inner(opts: &SandboxOptions, sandbox: &Sandbox, install_dir: &Path) -> Result<Value> {
     // Baseline snapshot of the (empty) install target.
     let before = Snapshot::capture(install_dir)?;
+    // Baseline of the *whole* sandbox tree: installers also drop files
+    // into the redirected profile (USERPROFILE/APPDATA point at the root),
+    // which an install\-only diff would silently miss.
+    let sandbox_before = Snapshot::capture(&sandbox.root)?;
     // 3. Execution under containment.
     let outcome = sandbox.run_installer(&opts.installer, &opts.installer_args)?;
     // 4. Post-install snapshot & delta.
     let after = Snapshot::capture(install_dir)?;
     let delta = before.diff(&after);
+    let sandbox_after = Snapshot::capture(&sandbox.root)?;
+    let mut sandbox_delta = sandbox_before.diff(&sandbox_after);
+    // Drop our own bookkeeping areas from the whole-tree view: the install
+    // dir is already reported in `delta`; tmp/work/hive are sandbox guts.
+    let is_internal = |p: &str| {
+        p.starts_with("install/") || p.starts_with("tmp/") || p.starts_with("work/")
+            || p == "sandbox_reg.dat"
+    };
+    sandbox_delta.added.retain(|e| !is_internal(&e.path));
+    sandbox_delta.modified.retain(|e| !is_internal(&e.path));
+    sandbox_delta.deleted.retain(|e| !is_internal(&e.path));
+    sandbox_delta.unchanged.retain(|e| !is_internal(&e.path));
     // 5. REA inspection of exactly what the installer changed.
     let bridge = ReaBridge::new(ReaConfig { rea_path: opts.rea_path.clone(), timeout: None });
     let rea_report = bridge.analyze(install_dir)?;
     Ok(Value::obj(vec![
+        ("schema_version", Value::num(2)),
         ("mode", Value::str("sandbox-installer")),
         ("generated_unix", Value::num(unix_secs())),
         ("installer", Value::str(opts.installer.display().to_string())),
@@ -106,6 +124,10 @@ fn run_sandbox_inner(opts: &SandboxOptions, sandbox: &Sandbox, install_dir: &Pat
             ("duration_ms", Value::num(outcome.duration_ms)),
         ])),
         ("delta", delta.to_json()),
+        // Files changed outside install\ but inside the sandbox (e.g. the
+        // redirected profile). Anything changed outside the sandbox tree
+        // itself is, by definition, not visible to this zero-driver view.
+        ("sandbox_delta", sandbox_delta.to_json()),
         ("report", rea_report.to_json()),
     ]))
 }
