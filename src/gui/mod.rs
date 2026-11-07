@@ -167,6 +167,45 @@ fn view_from(query: &[(String, String)]) -> View {
     view
 }
 
+/// The state every control carries forward (search, filters, sort, the open
+/// tree, the selection). Expansion is appended by the caller because it
+/// differs per link.
+fn state_params(view: &View) -> Vec<String> {
+    let mut params = Vec::new();
+    if !view.filter.is_empty() {
+        params.push(format!("filter={}", encode(&view.filter)));
+    }
+    if view.hide_clean {
+        params.push("hide_clean=1".into());
+    }
+    if view.min_risk > 0 {
+        params.push(format!("min_risk={}", view.min_risk));
+    }
+    if view.scope == TreemapScope::Files {
+        params.push("scope=files".into());
+    }
+    if view.sort != SortColumn::Size {
+        let key = match view.sort {
+            SortColumn::Name => "name",
+            SortColumn::Size => "size",
+            SortColumn::Risk => "risk",
+            SortColumn::Files => "files",
+            SortColumn::Format => "format",
+        };
+        params.push(format!("sort={key}"));
+    }
+    if !view.descending {
+        params.push("dir=asc".into());
+    }
+    if let Some(selected) = &view.selected {
+        params.push(format!("select={}", encode(selected)));
+    }
+    for path in &view.expanded {
+        params.push(format!("expand={}", encode(path)));
+    }
+    params
+}
+
 fn human_bytes(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
     let mut value = bytes as f64;
@@ -258,44 +297,40 @@ pub fn page_html(page: &Page, query: &str) -> String {
             label
         )
     };
+    // Clicking a row only changes that row's open/closed state; everything
+    // else (search, filters, sort, selection) is carried along.
+    let with_expansion = |path: &str, expand: bool| -> String {
+        let mut params = state_params(&view);
+        // The current expansion entry for this path is superseded.
+        params.retain(|p| p != &format!("expand={}", encode(path)));
+        params.push(format!(
+            "{}={}",
+            if expand { "expand" } else { "collapse" },
+            encode(path)
+        ));
+        format!("/view?{}", params.join("&"))
+    };
     let base = |extra: &str| -> String {
-        let mut params: Vec<String> = Vec::new();
-        params.push(format!("filter={}", encode(&view.filter)));
-        if view.hide_clean {
-            params.push("hide_clean=1".into());
-        }
-        if view.min_risk > 0 {
-            params.push(format!("min_risk={}", view.min_risk));
-        }
+        let mut params = state_params(&view);
         if !extra.is_empty() {
             params.push(extra.to_string());
-        }
-        // Keep the current expansion state: every control is a full page
-        // load, so dropping it would collapse the tree on each click.
-        for path in &view.expanded {
-            if !path.is_empty() {
-                params.push(format!("expand={}", encode(path)));
-            }
         }
         format!("/view?{}", params.join("&"))
     };
     body.push_str(&toggle(
         "hide clean",
         view.hide_clean,
-        base(&format!("hide_clean={}", if view.hide_clean { 0 } else { 1 })),
+        if view.hide_clean { base("") } else { base("hide_clean=1") },
     ));
     body.push_str(&toggle(
         "risk ≥ 12",
         view.min_risk >= 12,
-        base(&format!("min_risk={}", if view.min_risk >= 12 { 0 } else { 12 })),
+        if view.min_risk >= 12 { base("") } else { base("min_risk=12") },
     ));
     body.push_str(&toggle(
         "all files in map",
         view.scope == TreemapScope::Files,
-        base(&format!(
-            "scope={}",
-            if view.scope == TreemapScope::Files { "top" } else { "files" }
-        )),
+        if view.scope == TreemapScope::Files { base("") } else { base("scope=files") },
     ));
     body.push_str(&format!(
         "<span class=\"spacer\"></span><a class=\"toggle\" href=\"/json\">JSON</a>\
@@ -320,11 +355,12 @@ pub fn page_html(page: &Page, query: &str) -> String {
             SortColumn::Files => "files",
             SortColumn::Format => "format",
         };
+        let mut params = state_params(&view);
+        params.push(format!("sort={key}"));
+        params.push(format!("dir={}", if descending { "desc" } else { "asc" }));
         format!(
-            "<th><a href=\"{}&sort={}&dir={}\">{label}{marker}</a></th>",
-            base(&format!("select={}", encode(&selected))),
-            key,
-            if descending { "desc" } else { "asc" }
+            "<th><a href=\"/view?{}\">{label}{marker}</a></th>",
+            params.join("&")
         )
     };
     body.push_str(&sort_link("Name", SortColumn::Name));
@@ -338,11 +374,7 @@ pub fn page_html(page: &Page, query: &str) -> String {
         let is_open = view.expanded.iter().any(|e| e == &row.path);
         let indent = 10 + row.depth * 14;
         let expander = if row.is_dir {
-            let href = if is_open {
-                base(&format!("collapse={}", encode(&row.path)))
-            } else {
-                base(&format!("expand={}", encode(&row.path)))
-            };
+            let href = with_expansion(&row.path, !is_open);
             format!(
                 "<a class=\"expander\" href=\"{href}\">{}</a>",
                 if is_open { "▾" } else { "▸" }
@@ -351,11 +383,7 @@ pub fn page_html(page: &Page, query: &str) -> String {
             "<span class=\"expander\"></span>".to_string()
         };
         let href = if row.is_dir {
-            if is_open {
-                base(&format!("collapse={}", encode(&row.path)))
-            } else {
-                base(&format!("expand={}", encode(&row.path)))
-            }
+            with_expansion(&row.path, !is_open)
         } else {
             base(&format!("select={}", encode(&row.path)))
         };
@@ -386,7 +414,7 @@ pub fn page_html(page: &Page, query: &str) -> String {
             _ => 0.62,
         };
         let href = if tile.is_dir {
-            base(&format!("expand={}", encode(&tile.path)))
+            with_expansion(&tile.path, true)
         } else {
             base(&format!("select={}", encode(&tile.path)))
         };
@@ -406,9 +434,11 @@ pub fn page_html(page: &Page, query: &str) -> String {
     }
     body.push_str("</svg></section></main>");
 
-    // Details pane: the evidence for whatever is selected.
+    // Details pane: the evidence for whatever is selected. `selected` is a
+    // report path (what `details_text` looks up), so a selected *folder*
+    // simply falls back to the summary rather than printing "no record".
     body.push_str("<footer><pre>");
-    if selected.is_empty() {
+    if selected.is_empty() || rows.iter().any(|r| r.is_dir && r.path == selected) {
         body.push_str(&html_escape(&compact_summary(page)));
     } else {
         body.push_str(&html_escape(&tree::details_text(&page.tree, &selected)));

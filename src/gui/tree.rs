@@ -17,6 +17,10 @@ use crate::json::Value;
 use crate::rules::Severity;
 use std::collections::BTreeMap;
 
+/// Expansion key for the report root. An empty string would collide with the
+/// query-string default, so the root gets a name.
+pub const ROOT_KEY: &str = ".";
+
 /// Colour class of a treemap tile / grid row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Tint {
@@ -207,7 +211,9 @@ impl Default for View {
             filter: String::new(),
             min_risk: 0,
             hide_clean: false,
-            expanded: vec!["".to_string()],
+            // The root is opened by default (the grid would be a single line
+            // otherwise) but the state is explicit so a link can collapse it.
+            expanded: vec!["".to_string(), ROOT_KEY.to_string()],
             selected: None,
         }
     }
@@ -221,18 +227,24 @@ impl Default for View {
 pub fn rows(root: &DirNode, view: &View) -> Vec<Row> {
     let needle = view.filter.to_ascii_lowercase();
     let mut out = Vec::new();
-    walk(root, "", 0, &needle, view, &mut out);
+    walk(root, "", "", 0, &needle, view, &mut out);
     sort_rows(out, view.sort, view.descending)
 }
 
+/// A file survives if it clears the risk switches *and* matches the text.
+///
+/// The risk switches are deliberately not applied to files that match a text
+/// query: when someone searches for `readme.txt` they want the file they
+/// named, even if it is harmless. Hiding is a browsing aid, searching is an
+/// explicit instruction — the query wins.
 fn passes(file: &Artifact, needle: &str, view: &View) -> bool {
+    if !needle.is_empty() {
+        return file.path.to_ascii_lowercase().contains(needle);
+    }
     if view.hide_clean && file.tint == Tint::Clean {
         return false;
     }
-    if file.risk < view.min_risk {
-        return false;
-    }
-    needle.is_empty() || file.path.to_ascii_lowercase().contains(needle)
+    file.risk >= view.min_risk
 }
 
 fn subtree_has_match(node: &DirNode, needle: &str, view: &View) -> bool {
@@ -242,16 +254,39 @@ fn subtree_has_match(node: &DirNode, needle: &str, view: &View) -> bool {
     node.children.iter().any(|c| subtree_has_match(c, needle, view))
 }
 
-fn walk(node: &DirNode, path: &str, depth: usize, needle: &str, view: &View, out: &mut Vec<Row>) {
-    let self_path = if path.is_empty() {
+fn walk(
+    node: &DirNode,
+    visible_prefix: &str,
+    report_prefix: &str,
+    depth: usize,
+    needle: &str,
+    view: &View,
+    out: &mut Vec<Row>,
+) {
+    // Two different paths per node, on purpose:
+    //   * `visible_path` is what the user sees and what tree state keys on
+    //     (it includes the root name, so a tile link three levels down can
+    //     still name the node it wants expanded);
+    //   * `report_path` is what the report calls the same place, which is
+    //     what the details pane needs to find the file record again.
+    let self_path = if visible_prefix.is_empty() {
         node.name.clone()
     } else if node.name.is_empty() {
-        path.to_string()
+        visible_prefix.to_string()
     } else {
-        format!("{path}/{}", node.name)
+        format!("{visible_prefix}/{}", node.name)
     };
-    let expanded = view.expanded.iter().any(|e| e == &self_path);
-    let matching_files: Vec<&Artifact> = node.files.iter().filter(|f| passes(f, needle, view)).collect();
+    let self_report = if report_prefix.is_empty() {
+        if depth == 0 { String::new() } else { node.name.clone() }
+    } else if node.name.is_empty() {
+        report_prefix.to_string()
+    } else {
+        format!("{report_prefix}/{}", node.name)
+    };
+    let expanded = view.expanded.iter().any(|e| e == &self_path)
+        || (depth == 0 && view.expanded.iter().any(|e| e.is_empty()));
+    let matching_files: Vec<&Artifact> =
+        node.files.iter().filter(|f| passes(f, needle, view)).collect();
     let visible_children: Vec<&DirNode> = node
         .children
         .iter()
@@ -264,7 +299,7 @@ fn walk(node: &DirNode, path: &str, depth: usize, needle: &str, view: &View, out
     }
     out.push(Row {
         depth,
-        name: node.name.clone(),
+        name: if node.name.is_empty() { visible_prefix.to_string() } else { node.name.clone() },
         path: self_path.clone(),
         size: node.size,
         file_count: node.file_count,
@@ -278,13 +313,17 @@ fn walk(node: &DirNode, path: &str, depth: usize, needle: &str, view: &View, out
         return;
     }
     for child in visible_children {
-        walk(child, &self_path, depth + 1, needle, view, out);
+        walk(child, &self_path, &self_report, depth + 1, needle, view, out);
     }
     for file in matching_files {
         out.push(Row {
             depth: depth + 1,
             name: file.path.rsplit('/').next().unwrap_or(&file.path).to_string(),
-            path: file.path.clone(),
+            path: if self_report.is_empty() {
+                file.path.clone()
+            } else {
+                format!("{self_report}/{}", file.path)
+            },
             size: file.size,
             file_count: 1,
             tint: file.tint,
@@ -363,6 +402,15 @@ pub fn from_report(report: &Value) -> DirNode {
                 findings_by_file.entry(file).or_default().push((rule, title, severity));
             }
         }
+    }
+    if let Some(target) = report.get("target").and_then(Value::as_str) {
+        root.name = target
+            .replace('\\', "/")
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .unwrap_or(target)
+            .to_string();
     }
     if let Some(Value::Array(files)) = report.get("files") {
         for file in files {
@@ -478,7 +526,11 @@ pub struct Tile {
 pub fn treemap(root: &DirNode, width: f64, height: f64, view: &View, min_side: f64) -> Vec<Tile> {
     let mut out = Vec::new();
     let mut items: Vec<Item> = match view.scope {
-        TreemapScope::Files => collect_files(root, &view.filter, view),
+        TreemapScope::Files => {
+            let mut items = Vec::new();
+            collect_files(root, "", "", &view.filter, view, &mut items);
+            items
+        }
         TreemapScope::TopLevel => {
             let mut items: Vec<Item> = root
                 .children
@@ -511,6 +563,13 @@ pub fn treemap(root: &DirNode, width: f64, height: f64, view: &View, min_side: f
     if view.min_risk > 0 {
         items.retain(|item| item.risk >= view.min_risk);
     }
+    // Everything above is one level below the root, so the top-level tiles
+    // that survive the filters are laid out in bands sized to *their* total,
+    // not the whole canvas: filtering should not leave a dead half-screen.
+    let survivors: u64 = items.iter().map(|i| i.size).sum();
+    if survivors == 0 {
+        return out;
+    }
     layout_items(&mut items, 0.0, 0.0, width, height, 0, min_side, &mut out);
     out
 }
@@ -528,18 +587,28 @@ struct Item<'a> {
 fn join(parent: &str, child: &str) -> String {
     if parent.is_empty() {
         child.to_string()
+    } else if child.is_empty() {
+        parent.to_string()
     } else {
         format!("{parent}/{child}")
     }
 }
 
-fn collect_files<'a>(node: &'a DirNode, needle: &str, view: &View) -> Vec<Item<'a>> {
-    let mut out = Vec::new();
+fn collect_files<'a>(
+    node: &'a DirNode,
+    visible_prefix: &str,
+    report_prefix: &str,
+    needle: &str,
+    view: &View,
+    out: &mut Vec<Item<'a>>,
+) {
+    let visible = join(visible_prefix, &node.name);
+    let report = join(report_prefix, &node.name);
     for file in &node.files {
         if passes(file, needle, view) {
             out.push(Item {
                 label: file.path.clone(),
-                path: join(&node.name, &file.path),
+                path: join(&report, &file.path),
                 size: file.size.max(1),
                 tint: file.tint,
                 risk: file.risk,
@@ -549,9 +618,8 @@ fn collect_files<'a>(node: &'a DirNode, needle: &str, view: &View) -> Vec<Item<'
         }
     }
     for child in &node.children {
-        out.extend(collect_files(child, needle, view));
+        collect_files(child, &visible, &report, needle, view, out);
     }
-    out
 }
 
 fn layout_items<'a>(
@@ -726,7 +794,7 @@ pub fn details_text(root: &DirNode, path: &str) -> String {
 }
 
 fn find_file<'a>(node: &'a DirNode, path: &str) -> Option<&'a Artifact> {
-    let mut stack: Vec<(&DirNode, String)> = vec![(node, node.name.clone())];
+    let mut stack: Vec<(&DirNode, String)> = vec![(node, String::new())];
     while let Some((current, prefix)) = stack.pop() {
         for file in &current.files {
             let full = join(&prefix, &file.path);

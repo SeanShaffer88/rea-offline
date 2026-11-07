@@ -27,9 +27,10 @@ pub enum Import {
 /// 0x098  Optional header (PE32+, 240 bytes)
 /// 0x188  Section table (1 entry, 40 bytes)
 /// 0x1b0  (padding)
-/// 0x200  .text raw data: import descriptors, thunks, hint/name, DLL name
+/// 0x200  .text raw data (0x800 bytes): import descriptors, thunks,
+///        hint/name entries, DLL name strings
 /// ```
-/// Adding overlay bytes appends after `0x400` (end of `.text` raw data).
+/// Adding overlay bytes appends after the end of `.text` raw data.
 #[derive(Debug, Clone)]
 pub struct PeBuilder {
     machine: u16,
@@ -51,7 +52,8 @@ impl Default for PeBuilder {
             dll_characteristics: 0x4160, // high_entropy_va | dynamic_base | nx_compat | guard_cf
             timestamp: 0x6500_0000,
             entry_point: 0x1000,
-            sections: vec![(".text".to_string(), 0x200, 0x200, 0x6000_0020)],
+            // .text must be big enough to hold the import scaffolding below.
+            sections: vec![(".text".to_string(), 0x800, 0x800, 0x6000_0020)],
             imports: vec![],
             signed: false,
             overlay: vec![],
@@ -85,7 +87,10 @@ impl PeBuilder {
     }
 
     pub fn build(&self) -> Vec<u8> {
-        let mut d = vec![0u8; 0x400];
+        // 0x200 header + one full .text extent: the import descriptors,
+        // thunk tables, hint/name entries and DLL names live at fixed RVAs
+        // inside it, so shrinking this buffer breaks the builder.
+        let mut d = vec![0u8; 0x200 + 0x800];
         d[0] = b'M';
         d[1] = b'Z';
         d[0x3c..0x40].copy_from_slice(&0x80u32.to_le_bytes());
