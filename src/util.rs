@@ -28,6 +28,14 @@ pub fn path_to_slash_string(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
+/// Parse a `SYSTEMTIME`-independent decimal integer flag value with a
+/// helpful message, e.g. `--timeout abc` → "must be a number of seconds".
+pub fn parse_number<T: std::str::FromStr>(text: &str, what: &str) -> crate::Result<T> {
+    text.trim().parse::<T>().map_err(|_| {
+        crate::Error::InvalidInput(format!("{what} must be a number, got '{text}'"))
+    })
+}
+
 pub fn extension_lower(path: &Path) -> String {
     path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default()
 }

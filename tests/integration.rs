@@ -70,7 +70,6 @@ fn sandbox_delta_catches_drops_outside_install_dir() {
     let report = mode_sandbox(SandboxOptions {
         installer: script,
         installer_args: vec![],
-        output: None,
         rea_path: None,
         sandbox: config,
     }).unwrap();
@@ -99,7 +98,6 @@ fn sandbox_captures_installer_output_and_exit_code() {
     let report = mode_sandbox(SandboxOptions {
         installer: script,
         installer_args: vec![],
-        output: None,
         rea_path: None,
         sandbox: config,
     }).unwrap();
@@ -132,7 +130,6 @@ fn sandbox_runs_harmless_program_and_captures_delta() {
     let report = mode_sandbox(SandboxOptions {
         installer: script,
         installer_args: vec![],
-        output: None,
         rea_path: None,
         sandbox: config,
     }).unwrap();

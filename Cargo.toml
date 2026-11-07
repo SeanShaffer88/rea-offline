@@ -1,6 +1,6 @@
 [package]
 name = "rea-offline"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 description = "Universal offline Windows client & REA analysis engine (no Hyper-V / Sandbox required)"
 license = "MIT"
@@ -12,6 +12,10 @@ repository = "https://github.com/SeanShaffer88/rea-offline"
 [[bin]]
 name = "rea-offline"
 path = "src/main.rs"
+
+[lib]
+name = "rea_offline"
+path = "src/lib.rs"
 
 [profile.release]
 opt-level = 3

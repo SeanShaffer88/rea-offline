@@ -26,6 +26,13 @@ pub struct FileAnalysis {
     pub path: String,
     pub size: u64,
     pub sha256: String,
+    /// MD5 for cross-checking against feeds that still publish MD5 only.
+    /// Never used for integrity decisions inside this tool.
+    pub md5: String,
+    /// MD5 over the normalized import list (see [`imphash`]); `None` when
+    /// the file has no import table. Comparable across builds of a family,
+    /// which SHA-256 is not.
+    pub imphash: Option<String>,
     pub format: String,
     pub entropy: f64,
     pub pe: Option<PeInfo>,
@@ -91,15 +98,21 @@ pub struct ReaReport {
 }
 
 impl ReaReport {
+    /// All rule findings across the report (rules module owns the logic;
+    /// the bridge just knows how to ask).
+    pub fn findings(&self) -> Vec<crate::rules::Finding> {
+        crate::rules::evaluate(self)
+    }
+
+    /// 0–100 risk score. Every point is attributable to a named finding in
+    /// `rules`/`findings`, so a number in a report can always be explained.
     pub fn risk_score(&self) -> u64 {
-        let mut score = 0u64;
-        for f in &self.files {
-            for i in &f.indicators {
-                score += match i.severity.as_str() { "high" => 25, "medium" => 10, _ => 3 };
-            }
-            if f.entropy > 7.2 { score += 10; } // likely packed / encrypted
-        }
-        score.min(100)
+        crate::rules::risk(&self.findings()).0
+    }
+
+    /// `low` / `medium` / `high` / `critical`.
+    pub fn verdict(&self) -> &'static str {
+        crate::rules::risk(&self.findings()).1
     }
     pub fn to_json(&self) -> Value {
         let files = self.files.iter().map(|f| {
@@ -107,6 +120,8 @@ impl ReaReport {
                 ("path", Value::str(f.path.clone())),
                 ("size", Value::num(f.size)),
                 ("sha256", Value::str(f.sha256.clone())),
+                ("md5", Value::str(f.md5.clone())),
+                ("imphash", f.imphash.clone().map(Value::str).unwrap_or(Value::Null)),
                 ("format", Value::str(f.format.clone())),
                 ("entropy", Value::Number((f.entropy * 1000.0).round() / 1000.0)),
                 ("indicators", Value::Array(f.indicators.iter().map(|i| Value::obj(vec![
@@ -148,11 +163,16 @@ impl ReaReport {
             }
             Value::obj(pairs)
         }).collect();
+        let findings = self.findings();
+        let (score, verdict) = crate::rules::risk(&findings);
         let mut root = vec![
             ("engine", Value::str(self.engine.clone())),
             ("target", Value::str(self.target.clone())),
             ("file_count", Value::num(self.files.len() as u64)),
-            ("risk_score", Value::num(self.risk_score())),
+            ("risk_score", Value::num(score)),
+            ("verdict", Value::str(verdict)),
+            ("summary", self.summary_json()),
+            ("rules", crate::rules::to_json(&findings)),
             ("files", Value::Array(files)),
         ];
         if let Some(ext) = &self.external_json {
@@ -182,14 +202,20 @@ impl ReaReport {
                 wx_sections += pe.section_details.iter().filter(|s| s.executable && s.writable).count() as u64;
             }
         }
+        let with_imphash = self.files.iter().filter(|f| f.imphash.is_some()).count() as u64;
         Value::obj(vec![
             ("by_format", Value::Object(by_format.into_iter().map(|(k, v)| (k.to_string(), Value::num(v))).collect())),
             ("indicators", Value::obj(vec![
                 ("high", Value::num(high)), ("medium", Value::num(medium)), ("low", Value::num(low)),
             ])),
+            ("total_bytes", Value::num(self.files.iter().map(|f| f.size).sum())),
+            ("pe_files", Value::num(self.files.iter().filter(|f| f.pe.is_some()).count() as u64)),
+            ("files_with_imphash", Value::num(with_imphash)),
             ("high_entropy_files", Value::num(packed)),
             ("unsigned_pe_files", Value::num(unsigned_pe)),
             ("writable_executable_sections", Value::num(wx_sections)),
+            ("verdict", Value::str(self.verdict())),
+            ("risk_score", Value::num(self.risk_score())),
         ])
     }
 }
@@ -316,18 +342,71 @@ pub fn analyze_file(path: &Path, display: &Path) -> Result<FileAnalysis> {
     let meta = std::fs::metadata(path)?;
     let size = meta.len();
     let sha256 = hash_file(path).unwrap_or_default();
+    let md5 = crate::md5::hash_file(path).unwrap_or_default();
     let data = if size <= MAX_ANALYZE_BYTES { std::fs::read(path).unwrap_or_default() } else { Vec::new() };
     let format = detect_format(&data, path);
     let pe = if format == "PE" { parse_pe(&data) } else { None };
+    let imphash = pe.as_ref().and_then(|p| imphash(&p.imported_functions));
     Ok(FileAnalysis {
         path: crate::util::path_to_slash_string(display),
         size,
         sha256,
+        md5,
+        imphash,
         format,
         entropy: shannon_entropy(&data),
         indicators: scan_indicators(&data),
         pe,
     })
+}
+
+/// `kernel32.dll!CreateRemoteThread` → `CreateRemoteThread`. Import names
+/// are stored qualified so reports keep the owning DLL; rules usually care
+/// about the function alone.
+pub fn bare_function(import: &str) -> &str {
+    import.rsplit('!').next().unwrap_or(import)
+}
+
+/// Import hash ("imphash"): MD5 over the normalized import list, matching
+/// the convention used by pefile / VirusTotal so values are comparable with
+/// public corpora.
+///
+/// Normalization, per the convention:
+///   * `DLL.dll!Func`        → `dll.func`
+///   * `DLL.dll!#42`         → `dll.ord42`
+///   * DLL name lowercased, `.dll`/`.sys`/`.ocx` suffix dropped
+///   * ordinal entries are sorted numerically and appended as trailing
+///     `ord<N>` items (pefile's convention), after all named imports.
+pub fn imphash(imported_functions: &[String]) -> Option<String> {
+    if imported_functions.is_empty() { return None; }
+    let mut named: Vec<String> = Vec::new();
+    let mut ordinals: Vec<u32> = Vec::new();
+    for entry in imported_functions {
+        let (dll, func) = match entry.split_once('!') {
+            Some(pair) => pair,
+            None => continue,
+        };
+        let mut stem = dll.to_ascii_lowercase();
+        for suffix in [".dll", ".sys", ".ocx", ".drv", ".cpl"] {
+            if let Some(stripped) = stem.strip_suffix(suffix) {
+                stem = stripped.to_string();
+                break;
+            }
+        }
+        if let Some(ord) = func.strip_prefix('#') {
+            ordinals.push(ord.trim().parse::<u32>().unwrap_or(0));
+        } else {
+            named.push(format!("{stem}.{}", func.to_ascii_lowercase()));
+        }
+    }
+    // pefile sorts the ordinal list numerically and appends it after the
+    // named imports; mirror that so the digest is comparable.
+    ordinals.sort_unstable();
+    for ord in ordinals {
+        named.push(format!("ord{ord}"));
+    }
+    if named.is_empty() { return None; }
+    Some(crate::md5::hash_bytes(named.join(",").as_bytes()))
 }
 
 fn detect_format(data: &[u8], path: &Path) -> String {
@@ -418,6 +497,10 @@ fn u64le(d: &[u8], off: usize) -> Option<u64> {
 }
 
 struct Section { name: String, virtual_address: u32, virtual_size: u32, raw_ptr: u32, raw_size: u32, characteristics: u32 }
+
+/// Parse a PE image already in memory (used by tests, fixtures and callers
+/// that hold bytes rather than a path).
+pub fn parse_pe_bytes(data: &[u8]) -> Option<PeInfo> { parse_pe(data) }
 
 fn parse_pe(data: &[u8]) -> Option<PeInfo> {
     if !data.starts_with(b"MZ") { return None; }

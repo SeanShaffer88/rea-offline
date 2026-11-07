@@ -1,0 +1,225 @@
+//! CLI-level tests: run the built binary the way an operator does.
+//!
+//! These are the tests that would have caught an argument renamed in the
+//! library but not in the CLI, a format flag that prints nothing, or a
+//! `--fail-on` gate that never fires.
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+fn bin() -> PathBuf {
+    // Cargo sets CARGO_BIN_EXE_<name> for integration tests.
+    PathBuf::from(env!("CARGO_BIN_EXE_rea-offline"))
+}
+
+fn workdir(tag: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("rea_offline_cli_{tag}_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+struct Run {
+    code: i32,
+    stdout: String,
+    stderr: String,
+}
+
+fn run(dir: &Path, args: &[&str]) -> Run {
+    let output = Command::new(bin())
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .expect("failed to run rea-offline");
+    Run {
+        code: output.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+    }
+}
+
+#[test]
+fn help_and_version_do_not_need_arguments() {
+    let dir = workdir("help");
+    let help = run(&dir, &["--help"]);
+    assert_eq!(help.code, 0);
+    assert!(help.stdout.contains("USAGE:"));
+    assert!(help.stdout.contains("--fail-on"));
+
+    let version = run(&dir, &["--version"]);
+    assert_eq!(version.code, 0);
+    assert!(version.stdout.contains(env!("CARGO_PKG_VERSION")));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn scan_sample_reports_hashes_and_verdict() {
+    let dir = workdir("scan");
+    let sample = dir.join("sample.exe");
+    assert_eq!(run(&dir, &["sample", sample.to_str().unwrap()]).code, 0);
+
+    let scan = run(&dir, &["scan", "sample.exe"]);
+    assert_eq!(scan.code, 0, "stderr: {}", scan.stderr);
+    let json = rea_offline::json::parse(&scan.stdout).expect("stdout must be JSON");
+    assert_eq!(json.get("mode").and_then(|m| m.as_str()), Some("local-scan"));
+    assert_eq!(
+        json.get("schema_version").and_then(|v| match v {
+            rea_offline::json::Value::Number(n) => Some(*n as u64),
+            _ => None,
+        }),
+        Some(rea_offline::SCHEMA_VERSION)
+    );
+    let report = json.get("report").expect("report block");
+    let files = report.get("files").expect("files");
+    let text = format!("{files:?}");
+    assert!(text.contains("sha256"), "hashes present");
+    assert!(text.contains("imphash"), "imphash present for a PE sample");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn formats_render_the_same_decision() {
+    let dir = workdir("formats");
+    let sample = dir.join("sample.exe");
+    run(&dir, &["sample", sample.to_str().unwrap()]);
+
+    let json = run(&dir, &["scan", "sample.exe", "--format", "json"]);
+    let text = run(&dir, &["scan", "sample.exe", "--format", "text"]);
+    let md = run(&dir, &["scan", "sample.exe", "--format", "markdown"]);
+    assert_eq!(text.code, 0, "{}", text.stderr);
+    assert!(text.stdout.contains("risk score"), "{}", text.stdout);
+    assert!(md.stdout.starts_with("# rea-offline inspection report"), "{}", md.stdout);
+
+    // Every format must agree on the verdict.
+    let parsed = rea_offline::json::parse(&json.stdout).unwrap();
+    let verdict = parsed.get("verdict").and_then(|v| v.as_str()).unwrap().to_uppercase();
+    assert!(text.stdout.contains(&verdict), "text output lost the verdict");
+    assert!(md.stdout.to_lowercase().contains(&verdict.to_lowercase()));
+
+    assert!(run(&dir, &["scan", "sample.exe", "--format", "yaml"]).code != 0);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn output_flag_writes_file_and_keeps_stdout_clean() {
+    let dir = workdir("output");
+    let sample = dir.join("sample.exe");
+    run(&dir, &["sample", sample.to_str().unwrap()]);
+    let out = dir.join("report.json");
+    let result = run(
+        &dir,
+        &["scan", "sample.exe", "--output", "report.json", "--format", "markdown"],
+    );
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert!(result.stdout.is_empty(), "stdout should be empty: {}", result.stdout);
+    let written = std::fs::read_to_string(&out).unwrap();
+    assert!(written.starts_with("# rea-offline inspection report"));
+
+    let quiet = run(&dir, &["scan", "sample.exe", "--output", "r2.json", "--quiet"]);
+    assert!(quiet.stderr.is_empty(), "--quiet must silence the notice: {}", quiet.stderr);
+    assert!(dir.join("r2.json").exists());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn fail_on_gates_the_exit_code() {
+    let dir = workdir("gate");
+    let sample = dir.join("sample.exe");
+    run(&dir, &["sample", sample.to_str().unwrap()]);
+
+    // The demo sample has network capability strings but no injection set,
+    // so its verdict is at most "medium".
+    let strict = run(&dir, &["scan", "sample.exe", "--fail-on", "critical", "--quiet"]);
+    assert_eq!(strict.code, 0, "critic threshold must not fire: {}", strict.stderr);
+    let loose = run(&dir, &["scan", "sample.exe", "--fail-on", "low", "--quiet"]);
+    assert_eq!(loose.code, 2, "low threshold must fire: {}", loose.stderr);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn sample_kinds_and_errors() {
+    let dir = workdir("sample");
+    assert_eq!(run(&dir, &["sample", "s.ps1", "--kind", "script"]).code, 0);
+    let script = run(&dir, &["scan", "s.ps1", "--format", "text"]);
+    assert_eq!(script.code, 0);
+    assert!(script.stdout.contains("capability strings"), "{}", script.stdout);
+    assert_ne!(run(&dir, &["sample", "x.exe", "--kind", "elf"]).code, 0);
+
+    let missing = run(&dir, &["scan", "definitely-not-here.exe"]);
+    assert_ne!(missing.code, 0);
+    assert!(missing.stderr.contains("not found"), "{}", missing.stderr);
+
+    let unknown = run(&dir, &["frobnicate"]);
+    assert_ne!(unknown.code, 0);
+    assert!(unknown.stderr.contains("unknown command"));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn doctor_reports_a_working_build() {
+    let dir = workdir("doctor");
+    let doctor = run(&dir, &["doctor"]);
+    assert_eq!(doctor.code, 0, "{}", doctor.stderr);
+    let json = rea_offline::json::parse(&doctor.stdout).unwrap();
+    assert_eq!(json.get("mode").and_then(|v| v.as_str()), Some("doctor"));
+    let hashes = json.get("hashes").expect("hash self-test block");
+    assert_eq!(
+        hashes.get("sha256_selftest"),
+        Some(&rea_offline::json::Value::Bool(true))
+    );
+    assert_eq!(
+        hashes.get("md5_selftest"),
+        Some(&rea_offline::json::Value::Bool(true))
+    );
+    assert_eq!(
+        json.get("sandbox_rehearsal_ok"),
+        Some(&rea_offline::json::Value::Bool(true))
+    );
+
+    let md = run(&dir, &["doctor", "--format", "markdown"]);
+    assert!(md.stdout.starts_with("# rea-offline doctor"), "{}", md.stdout);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn snapshot_and_diff_round_trip() {
+    let dir = workdir("snap");
+    let target = dir.join("tree");
+    std::fs::create_dir_all(&target).unwrap();
+    std::fs::write(target.join("a.txt"), b"one").unwrap();
+    assert_eq!(
+        run(&dir, &["snapshot", "tree", "--output", "before.json", "--quiet"]).code,
+        0
+    );
+    std::fs::write(target.join("b.txt"), b"two").unwrap();
+    assert_eq!(
+        run(&dir, &["snapshot", "tree", "--output", "after.json", "--quiet"]).code,
+        0
+    );
+    let diff = run(&dir, &["diff", "before.json", "after.json"]);
+    assert_eq!(diff.code, 0, "{}", diff.stderr);
+    let json = rea_offline::json::parse(&diff.stdout).unwrap();
+    let added = format!("{:?}", json.get("added"));
+    assert!(added.contains("b.txt"), "{added}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn purge_refuses_arbitrary_directories() {
+    let dir = workdir("purge");
+    let victim = dir.join("important");
+    std::fs::create_dir_all(&victim).unwrap();
+    let refused = run(&dir, &["purge", "important"]);
+    assert_ne!(refused.code, 0);
+    assert!(refused.stderr.contains("refused"), "{}", refused.stderr);
+    assert!(victim.exists(), "guard must not delete anything");
+
+    let sandbox = dir.join(format!("rea_sandbox_{}", std::process::id()));
+    std::fs::create_dir_all(sandbox.join("install")).unwrap();
+    let purged = run(&dir, &["purge", sandbox.to_str().unwrap()]);
+    assert_eq!(purged.code, 0, "{}", purged.stderr);
+    let json = rea_offline::json::parse(&purged.stdout).unwrap();
+    assert_eq!(json.get("verified_zero_residue"), Some(&rea_offline::json::Value::Bool(true)));
+    assert!(!sandbox.exists());
+    std::fs::remove_dir_all(&dir).unwrap();
+}

