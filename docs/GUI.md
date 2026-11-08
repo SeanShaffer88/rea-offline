@@ -4,6 +4,7 @@
 rea-offline gui "C:\Program Files\SomeApp"
 rea-offline gui Downloads --port 9100
 rea-offline gui Downloads --output window.html --no-open   # shareable snapshot
+rea-offline gui report.json --from-report                 # validated archived evidence
 ```
 
 The GUI is a **single window with a treemap on the right and a size grid on
@@ -78,6 +79,9 @@ must not leave an empty folder behind; risk colouring must match the rules.
 * **Verdict chip** (top right) — the same 0–100 score and band the JSON
   report carries, so the window, the CLI text output and the Markdown report
   can never disagree.
+* **Coverage chip** — when `scan_issues` is nonempty, an amber incomplete-coverage
+  chip remains visible regardless of the selected file; the summary lists the
+  affected paths. Operational limitations never masquerade as risk findings.
 * **Details pane** — for files, the hashes and findings. For folders, the
   report summary. Hashes are the part people copy into other tools, so they
   are printed in full, never truncated.

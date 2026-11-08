@@ -15,6 +15,8 @@ no drivers, no network.
 
 USAGE:
   rea-offline scan     <path> [--output report.json] [--rea <path>]
+  rea-offline report   <report.json> [--format text|markdown] [--fail-on <level>]
+                       (render/gate an archived scan or sandbox report; no rescan)
   rea-offline sandbox  <installer.exe|.msi> [options] [-- <installer args>...]
   rea-offline gui      <path> [--port 8787] [--no-open] [--output page.html]
                        [--from-report]  (open an archived report.json instead)
@@ -24,11 +26,11 @@ USAGE:
   rea-offline doctor   [--rea <path>]
   rea-offline sample   <out.exe> [--kind pe|script]
 
-OUTPUT (any command that produces a report):
-  --output <file>       Write the report here instead of stdout
-  --format <fmt>        json (default) | text | markdown
+OUTPUT:
+  --output <file>       Write output here instead of stdout (all commands except sample)
+  --format <fmt>        json (default) | text | markdown (scan/sandbox/report/doctor)
   --fail-on <level>     Exit 2 when the verdict reaches info|low|medium|high|critical
-                        (use in CI to gate on a risk level)
+                        (scan/sandbox/report; use in CI to gate on a risk level)
   --quiet               Suppress the "report written to" notice
 
 SANDBOX OPTIONS:
@@ -49,6 +51,7 @@ GUI OPTIONS:
 EXAMPLES:
   rea-offline scan "C:\Program Files\SomeApp" --output report.json
   rea-offline scan sample.exe --format text
+  rea-offline report report.json --format markdown --fail-on high
   rea-offline gui "C:\Program Files\SomeApp"
   rea-offline gui Downloads --output window.html --no-open
   rea-offline gui report.json --from-report
@@ -116,45 +119,108 @@ struct Parsed {
     rest: Vec<String>,
 }
 
-const VALUE_FLAGS: &[&str] = &[
-    "output",
-    "rea",
-    "timeout",
-    "memory-mb",
-    "max-processes",
-    "sandbox-root",
-    "format",
-    "fail-on",
-    "kind",
-    "port",
-];
+struct CommandSpec {
+    value_flags: &'static [&'static str],
+    bool_flags: &'static [&'static str],
+    positional: usize,
+    installer_args: bool,
+}
 
-fn parse(args: &[String]) -> Parsed {
+/// Options are command-specific: accepting (and then ignoring) a typo or an
+/// option belonging to another command makes a failed inspection look successful.
+fn command_spec(command: &str) -> Option<CommandSpec> {
+    let spec = |value_flags, bool_flags, positional, installer_args| Some(CommandSpec {
+        value_flags, bool_flags, positional, installer_args,
+    });
+    match command {
+        "scan" => spec(&["output", "rea", "format", "fail-on"], &["quiet"], 1, false),
+        "sandbox" => spec(
+            &["output", "rea", "format", "fail-on", "timeout", "memory-mb", "max-processes", "sandbox-root"],
+            &["quiet", "keep"], 1, true,
+        ),
+        "report" => spec(&["output", "format", "fail-on"], &["quiet"], 1, false),
+        "gui" => spec(&["output", "rea", "port"], &["quiet", "no-open", "from-report"], 1, false),
+        "snapshot" => spec(&["output"], &["quiet"], 1, false),
+        "diff" => spec(&["output"], &["quiet"], 2, false),
+        "purge" => spec(&["output"], &["quiet", "force"], 1, false),
+        "doctor" => spec(&["output", "rea", "format"], &["quiet"], 0, false),
+        "sample" => spec(&["kind"], &[], 1, false),
+        _ => None,
+    }
+}
+
+fn parse(command: &str, args: &[String]) -> rea_offline::Result<Parsed> {
+    let spec = command_spec(command).ok_or_else(|| rea_offline::Error::InvalidInput(format!(
+        "unknown command '{command}' (see --help)"
+    )))?;
     let mut p = Parsed { positional: Vec::new(), flags: Vec::new(), rest: Vec::new() };
     let mut i = 0;
     while i < args.len() {
         let a = &args[i];
         if a == "--" {
+            if !spec.installer_args {
+                return Err(rea_offline::Error::InvalidInput(
+                    "'--' is only supported by sandbox (see --help)".into(),
+                ));
+            }
             p.rest.extend(args[i + 1..].iter().cloned());
             break;
         } else if let Some(flag) = a.strip_prefix("--") {
-            // `--flag=value` and `--flag value` are both accepted.
-            if let Some((key, value)) = flag.split_once('=') {
-                p.flags.push((key.to_string(), Some(value.to_string())));
-                i += 1;
-            } else if VALUE_FLAGS.contains(&flag) && i + 1 < args.len() {
-                p.flags.push((flag.to_string(), Some(args[i + 1].clone())));
-                i += 2;
+            // `--flag=value` and `--flag value` are both accepted. A value
+            // starting with -- is a missing value, not a path/format/number.
+            let (key, inline) = match flag.split_once('=') {
+                Some((key, value)) => (key, Some(value)),
+                None => (flag, None),
+            };
+            let value = if spec.bool_flags.contains(&key) {
+                if inline.is_some() {
+                    return Err(rea_offline::Error::InvalidInput(format!(
+                        "--{key} is a switch and does not take a value"
+                    )));
+                }
+                None
+            } else if spec.value_flags.contains(&key) {
+                let value = match inline {
+                    Some(value) => value.to_string(),
+                    None => {
+                        let next = args.get(i + 1).filter(|v| !v.starts_with("--"));
+                        let value = next.ok_or_else(|| rea_offline::Error::InvalidInput(format!(
+                            "missing value for --{key} (use --{key}=<value> or --{key} <value>)"
+                        )))?;
+                        i += 1;
+                        value.clone()
+                    }
+                };
+                if value.is_empty() {
+                    return Err(rea_offline::Error::InvalidInput(format!(
+                        "missing value for --{key}"
+                    )));
+                }
+                Some(value)
             } else {
-                p.flags.push((flag.to_string(), None));
-                i += 1;
+                return Err(rea_offline::Error::InvalidInput(format!(
+                    "unknown option '--{key}' for {command} (see --help)"
+                )));
+            };
+            if p.flags.iter().any(|(k, _)| k == key) {
+                return Err(rea_offline::Error::InvalidInput(format!(
+                    "--{key} was specified more than once"
+                )));
             }
+            p.flags.push((key.to_string(), value));
+            i += 1;
         } else {
             p.positional.push(a.clone());
             i += 1;
         }
     }
-    p
+    if p.positional.len() != spec.positional {
+        return Err(rea_offline::Error::InvalidInput(format!(
+            "{command} expects {} positional argument(s), got {} (see --help)",
+            spec.positional, p.positional.len()
+        )));
+    }
+    Ok(p)
 }
 
 impl Parsed {
@@ -203,8 +269,12 @@ fn gate(json: &Value, p: &Parsed) -> rea_offline::Result<u8> {
                 .and_then(|r| r.get("verdict"))
                 .and_then(Value::as_str)
         })
-        .unwrap_or("info");
-    let reached = severity_parse(verdict).unwrap_or(Severity::Info);
+        .ok_or_else(|| rea_offline::Error::InvalidInput(
+            "--fail-on requires a report with a verdict".into()
+        ))?;
+    let reached = severity_parse(verdict).map_err(|_| rea_offline::Error::InvalidInput(format!(
+        "report has an invalid verdict '{verdict}'"
+    )))?;
     if rank(reached) >= rank(threshold) {
         if !p.has("quiet") {
             eprintln!("[rea-offline] --fail-on {level}: verdict is {verdict} — exiting 2");
@@ -228,7 +298,7 @@ fn run(args: &[String]) -> rea_offline::Result<u8> {
         println!("{HELP}");
         return Ok(0);
     }
-    let p = parse(&args[1..]);
+    let p = parse(cmd, &args[1..])?;
     let format = p.format()?;
     let need = |idx: usize, what: &str| -> rea_offline::Result<PathBuf> {
         p.positional.get(idx).map(PathBuf::from).ok_or_else(|| {
@@ -244,6 +314,13 @@ fn run(args: &[String]) -> rea_offline::Result<u8> {
             emit(&json, &p, format)?;
             gate(&json, &p)
         }
+        "report" => {
+            // Archived evidence is rendered as-is: no target access, no REA
+            // subprocess, and no new timestamp. The same gate works offline.
+            let json = app::mode_report(&need(0, "report.json")?)?;
+            emit(&json, &p, format)?;
+            gate(&json, &p)
+        }
         "sandbox" => {
             let mut config = SandboxConfig::default();
             if let Some(v) = p.get("timeout") {
@@ -251,6 +328,9 @@ fn run(args: &[String]) -> rea_offline::Result<u8> {
             }
             if let Some(v) = p.get("memory-mb") {
                 config.memory_limit_mb = rea_offline::util::parse_number(v, "--memory-mb")?;
+                if config.memory_limit_mb == 0 {
+                    return Err(rea_offline::Error::InvalidInput("--memory-mb must be greater than zero".into()));
+                }
             }
             if let Some(v) = p.get("max-processes") {
                 config.max_processes = rea_offline::util::parse_number(v, "--max-processes")?;
@@ -306,6 +386,9 @@ fn run(args: &[String]) -> rea_offline::Result<u8> {
                 Some(value) => rea_offline::util::parse_number(value, "--port")?,
                 None => 8787u16,
             };
+            if port == 0 {
+                return Err(rea_offline::Error::InvalidInput("--port must be between 1 and 65535".into()));
+            }
             if !p.has("no-open") {
                 open_browser(&format!("http://127.0.0.1:{port}/"));
             }
@@ -355,7 +438,7 @@ mod tests {
 
     #[test]
     fn parses_positional_and_flags() {
-        let p = parse(&args(&["a.exe", "--output", "r.json", "--format=text", "--quiet"]));
+        let p = parse("scan", &args(&["a.exe", "--output", "r.json", "--format=text", "--quiet"])).unwrap();
         assert_eq!(p.positional, vec!["a.exe".to_string()]);
         assert_eq!(p.get("output"), Some("r.json"));
         assert_eq!(p.get("format"), Some("text"));
@@ -365,7 +448,7 @@ mod tests {
 
     #[test]
     fn double_dash_passes_installer_args_untouched() {
-        let p = parse(&args(&["setup.msi", "--timeout", "60", "--", "/quiet", "/norestart"]));
+        let p = parse("sandbox", &args(&["setup.msi", "--timeout", "60", "--", "/quiet", "/norestart"])).unwrap();
         assert_eq!(p.get("timeout"), Some("60"));
         assert_eq!(p.rest, vec!["/quiet".to_string(), "/norestart".to_string()]);
         assert!(p.positional.contains(&"setup.msi".to_string()));
@@ -382,18 +465,58 @@ mod tests {
     #[test]
     fn gate_compares_verdict_against_threshold() {
         let report = rea_offline::json::parse(r#"{"verdict":"high"}"#).unwrap();
-        let pass = parse(&args(&["--fail-on", "critical"]));
-        let fail = parse(&args(&["--fail-on", "medium"]));
+        let pass = parse("scan", &args(&["a.exe", "--fail-on", "critical"])).unwrap();
+        let fail = parse("scan", &args(&["a.exe", "--fail-on", "medium"])).unwrap();
         assert_eq!(gate(&report, &pass).unwrap(), 0);
         assert_eq!(gate(&report, &fail).unwrap(), 2);
         // No --fail-on → never gates.
-        assert_eq!(gate(&report, &parse(&args(&[]))).unwrap(), 0);
+        assert_eq!(gate(&report, &parse("scan", &args(&["a.exe"])).unwrap()).unwrap(), 0);
     }
 
     #[test]
     fn gate_reads_nested_report_verdict() {
         let report = rea_offline::json::parse(r#"{"report":{"verdict":"critical"}}"#).unwrap();
-        let p = parse(&args(&["--fail-on", "high"]));
+        let p = parse("scan", &args(&["a.exe", "--fail-on", "high"])).unwrap();
         assert_eq!(gate(&report, &p).unwrap(), 2);
     }
+
+    #[test]
+    fn parser_rejects_typos_missing_values_and_ambiguous_repetition() {
+        for list in [
+            vec!["a.exe", "--outpt", "r.json"],
+            vec!["a.exe", "--output"],
+            vec!["a.exe", "--output", "--quiet"],
+            vec!["a.exe", "--output="],
+            vec!["a.exe", "--quiet=false"],
+            vec!["a.exe", "--output", "one.json", "--output", "two.json"],
+            vec!["a.exe", "--port", "9000"],
+            vec!["a.exe", "extra.exe"],
+            vec!["a.exe", "--", "/quiet"],
+        ] {
+            assert!(parse("scan", &args(&list)).is_err(), "accepted {list:?}");
+        }
+        assert!(parse("doctor", &args(&["unexpected"])).is_err());
+        assert!(parse("diff", &args(&["only-one.json"])).is_err());
+        assert!(parse("frobnicate", &args(&[])).is_err());
+    }
+
+    #[test]
+    fn parser_keeps_installer_arguments_after_double_dash_untouched() {
+        let p = parse("sandbox", &args(&[
+            "setup.exe", "--timeout", "60", "--", "--output", "installer.log", "--quiet", "--", "x"
+        ])).unwrap();
+        assert_eq!(p.get("timeout"), Some("60"));
+        assert_eq!(p.rest, vec!["--output", "installer.log", "--quiet", "--", "x"]);
+        assert_eq!(p.positional, vec!["setup.exe"]);
+    }
+
+    #[test]
+    fn gate_refuses_missing_or_invalid_verdicts() {
+        let p = parse("scan", &args(&["a.exe", "--fail-on", "low"])).unwrap();
+        let missing = rea_offline::json::parse("{}").unwrap();
+        let invalid = rea_offline::json::parse(r#"{"verdict":"safe"}"#).unwrap();
+        assert!(gate(&missing, &p).is_err());
+        assert!(gate(&invalid, &p).is_err());
+    }
+
 }

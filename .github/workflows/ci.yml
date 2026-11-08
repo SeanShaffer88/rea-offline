@@ -95,6 +95,22 @@ jobs:
             echo "expected --fail-on low to exit 2" >&2; exit 1
           fi
 
+          # 3b. Archived evidence renders and gates without the original target.
+          "$EXE" report report.json --format markdown --output archived.md --quiet
+          grep -q '^# rea-offline inspection report' archived.md
+          "$EXE" report report.json --fail-on critical --quiet
+          if "$EXE" report report.json --fail-on low --quiet; then
+            echo "expected archived --fail-on low to exit 2" >&2; exit 1
+          fi
+          printf '{"verdict":"low"}' > invalid-report.json
+          if "$EXE" report invalid-report.json --fail-on low --quiet; then
+            echo "invalid archive must not pass a gate" >&2; exit 1
+          fi
+          if "$EXE" scan sample.exe --outpt typo.json --quiet; then
+            echo "mistyped option must be rejected" >&2; exit 1
+          fi
+          test ! -e typo.json
+
           # 4. Report on real source files (mixed, non-binary content).
           "$EXE" scan src --output repo.json --quiet
           test -s repo.json

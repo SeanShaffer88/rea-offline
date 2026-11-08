@@ -2,3 +2,20 @@
 *.pdb
 rea-report-*.json
 snapshot-*.json
+
+# Local CI smoke-test outputs
+/archived.md
+/invalid-report.json
+/report.json
+/report.text
+/report.markdown
+/doctor.json
+/repo.json
+/repo-verdict.json
+/window.html
+/before.json
+/after.json
+/delta.json
+/sample.exe
+/tree/
+/not_a_sandbox/

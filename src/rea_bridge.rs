@@ -89,12 +89,38 @@ pub struct Indicator {
     pub severity: String,
 }
 
+/// A coverage limitation, not a risk finding. Kept separate so an I/O
+/// failure can never be mistaken for evidence that a file is malicious —
+/// or silently disappear and make an incomplete scan look clean.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScanIssue {
+    pub path: String,
+    pub stage: String,
+    pub message: String,
+}
+
+impl ScanIssue {
+    pub fn new(path: impl Into<String>, stage: impl Into<String>, message: impl Into<String>) -> Self {
+        Self { path: path.into(), stage: stage.into(), message: message.into() }
+    }
+    pub fn to_json(&self) -> Value {
+        Value::obj(vec![
+            ("path", Value::str(self.path.clone())),
+            ("stage", Value::str(self.stage.clone())),
+            ("message", Value::str(self.message.clone())),
+        ])
+    }
+}
+
 pub struct ReaReport {
     pub engine: String,
     pub target: String,
     pub files: Vec<FileAnalysis>,
     /// Raw REA JSON when the external engine ran.
     pub external_json: Option<Value>,
+    /// Files/directories that could not be fully inspected. Additive schema-3
+    /// field; older consumers can ignore it, new renderers surface it.
+    pub scan_issues: Vec<ScanIssue>,
 }
 
 impl ReaReport {
@@ -172,6 +198,7 @@ impl ReaReport {
             ("risk_score", Value::num(score)),
             ("verdict", Value::str(verdict)),
             ("summary", self.summary_json()),
+            ("scan_issues", Value::Array(self.scan_issues.iter().map(ScanIssue::to_json).collect())),
             ("rules", crate::rules::to_json(&findings)),
             ("files", Value::Array(files)),
         ];
@@ -216,6 +243,8 @@ impl ReaReport {
             ("writable_executable_sections", Value::num(wx_sections)),
             ("verdict", Value::str(self.verdict())),
             ("risk_score", Value::num(self.risk_score())),
+            ("scan_issue_count", Value::num(self.scan_issues.len() as u64)),
+            ("complete", Value::Bool(self.scan_issues.is_empty())),
         ])
     }
 }
@@ -254,12 +283,21 @@ impl ReaBridge {
     pub fn analyze(&self, target: &Path) -> Result<ReaReport> {
         if !target.exists() { return Err(Error::NotFound(target.to_path_buf())); }
         if let Some(rea) = self.resolve_rea() {
-            if let Ok(json) = self.run_external(&rea, target) {
-                // External findings complement, never replace, native ones.
-                let mut report = self.analyze_native(target)?;
-                report.engine = format!("rea-external ({}) + native", rea.display());
-                report.external_json = Some(json);
-                return Ok(report);
+            match self.run_external(&rea, target) {
+                Ok(json) => {
+                    // External findings complement, never replace, native ones.
+                    let mut report = self.analyze_native(target)?;
+                    report.engine = format!("rea-external ({}) + native", rea.display());
+                    report.external_json = Some(json);
+                    return Ok(report);
+                }
+                Err(e) => {
+                    let mut report = self.analyze_native(target)?;
+                    report.scan_issues.push(ScanIssue::new(
+                        crate::util::path_to_slash_string(target), "rea-external", e.to_string(),
+                    ));
+                    return Ok(report);
+                }
             }
         }
         self.analyze_native(target)
@@ -287,25 +325,72 @@ impl ReaBridge {
 
     pub fn analyze_native(&self, target: &Path) -> Result<ReaReport> {
         let mut files = Vec::new();
-        if target.is_file() {
-            files.push(analyze_file(target, target)?);
-        } else {
-            let snapshot = crate::snapshot::Snapshot::capture(target)?;
-            for entry in snapshot.entries.values() {
-                if entry.kind == crate::snapshot::EntryKind::File {
-                    let full = target.join(&entry.path);
-                    if let Ok(a) = analyze_file(&full, &PathBuf::from(&entry.path)) {
-                        files.push(a);
+        let mut scan_issues = Vec::new();
+        let meta = std::fs::symlink_metadata(target)?;
+        if meta.is_file() {
+            let file = analyze_file(target, target)?;
+            if file.size > MAX_ANALYZE_BYTES {
+                scan_issues.push(content_limit_issue(&file.path, file.size));
+            }
+            files.push(file);
+        } else if meta.is_dir() {
+            // Walk without following links, including file links. Snapshot
+            // manifests intentionally record links as entries; static analysis
+            // must not read a link target outside the selected tree.
+            let mut stack = vec![(target.to_path_buf(), String::new())];
+            while let Some((dir, prefix)) = stack.pop() {
+                let read = match std::fs::read_dir(&dir) {
+                    Ok(read) => read,
+                    Err(e) => {
+                        scan_issues.push(ScanIssue::new(display_path(&prefix, &dir, target), "directory", e.to_string()));
+                        continue;
+                    }
+                };
+                let mut children = Vec::new();
+                for entry in read {
+                    match entry {
+                        Ok(entry) => children.push(entry.path()),
+                        Err(e) => scan_issues.push(ScanIssue::new(
+                            display_path(&prefix, &dir, target), "directory-entry", e.to_string(),
+                        )),
                     }
                 }
+                children.sort();
+                for path in children {
+                    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    let rel = if prefix.is_empty() { name } else { format!("{prefix}/{name}") };
+                    let meta = match std::fs::symlink_metadata(&path) {
+                        Ok(meta) => meta,
+                        Err(e) => { scan_issues.push(ScanIssue::new(rel, "metadata", e.to_string())); continue; }
+                    };
+                    if meta.is_dir() {
+                        stack.push((path, rel));
+                    } else if meta.is_file() {
+                        match analyze_file(&path, Path::new(&rel)) {
+                            Ok(file) => {
+                                if file.size > MAX_ANALYZE_BYTES {
+                                    scan_issues.push(content_limit_issue(&rel, file.size));
+                                }
+                                files.push(file);
+                            }
+                            Err(e) => scan_issues.push(ScanIssue::new(rel, "analysis", e.to_string())),
+                        }
+                    }
+                    // Symlinks and special files are not regular install-tree
+                    // content. Never follow them to a target outside the tree.
+                }
             }
+        } else {
+            return Err(Error::InvalidInput(format!("not a regular file or directory: {}", target.display())));
         }
         files.sort_by(|a, b| a.path.cmp(&b.path));
+        scan_issues.sort_by(|a, b| a.path.cmp(&b.path).then(a.stage.cmp(&b.stage)));
         Ok(ReaReport {
             engine: "rea-offline-native".to_string(),
             target: crate::util::path_to_slash_string(target),
             files,
             external_json: None,
+            scan_issues,
         })
     }
 }
@@ -338,12 +423,28 @@ fn run_with_timeout(mut cmd: std::process::Command, timeout: Duration) -> Result
 
 const MAX_ANALYZE_BYTES: u64 = 32 * 1024 * 1024;
 
+fn content_limit_issue(path: &str, size: u64) -> ScanIssue {
+    ScanIssue::new(
+        path, "content",
+        format!("file is {size} bytes, above the {} MiB content-analysis limit; hashes cover the full file, but content heuristics do not", MAX_ANALYZE_BYTES / (1024 * 1024)),
+    )
+}
+
+fn display_path(prefix: &str, path: &Path, root: &Path) -> String {
+    if prefix.is_empty() {
+        let rel = crate::util::path_to_slash_string(path.strip_prefix(root).unwrap_or(path));
+        if rel.is_empty() { ".".to_string() } else { rel }
+    } else {
+        prefix.to_string()
+    }
+}
+
 pub fn analyze_file(path: &Path, display: &Path) -> Result<FileAnalysis> {
     let meta = std::fs::metadata(path)?;
     let size = meta.len();
-    let sha256 = hash_file(path).unwrap_or_default();
-    let md5 = crate::md5::hash_file(path).unwrap_or_default();
-    let data = if size <= MAX_ANALYZE_BYTES { std::fs::read(path).unwrap_or_default() } else { Vec::new() };
+    let sha256 = hash_file(path)?;
+    let md5 = crate::md5::hash_file(path)?;
+    let data = if size <= MAX_ANALYZE_BYTES { std::fs::read(path)? } else { Vec::new() };
     let format = detect_format(&data, path);
     let pe = if format == "PE" { parse_pe(&data) } else { None };
     let imphash = pe.as_ref().and_then(|p| imphash(&p.imported_functions));
@@ -497,7 +598,6 @@ fn u64le(d: &[u8], off: usize) -> Option<u64> {
 }
 
 struct Section {
-    name: String,
     virtual_address: u32,
     virtual_size: u32,
     raw_ptr: u32,
@@ -577,7 +677,6 @@ fn parse_pe(data: &[u8]) -> Option<PeInfo> {
         });
         sections.push(name.clone());
         parsed_sections.push(Section {
-            name,
             virtual_size: u32le(data, off + 8).unwrap_or(0),
             virtual_address: u32le(data, off + 12).unwrap_or(0),
             raw_size,

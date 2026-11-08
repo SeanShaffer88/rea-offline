@@ -16,6 +16,7 @@ pub mod json;
 pub mod md5;
 pub mod mdtable;
 pub mod render;
+pub mod report;
 pub mod rea_bridge;
 pub mod rules;
 pub mod registry_sandbox;

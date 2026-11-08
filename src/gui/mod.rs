@@ -211,6 +211,10 @@ fn state_params(view: &View) -> Vec<String> {
     params
 }
 
+fn array(value: Option<&Value>) -> &[Value] {
+    match value { Some(Value::Array(items)) => items, _ => &[] }
+}
+
 fn human_bytes(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
     let mut value = bytes as f64;
@@ -308,6 +312,14 @@ pub fn page_html(page: &Page, query: &str) -> String {
         html_escape(&page.verdict().to_uppercase()),
         page.score()
     ));
+    let issue_count: usize = ["report", "installer_report"].iter()
+        .map(|key| array(page.report.get(key).and_then(|r| r.get("scan_issues"))).len())
+        .sum();
+    if issue_count > 0 {
+        body.push_str(&format!(
+            "<span class=\"chip coverage-incomplete\">incomplete coverage — {issue_count} issue(s)</span>"
+        ));
+    }
     body.push_str(&format!(
         "<span class=\"chip\">{} files · {}</span>",
         page.tree.file_count,
@@ -496,9 +508,19 @@ pub fn page_html(page: &Page, query: &str) -> String {
 fn compact_summary(page: &Page) -> String {
     let text = page.summary_text();
     // The footer gets the interesting half of the text report, not the whole.
-    let mut lines: Vec<&str> = text.lines().take(18).collect();
+    let mut lines: Vec<String> = text.lines().take(18).map(str::to_string).collect();
     if text.lines().count() > lines.len() {
-        lines.push("…");
+        lines.push("…".into());
+    }
+    // Never let the compact view turn an incomplete scan into a clean-looking
+    // summary: coverage warnings are appended even when the cutoff hit first.
+    for (label, key) in [("", "report"), ("installer ", "installer_report")] {
+        let issues = array(page.report.get(key).and_then(|r| r.get("scan_issues")));
+        if issues.is_empty() { continue; }
+        let heading = format!("{label}coverage: INCOMPLETE ({} issue(s))", issues.len());
+        if !lines.contains(&heading) {
+            lines.push(heading);
+        }
     }
     lines.join("\n")
 }
@@ -515,6 +537,7 @@ header{display:flex;align-items:center;gap:16px;padding:8px 14px;background:var(
 .path{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .chips{margin-left:auto;display:flex;gap:8px}
 .chip{padding:2px 10px;border-radius:999px;border:1px solid var(--line);background:#0e141b;white-space:nowrap}
+.coverage-incomplete{background:#33290f;border-color:var(--medium);color:#fbd38d}
 .verdict-critical{background:#3a1414;border-color:var(--critical)}
 .verdict-high{background:#33200f;border-color:var(--high)}
 .verdict-medium{background:#33290f;border-color:var(--medium)}
@@ -645,8 +668,7 @@ fn respond(stream: &mut TcpStream, status: &str, content_type: &str, body: &[u8]
 /// can hand a report to a colleague and they get the same picture without
 /// rescanning the machine.
 pub fn page_from_report_file(path: &Path) -> crate::Result<Page> {
-    let text = std::fs::read_to_string(path)?;
-    let report = crate::json::parse(&text)?;
+    let report = crate::report::load(path)?;
     let name = report
         .get("report")
         .and_then(|r| r.get("target"))

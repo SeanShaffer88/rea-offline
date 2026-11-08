@@ -36,7 +36,8 @@ How Mode B works (blueprint workflow):
 7. Unmounts the hive, recursively purges the sandbox, and verifies
    zero residue — on every exit path.
 
-Utilities: `snapshot <dir>`, `diff <before.json> <after.json>`,
+Utilities: `report <report.json>` (render/gate an archived inspection without
+rescanning), `snapshot <dir>`, `diff <before.json> <after.json>`, and
 `purge <rea_sandbox_dir>` (refuses non-sandbox paths without `--force`).
 
 **C. The window** — a WizTree-shaped view of an analysis: a sortable size
@@ -54,8 +55,8 @@ external assets and no write endpoints. See [`docs/GUI.md`](docs/GUI.md).
 
 ## Reports
 
-Every command writes the same JSON (schema `3`) and can also render it for a
-human with `--format text` or `--format markdown`:
+Inspection commands write JSON (schema `3`). `scan`, `sandbox`, `report`, and
+`doctor` can also render for a human with `--format text` or `--format markdown`:
 
 ```
 {
@@ -95,6 +96,27 @@ human with `--format text` or `--format markdown`:
   rule with the evidence that triggered it. The rulebook is
   [`src/rules.rs`](src/rules.rs) and is small enough to read in one sitting:
   no signatures, no ML, no feeds.
+
+### Archived reports and coverage
+
+Reopen saved evidence without access to the original machine or target:
+
+```bat
+rea-offline.exe report report.json --format markdown --output review.md
+rea-offline.exe report report.json --fail-on high --quiet
+rea-offline.exe gui report.json --from-report
+```
+
+`report` validates the envelope, preserves the original evidence and timestamp,
+and never launches REA or rescans the target. Schema-2 archives remain readable;
+a risk gate requires a valid verdict. Mistyped, repeated, or command-inappropriate
+CLI options are rejected before work begins.
+
+Directory scans disclose unreadable files/directories, failed external REA runs,
+and the 32 MiB per-file content-analysis limit in `report.scan_issues` (also
+summarized by `summary.complete` and `summary.scan_issue_count`). Text, Markdown,
+and the window surface incomplete coverage; these operational issues do not
+inflate the risk score. Regular files are analyzed without following symlinks.
 
 `--fail-on <level>` turns the verdict into an exit code (`2` when the verdict
 reaches the level), so the same report can gate a CI job or a deployment
@@ -176,6 +198,7 @@ and Linux.
 | `src/registry_sandbox.rs` | Offline registry hive mount/unmount |
 | `src/rea_bridge.rs` | REA bridge + native PE/static analyzer (imphash, MD5) |
 | `src/rules.rs` | Rule engine, findings, score & verdict |
+| `src/report.rs` | Archived-report validation and lossless reopening |
 | `src/render.rs`, `src/mdtable.rs` | Text / Markdown rendering |
 | `src/gui/` | WizTree-shaped window: tree, treemap, loopback server |
 | `src/cleanup.rs` | Cleanup & zero-residue purge controller |
@@ -200,6 +223,16 @@ Created by Sean Shaffer
 MIT — see [LICENSE](LICENSE).
 
 ## Changelog
+
+### 0.5.0
+- **Archived reports** (`report`): validate and render saved scan/sandbox JSON,
+  apply `--fail-on` without rescanning, and reopen the same evidence in the GUI.
+- **Strict CLI parsing**: reject unknown/misplaced options, missing values,
+  duplicate flags, excess positional arguments, and invalid zero port/memory limits.
+- **Coverage warnings**: unreadable content, external REA failures, and oversized
+  files are recorded in `scan_issues` and surfaced in every human format.
+- **Tests/CI**: archive round-trip and gate checks, hostile argument cases,
+  permission-denied coverage, external-engine failure, and symlink boundary checks.
 
 ### 0.4.0
 - **GUI** (`gui`): WizTree-shaped window — sortable size/risk grid, risk-coloured
