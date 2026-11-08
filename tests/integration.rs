@@ -183,3 +183,31 @@ fn directory_analysis_does_not_follow_symlinks_outside_the_target() {
     assert!(report.scan_issues.is_empty());
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[cfg(unix)]
+#[test]
+fn external_rea_large_json_is_merged_without_pipe_deadlock() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tmp_dir("rea-large");
+    let target = dir.join("sample.txt");
+    std::fs::write(&target, b"CreateRemoteThread").unwrap();
+    // A fake REA that emits well over a pipe buffer of JSON on stdout and
+    // diagnostics on stderr. The bridge must drain both while the child runs.
+    let rea = dir.join("large-rea.sh");
+    std::fs::write(
+        &rea,
+        "#!/bin/sh\nprintf '{\"note\":\"'\nhead -c 200000 /dev/zero | tr '\\0' x\nprintf '\"}'\nprintf 'diagnostic noise\\n' >&2\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&rea, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let bridge = ReaBridge::new(ReaConfig {
+        rea_path: Some(rea),
+        timeout: Some(std::time::Duration::from_secs(30)),
+    });
+    let report = bridge.analyze(&target).unwrap();
+    assert!(report.scan_issues.is_empty(), "{:?}", report.scan_issues);
+    assert!(report.external_json.is_some());
+    assert_eq!(report.files.len(), 1);
+    assert!(report.files[0].indicators.iter().any(|i| i.category == "injection"));
+    std::fs::remove_dir_all(&dir).unwrap();
+}

@@ -316,11 +316,34 @@ impl ReaBridge {
             .stdin(std::process::Stdio::null());
         let timeout = self.config.timeout.unwrap_or(Duration::from_secs(600));
         let output = run_with_timeout(cmd, timeout)?;
-        if !output.status_ok {
-            return Err(Error::Process(format!("REA exited with code {:?}", output.exit_code)));
+        if output.stdout_truncated {
+            return Err(Error::Process(format!(
+                "REA stdout exceeded the {} MiB capture limit ({} bytes seen)",
+                MAX_REA_STDOUT_BYTES / (1024 * 1024),
+                output.stdout_bytes
+            )));
         }
-        crate::json::parse(&output.stdout)
-            .map_err(|e| Error::Process(format!("REA did not emit valid JSON: {e}")))
+        if !output.status_ok {
+            let stderr = tail_str(output.stderr.trim(), 512);
+            return Err(Error::Process(if stderr.is_empty() {
+                format!("REA exited with code {:?}", output.exit_code)
+            } else {
+                format!("REA exited with code {:?}: {stderr}", output.exit_code)
+            }));
+        }
+        crate::json::parse(&output.stdout).map_err(|e| {
+            let stderr = tail_str(output.stderr.trim(), 256);
+            if stderr.is_empty() {
+                Error::Process(format!(
+                    "REA did not emit valid JSON: {e} (stdout {} bytes, stderr {} bytes)",
+                    output.stdout_bytes, output.stderr_bytes
+                ))
+            } else {
+                Error::Process(format!(
+                    "REA did not emit valid JSON: {e}; stderr: {stderr}"
+                ))
+            }
+        })
     }
 
     pub fn analyze_native(&self, target: &Path) -> Result<ReaReport> {
@@ -395,18 +418,95 @@ impl ReaBridge {
     }
 }
 
-struct CmdOutput { status_ok: bool, exit_code: Option<i32>, stdout: String }
+/// External REA output is captured through temporary files rather than
+/// pipes. A pipe that is not drained while the child runs can fill its OS
+/// buffer and deadlock the child until the timeout; stderr was previously
+/// never drained at all. Files also let us bound disk/memory use and keep
+/// stderr for diagnostics.
+const MAX_REA_STDOUT_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_REA_STDERR_BYTES: u64 = 1024 * 1024;
+
+#[derive(Debug)]
+struct CmdOutput {
+    status_ok: bool,
+    exit_code: Option<i32>,
+    stdout: String,
+    stderr: String,
+    stdout_bytes: u64,
+    stderr_bytes: u64,
+    stdout_truncated: bool,
+}
+
+struct CaptureFile {
+    path: PathBuf,
+}
+
+impl Drop for CaptureFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+fn read_capped(path: &Path, cap: u64) -> Result<(String, u64, bool)> {
+    use std::io::Read;
+    let file = std::fs::File::open(path)?;
+    let total = file.metadata()?.len();
+    let mut buf = Vec::new();
+    file.take(cap.saturating_add(1)).read_to_end(&mut buf)?;
+    let truncated = total > cap;
+    if buf.len() as u64 > cap {
+        buf.truncate(cap as usize);
+    }
+    Ok((String::from_utf8_lossy(&buf).to_string(), total, truncated))
+}
+
+fn tail_str(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut start = s.len() - max;
+    while start < s.len() && !s.is_char_boundary(start) {
+        start += 1;
+    }
+    &s[start..]
+}
 
 fn run_with_timeout(mut cmd: std::process::Command, timeout: Duration) -> Result<CmdOutput> {
-    use std::io::Read;
-    let mut child = cmd.stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped()).spawn()?;
+    let id = crate::util::new_id();
+    let stdout_path = crate::util::temp_root().join(format!("rea_offline_rea_{id}.stdout.log"));
+    let stderr_path = crate::util::temp_root().join(format!("rea_offline_rea_{id}.stderr.log"));
+    // create_new refuses to follow a pre-planted symlink in the temp dir.
+    let stdout_file = std::fs::OpenOptions::new().write(true).create_new(true).open(&stdout_path)?;
+    let _stdout_guard = CaptureFile { path: stdout_path.clone() };
+    let stderr_file = std::fs::OpenOptions::new().write(true).create_new(true).open(&stderr_path)?;
+    let _stderr_guard = CaptureFile { path: stderr_path.clone() };
+
+    let mut child = cmd
+        .stdout(std::process::Stdio::from(stdout_file))
+        .stderr(std::process::Stdio::from(stderr_file))
+        .spawn()?;
     let deadline = std::time::Instant::now() + timeout;
-    loop {
+    let status = loop {
         if let Some(status) = child.try_wait()? {
-            let mut stdout = String::new();
-            if let Some(mut pipe) = child.stdout.take() { let _ = pipe.read_to_string(&mut stdout); }
-            return Ok(CmdOutput { status_ok: status.success(), exit_code: status.code(), stdout });
+            break status;
+        }
+        // Bound capture size while the child is still running, not only
+        // when reading the result back.
+        if std::fs::metadata(&stdout_path).map(|m| m.len()).unwrap_or(0) > MAX_REA_STDOUT_BYTES {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(Error::Process(format!(
+                "REA stdout exceeded the {} MiB capture limit",
+                MAX_REA_STDOUT_BYTES / (1024 * 1024)
+            )));
+        }
+        if std::fs::metadata(&stderr_path).map(|m| m.len()).unwrap_or(0) > MAX_REA_STDERR_BYTES {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(Error::Process(format!(
+                "REA stderr exceeded the {} KiB capture limit",
+                MAX_REA_STDERR_BYTES / 1024
+            )));
         }
         if std::time::Instant::now() >= deadline {
             let _ = child.kill();
@@ -414,7 +514,19 @@ fn run_with_timeout(mut cmd: std::process::Command, timeout: Duration) -> Result
             return Err(Error::Timeout("REA process exceeded its timeout".into()));
         }
         std::thread::sleep(Duration::from_millis(50));
-    }
+    };
+
+    let (stdout, stdout_bytes, stdout_truncated) = read_capped(&stdout_path, MAX_REA_STDOUT_BYTES)?;
+    let (stderr, stderr_bytes, _) = read_capped(&stderr_path, MAX_REA_STDERR_BYTES)?;
+    Ok(CmdOutput {
+        status_ok: status.success(),
+        exit_code: status.code(),
+        stdout,
+        stderr,
+        stdout_bytes,
+        stderr_bytes,
+        stdout_truncated,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -832,5 +944,77 @@ mod tests {
         assert_eq!(pe.section_details.len(), 1);
         assert!(pe.section_details[0].executable && !pe.section_details[0].writable);
         assert_eq!(pe.overlay_size, 0x40);
+    }
+
+    #[test]
+    fn read_capped_reports_total_size_and_truncation() {
+        let dir = std::env::temp_dir().join(format!("rea_offline_cap_{}", crate::util::new_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("out.bin");
+        std::fs::write(&path, b"abcdef").unwrap();
+        let (text, total, truncated) = read_capped(&path, 4).unwrap();
+        assert_eq!(text, "abcd");
+        assert_eq!(total, 6);
+        assert!(truncated);
+        let (text, total, truncated) = read_capped(&path, 6).unwrap();
+        assert_eq!(text, "abcdef");
+        assert_eq!(total, 6);
+        assert!(!truncated);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn tail_str_keeps_char_boundaries() {
+        assert_eq!(tail_str("abcdef", 3), "def");
+        assert_eq!(tail_str("abcdef", 10), "abcdef");
+        assert_eq!(tail_str("aé😀z", 1), "z");
+        assert!(tail_str("aé😀z", 4).is_char_boundary(0));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn external_capture_drains_large_stdout_and_stderr_without_deadlock() {
+        // More than a typical 64 KiB pipe buffer on both streams. The old
+        // wait-then-read loop deadlocked here until the timeout fired.
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c").arg(
+            "i=0; while [ $i -lt 4096 ]; do \
+             printf 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\\n'; \
+             i=$((i+1)); done; \
+             i=0; while [ $i -lt 2048 ]; do \
+             printf 'yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\\n' >&2; \
+             i=$((i+1)); done",
+        );
+        let out = run_with_timeout(cmd, Duration::from_secs(30)).unwrap();
+        assert!(out.status_ok);
+        assert_eq!(out.stdout_bytes, 4096 * 65);
+        assert_eq!(out.stderr_bytes, 2048 * 65);
+        assert!(!out.stdout_truncated);
+        assert!(out.stdout.starts_with("xxxx"));
+        assert!(out.stderr.starts_with("yyyy"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn external_capture_drains_large_stdout_and_stderr_without_deadlock() {
+        let mut cmd = std::process::Command::new("cmd");
+        cmd.arg("/C").arg(
+            "for /L %i in (1,1,4096) do @echo xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx & \
+             for /L %i in (1,1,2048) do @echo yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy 1>&2",
+        );
+        let out = run_with_timeout(cmd, Duration::from_secs(30)).unwrap();
+        assert!(out.status_ok);
+        assert!(out.stdout_bytes > 64 * 1024);
+        assert!(out.stderr_bytes > 64 * 1024);
+        assert!(!out.stdout_truncated);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn external_capture_times_out_and_cleans_up() {
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c").arg("sleep 30");
+        let err = run_with_timeout(cmd, Duration::from_millis(100)).unwrap_err();
+        assert!(matches!(err, Error::Timeout(_)), "{err:?}");
     }
 }
