@@ -120,3 +120,28 @@ air-gapped build needs neither Python nor pefile. Ten reference fixtures were
 hashed by upstream pefile and are asserted in the tests, and `doctor`
 re-checks two of them at runtime (`hashes.imphash_selftest`) so a mangled
 build is caught before an operator quotes a hash in an investigation.
+
+## Coverage is part of the evidence
+
+A manifest is only useful if it says what it could not see. `Snapshot::capture`
+never aborts on a failure — a partial manifest beats none — but every failure
+is recorded as a `ScanIssue` with a stable stage: `traverse`, `entry`,
+`metadata`, `path`, `hash`. `Snapshot::is_complete()` is therefore a claim the
+tool can actually back: when it is true, absence from `entries` means absence
+from disk.
+
+The same reasoning applies to the diff. A regular file with an empty digest
+was not read, so comparing two empty digests proves nothing. Those entries go
+to `Delta::unverified` rather than `unchanged`. Size and kind are compared
+first, because a change in either is proof of modification without any hash.
+Directories and symlinks legitimately have empty digests and are excluded, or
+every snapshot would warn about every folder.
+
+`app::coverage_block` merges snapshot issues, per-report analysis limits and
+uncomparable files into one envelope `coverage` block, each entry labelled with
+the area it came from ("sandbox snapshot (after)", "drops analysis", …). It
+never touches the risk score: coverage describes the evidence, not the sample.
+`report::validate_coverage` then checks the block against the issues it lists
+and the bodies it summarizes, so an archive cannot be made to look clean by
+flipping one boolean. `--fail-on-incomplete` turns the same record into exit
+code 3, which lets CI refuse a calm verdict that rests on partial evidence.

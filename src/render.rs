@@ -51,6 +51,22 @@ fn issue_line(issue: &Value) -> String {
 /// Coverage warnings belong next to the decision, not buried after findings.
 /// They are operational limitations and never contribute to the risk score.
 fn append_coverage_text(out: &mut String, root: &Value) {
+    // Current archives aggregate snapshot + analysis coverage in one block.
+    if let Some(issues) = root.get("coverage").and_then(|c| c.get("issues")) {
+        let issues = array(Some(issues));
+        if issues.is_empty() { return; }
+        out.push_str(&format!("\ncoverage: INCOMPLETE ({} issue(s))\n", issues.len()));
+        for issue in issues.iter().take(8) {
+            let area = s(issue.get("area"));
+            let prefix = if area.is_empty() { String::new() } else { format!("{area} — ") };
+            out.push_str(&format!("  {prefix}{}\n", issue_line(issue)));
+        }
+        if issues.len() > 8 {
+            out.push_str(&format!("  … {} more; see JSON\n", issues.len() - 8));
+        }
+        return;
+    }
+    // Older archives only carry per-report analysis limits.
     for (label, key) in [("", "report"), ("installer ", "installer_report"), ("dropped files ", "drops_report")] {
         let Some(issues) = root.get(key).and_then(|r| r.get("scan_issues")) else { continue };
         let issues = array(Some(issues));
@@ -466,7 +482,26 @@ pub fn summary_markdown(root: &Value) -> String {
         }
 
         let mut coverage = String::new();
+        let aggregated = root.get("coverage").and_then(|c| c.get("issues"));
+        if let Some(issues) = aggregated {
+            let issues = array(Some(issues));
+            if !issues.is_empty() {
+                let mut table = Table::new(["area", "path", "stage", "message"]);
+                for issue in issues.iter().take(MAX_ROWS) {
+                    table.row([
+                        s(issue.get("area")), s(issue.get("path")),
+                        s(issue.get("stage")), s(issue.get("message")),
+                    ]);
+                }
+                coverage.push_str(&table.render());
+                if issues.len() > MAX_ROWS {
+                    coverage.push_str(&format!("\n_{} further coverage issues omitted._\n", issues.len() - MAX_ROWS));
+                }
+                coverage.push('\n');
+            }
+        }
         for (label, key) in [("Install tree", "report"), ("Installer", "installer_report"), ("Dropped files", "drops_report")] {
+            if aggregated.is_some() { break; }
             let issues = array(root.get(key).and_then(|r| r.get("scan_issues")));
             if issues.is_empty() { continue; }
             coverage.push_str(&format!("### {label}\n\n"));
@@ -481,7 +516,7 @@ pub fn summary_markdown(root: &Value) -> String {
             coverage.push('\n');
         }
         if !coverage.is_empty() {
-            out.push_str("## Coverage warnings\n\n**Inspection incomplete.** These are operational limitations, not risk findings.\n\n");
+            out.push_str("## Coverage warnings\n\n**Inspection incomplete.** These are operational limitations, not risk findings: they describe what the inspection could not see, so a calm verdict below is not evidence of a clean target.\n\n");
             out.push_str(&coverage);
         }
 
@@ -797,6 +832,61 @@ mod tests {
         let text = summary_text(&root);
         assert!(text.contains("killed (timeout)"), "{text}");
         assert!(to_markdown(&root).contains("killed (timeout)"));
+    }
+
+    fn coverage_report(aggregated: bool) -> Value {
+        let body = r#"{"file_count":0,"risk_score":0,"verdict":"low","files":[],
+            "scan_issues":[{"path":"big.bin","stage":"analysis","message":"over the content limit"}]}"#;
+        let mut json = format!(
+            r#"{{"schema_version":3,"mode":"local-scan","verdict":"low","report":{body}"#
+        );
+        if aggregated {
+            json.push_str(
+                r#","coverage":{"complete":false,"issue_count":2,"unverified_count":1,"issues":[
+                    {"area":"sandbox snapshot (after)","path":"AppData/hidden","stage":"traverse","message":"Permission denied"},
+                    {"area":"sandbox","path":"locked.bin","stage":"compare","message":"contents could not be compared"}]}"#
+            );
+        }
+        json.push('}');
+        crate::json::parse(&json).unwrap()
+    }
+
+    #[test]
+    fn aggregated_coverage_names_the_phase_that_went_blind() {
+        let report = coverage_report(true);
+        let text = summary_text(&report);
+        assert!(text.contains("coverage: INCOMPLETE (2 issue(s))"), "{text}");
+        assert!(text.contains("sandbox snapshot (after) — AppData/hidden [traverse]"), "{text}");
+        assert!(text.contains("[compare]"), "{text}");
+
+        let md = summary_markdown(&report);
+        assert!(md.contains("## Coverage warnings"), "{md}");
+        assert!(md.contains("| area | path | stage | message |"), "{md}");
+        assert!(md.contains("AppData/hidden"), "{md}");
+        // The aggregated block already includes analysis limits; they must
+        // not be printed a second time under a per-body heading.
+        assert_eq!(md.matches("over the content limit").count(), 0, "{md}");
+    }
+
+    #[test]
+    fn archives_without_a_coverage_block_still_show_their_limits() {
+        let report = coverage_report(false);
+        let text = summary_text(&report);
+        assert!(text.contains("coverage: INCOMPLETE (1 issue(s))"), "{text}");
+        assert!(text.contains("big.bin [analysis]"), "{text}");
+        let md = summary_markdown(&report);
+        assert!(md.contains("### Install tree"), "{md}");
+    }
+
+    #[test]
+    fn complete_coverage_adds_no_warning_noise() {
+        let report = crate::json::parse(
+            r#"{"schema_version":3,"mode":"local-scan","verdict":"low",
+                "coverage":{"complete":true,"issue_count":0,"issues":[]},
+                "report":{"file_count":0,"risk_score":0,"verdict":"low","files":[],"scan_issues":[]}}"#
+        ).unwrap();
+        assert!(!summary_text(&report).contains("INCOMPLETE"));
+        assert!(!summary_markdown(&report).contains("Coverage warnings"));
     }
 
     #[test]

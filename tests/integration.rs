@@ -323,3 +323,92 @@ fn a_payload_dropped_outside_the_install_tree_decides_the_verdict() {
 
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// A drop the snapshot was not allowed to read must not produce a calm,
+/// complete-looking report. This is the same class of bug as the v0.6.0
+/// verdict gap: the tool claiming confidence it has not earned.
+#[cfg(unix)]
+#[test]
+fn an_unreadable_drop_makes_the_run_incomplete_not_clean() {
+    use rea_offline::app::{mode_sandbox, SandboxOptions};
+    use rea_offline::json::Value;
+    use rea_offline::universal_sandbox::SandboxConfig;
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tmp_dir("blind-drop");
+    let root = dir.join("sandbox");
+    let payload = dir.join("payload.bin");
+    std::fs::write(&payload, hostile_payload()).unwrap();
+    // The installer hides its payload in a directory it then locks. The
+    // payload never enters the install tree and cannot be read afterwards.
+    let script = dir.join("dropper.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nmkdir -p \"$REASANDBOX/AppData/hidden\"\ncp '{}' \"$REASANDBOX/AppData/hidden/payload.exe\"\nchmod 000 \"$REASANDBOX/AppData/hidden\"\n",
+            payload.display()
+        ),
+    ).unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let report = mode_sandbox(SandboxOptions {
+        installer: script,
+        installer_args: vec![],
+        rea_path: None,
+        sandbox: SandboxConfig { root: Some(root.clone()), keep: true, ..Default::default() },
+    }).unwrap();
+
+    // Restore access so the tree can be cleaned up even if assertions fail.
+    let hidden = root.join("AppData/hidden");
+    let privileged = hidden.exists() && std::fs::read_dir(&hidden).is_ok();
+    if hidden.exists() {
+        let _ = std::fs::set_permissions(&hidden, std::fs::Permissions::from_mode(0o700));
+    }
+    let cleanup = || { let _ = std::fs::remove_dir_all(&dir); };
+    if privileged {
+        cleanup();
+        return; // running with privilege that ignores mode bits
+    }
+
+    let coverage = report.get("coverage").expect("coverage block");
+    assert_eq!(coverage.get("complete"), Some(&Value::Bool(false)),
+        "a drop that could not be read must not look like a clean run: {}", coverage.to_string_pretty());
+    let issues = match coverage.get("issues") {
+        Some(Value::Array(items)) => items.clone(),
+        other => panic!("issues array expected, got {other:?}"),
+    };
+    assert!(issues.iter().any(|i| {
+        i.get("stage").and_then(Value::as_str) == Some("traverse")
+            && i.get("path").and_then(Value::as_str).unwrap_or("").contains("AppData/hidden")
+    }), "the locked directory must be named: {issues:?}");
+    assert!(issues.iter().any(|i| i.get("area").and_then(Value::as_str) == Some("sandbox snapshot (after)")),
+        "coverage says which phase went blind: {issues:?}");
+
+    // The verdict stays honest about what was analyzed (nothing readable),
+    // and the coverage record is what stops this being read as "clean".
+    let text = rea_offline::render::summary_text(&report);
+    assert!(text.contains("coverage: INCOMPLETE"), "{text}");
+    assert!(text.contains("AppData/hidden"), "{text}");
+    let md = rea_offline::render::to_markdown(&report);
+    assert!(md.contains("## Coverage warnings"), "{md}");
+    assert!(md.contains("sandbox snapshot (after)"), "{md}");
+    let page = rea_offline::gui::Page::new(report.clone(), "sandbox");
+    let html = rea_offline::gui::page_html(&page, "");
+    assert!(html.contains("coverage-incomplete"), "the window must flag it too");
+
+    // The archive is internally consistent, and cannot be edited into a
+    // clean-looking one by flipping a single boolean.
+    rea_offline::report::validate(&report).unwrap();
+    let mut tampered = report.clone();
+    if let Value::Object(map) = &mut tampered {
+        map.insert("coverage".into(), Value::obj(vec![
+            ("complete", Value::Bool(true)),
+            ("issue_count", Value::num(issues.len() as u64)),
+            ("issues", Value::Array(issues)),
+        ]));
+    }
+    let error = rea_offline::report::validate(&tampered).unwrap_err().to_string();
+    assert!(error.contains("claims to be complete"), "{error}");
+
+    cleanup();
+}

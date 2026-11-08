@@ -508,3 +508,140 @@ fn sandbox_gate_fires_on_a_profile_drop() {
     assert_eq!(archived.code, 2, "{}", archived.stderr);
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// A minimal archive whose coverage record is the only interesting part.
+fn coverage_archive(complete: bool) -> String {
+    let issues = if complete {
+        "[]".to_string()
+    } else {
+        r#"[{"area":"sandbox snapshot (after)","path":"AppData/hidden",
+             "stage":"traverse","message":"Permission denied (os error 13)"}]"#.to_string()
+    };
+    format!(
+        r#"{{"schema_version":3,"mode":"local-scan","generated_unix":1,"verdict":"low",
+            "coverage":{{"complete":{},"issue_count":{},"unverified_count":0,"issues":{}}},
+            "report":{{"file_count":0,"risk_score":0,"verdict":"low","files":[],"scan_issues":[]}}}}"#,
+        complete,
+        if complete { 0 } else { 1 },
+        issues
+    )
+}
+
+#[test]
+fn fail_on_incomplete_refuses_a_calm_but_blind_archive() {
+    let dir = workdir("coverage-gate");
+    let clean = dir.join("clean.json");
+    let blind = dir.join("blind.json");
+    std::fs::write(&clean, coverage_archive(true)).unwrap();
+    std::fs::write(&blind, coverage_archive(false)).unwrap();
+
+    // Same verdict, same score — only the coverage record differs.
+    let ok = run(&dir, &["report", "clean.json", "--fail-on-incomplete", "--quiet"]);
+    assert_eq!(ok.code, 0, "{}", ok.stderr);
+    let blocked = run(&dir, &["report", "blind.json", "--fail-on-incomplete"]);
+    assert_eq!(blocked.code, 3, "{}", blocked.stderr);
+    assert!(blocked.stderr.contains("coverage is incomplete"), "{}", blocked.stderr);
+
+    // Without the flag the verdict gate is unchanged, and the warning is
+    // still rendered so a human is not misled either.
+    let plain = run(&dir, &["report", "blind.json", "--fail-on", "high", "--quiet"]);
+    assert_eq!(plain.code, 0, "{}", plain.stderr);
+    let text = run(&dir, &["report", "blind.json", "--format", "text"]);
+    assert!(text.stdout.contains("coverage: INCOMPLETE"), "{}", text.stdout);
+    assert!(text.stdout.contains("AppData/hidden"), "{}", text.stdout);
+    let md = run(&dir, &["report", "blind.json", "--format", "markdown"]);
+    assert!(md.stdout.contains("## Coverage warnings"), "{}", md.stdout);
+    assert!(md.stdout.contains("sandbox snapshot (after)"), "{}", md.stdout);
+
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn an_archive_cannot_be_edited_into_looking_complete() {
+    let dir = workdir("coverage-tamper");
+    let path = dir.join("tampered.json");
+    // Flip only the boolean, leaving the issues it contradicts in place.
+    let tampered = coverage_archive(false).replace("\"complete\":false", "\"complete\":true");
+    std::fs::write(&path, tampered).unwrap();
+    let run = run(&dir, &["report", "tampered.json", "--fail-on-incomplete"]);
+    assert_eq!(run.code, 1, "a tampered archive must be rejected, not gated: {}", run.stdout);
+    assert!(run.stderr.contains("claims to be complete"), "{}", run.stderr);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn coverage_gate_says_so_when_an_archive_never_recorded_coverage() {
+    let dir = workdir("coverage-legacy");
+    let path = dir.join("legacy.json");
+    std::fs::write(
+        &path,
+        r#"{"schema_version":2,"mode":"local-scan","report":{"file_count":0,"files":[]}}"#,
+    ).unwrap();
+    let gated = run(&dir, &["report", "legacy.json", "--fail-on-incomplete"]);
+    assert_eq!(gated.code, 1, "{}", gated.stdout);
+    assert!(gated.stderr.contains("does not"), "{}", gated.stderr);
+    // It still renders: refusing to gate is not refusing to read.
+    assert_eq!(run(&dir, &["report", "legacy.json", "--format", "text"]).code, 0);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn snapshot_and_scan_publish_their_coverage_record() {
+    let dir = workdir("coverage-record");
+    let tree = dir.join("tree");
+    std::fs::create_dir_all(&tree).unwrap();
+    std::fs::write(tree.join("a.txt"), b"hello").unwrap();
+
+    let snap = run(&dir, &["snapshot", "tree"]);
+    assert_eq!(snap.code, 0, "{}", snap.stderr);
+    let json = rea_offline::json::parse(&snap.stdout).unwrap();
+    assert_eq!(json.get("complete"), Some(&rea_offline::json::Value::Bool(true)));
+    assert_eq!(json.get("issue_count"), Some(&rea_offline::json::Value::num(0)));
+
+    let scan = run(&dir, &["scan", "tree", "--fail-on-incomplete", "--quiet"]);
+    assert_eq!(scan.code, 0, "{}", scan.stderr);
+    let report = dir.join("scan.json");
+    run(&dir, &["scan", "tree", "--output", report.to_str().unwrap(), "--quiet"]);
+    let json = rea_offline::json::parse(&std::fs::read_to_string(&report).unwrap()).unwrap();
+    assert_eq!(
+        json.get("coverage").and_then(|c| c.get("complete")),
+        Some(&rea_offline::json::Value::Bool(true))
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// End-to-end through the CLI: a real unreadable directory must reach the
+/// exit code, not just the JSON.
+#[cfg(unix)]
+#[test]
+fn scanning_an_unreadable_tree_exits_three() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = workdir("coverage-unreadable");
+    let tree = dir.join("tree");
+    let locked = tree.join("locked");
+    std::fs::create_dir_all(&locked).unwrap();
+    std::fs::write(locked.join("hidden.exe"), b"MZ").unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read_dir(&locked).is_ok() {
+        // Privileged process: mode bits do not apply.
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        return;
+    }
+    let gated = run(&dir, &["scan", "tree", "--fail-on-incomplete"]);
+    let snapshot = run(&dir, &["snapshot", "tree"]);
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+
+    assert_eq!(gated.code, 3, "{}", gated.stderr);
+    let json = rea_offline::json::parse(&snapshot.stdout).unwrap();
+    assert_eq!(json.get("complete"), Some(&rea_offline::json::Value::Bool(false)));
+    let issues = match json.get("issues") {
+        Some(rea_offline::json::Value::Array(items)) => items.clone(),
+        other => panic!("issues expected, got {other:?}"),
+    };
+    assert!(issues.iter().any(|i| {
+        i.get("path").and_then(|v| v.as_str()) == Some("locked")
+            && i.get("stage").and_then(|v| v.as_str()) == Some("traverse")
+    }), "{issues:?}");
+}

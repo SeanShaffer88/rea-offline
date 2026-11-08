@@ -139,10 +139,24 @@ jobs:
           # 5. Snapshot + diff round trip.
           mkdir -p tree && printf 'one' > tree/a.txt
           "$EXE" snapshot tree --output before.json --quiet
+          grep -q '"complete": true' before.json
           printf 'two' > tree/b.txt
           "$EXE" snapshot tree --output after.json --quiet
           "$EXE" diff before.json after.json --output delta.json --quiet
           grep -q 'b.txt' delta.json
+          grep -q '"unverified_count"' delta.json
+
+          # 5b. Coverage gate: a calm verdict on partial evidence must fail.
+          "$EXE" scan tree --fail-on-incomplete --quiet
+          printf '%s' '{"schema_version":3,"mode":"local-scan","verdict":"low","coverage":{"complete":false,"issue_count":1,"issues":[{"area":"sandbox snapshot (after)","path":"locked","stage":"traverse","message":"denied"}]},"report":{"file_count":0,"risk_score":0,"verdict":"low","files":[],"scan_issues":[]}}' > blind.json
+          set +e
+          "$EXE" report blind.json --fail-on-incomplete --quiet
+          code=$?
+          set -e
+          if [ "$code" -ne 3 ]; then
+            echo "expected --fail-on-incomplete to exit 3, got $code" >&2; exit 1
+          fi
+          "$EXE" report blind.json --format text | grep -q 'coverage: INCOMPLETE'
 
           # 6. Purge guard: refuse an arbitrary directory, then purge a real
           #    sandbox layout and verify zero residue.

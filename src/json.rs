@@ -36,6 +36,9 @@ impl Value {
     pub fn as_str(&self) -> Option<&str> {
         match self { Value::String(s) => Some(s), _ => None }
     }
+    pub fn as_bool(&self) -> Option<bool> {
+        match self { Value::Bool(b) => Some(*b), _ => None }
+    }
     pub fn to_string_pretty(&self) -> String {
         let mut out = String::new();
         self.write(&mut out, 0);

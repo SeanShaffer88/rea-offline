@@ -31,6 +31,11 @@ OUTPUT:
   --format <fmt>        json (default) | text | markdown (scan/sandbox/report/doctor)
   --fail-on <level>     Exit 2 when the verdict reaches info|low|medium|high|critical
                         (scan/sandbox/report; use in CI to gate on a risk level)
+  --fail-on-incomplete  Exit 3 when the inspection could not see everything
+                        (unreadable paths, unhashable or uncomparable files).
+                        A blind run is not a clean run: use this in CI to
+                        refuse a verdict built on partial evidence.
+                        (scan/sandbox/report; verdict gate wins if both trip)
   --quiet               Suppress the "report written to" notice
 
 SANDBOX OPTIONS:
@@ -133,12 +138,12 @@ fn command_spec(command: &str) -> Option<CommandSpec> {
         value_flags, bool_flags, positional, installer_args,
     });
     match command {
-        "scan" => spec(&["output", "rea", "format", "fail-on"], &["quiet"], 1, false),
+        "scan" => spec(&["output", "rea", "format", "fail-on"], &["quiet", "fail-on-incomplete"], 1, false),
         "sandbox" => spec(
             &["output", "rea", "format", "fail-on", "timeout", "memory-mb", "max-processes", "sandbox-root"],
-            &["quiet", "keep"], 1, true,
+            &["quiet", "keep", "fail-on-incomplete"], 1, true,
         ),
-        "report" => spec(&["output", "format", "fail-on"], &["quiet"], 1, false),
+        "report" => spec(&["output", "format", "fail-on"], &["quiet", "fail-on-incomplete"], 1, false),
         "gui" => spec(&["output", "rea", "port"], &["quiet", "no-open", "from-report"], 1, false),
         "snapshot" => spec(&["output"], &["quiet"], 1, false),
         "diff" => spec(&["output"], &["quiet"], 2, false),
@@ -257,8 +262,51 @@ fn emit(json: &Value, p: &Parsed, format: Format) -> rea_offline::Result<()> {
     Ok(())
 }
 
-/// Exit code for `--fail-on`: 2 when the report's verdict reaches the level.
+/// Gate exit codes: 2 for the risk verdict, 3 for incomplete coverage.
+/// The verdict wins when both trip — it is the more urgent finding, and the
+/// coverage record is still in the report either way.
 fn gate(json: &Value, p: &Parsed) -> rea_offline::Result<u8> {
+    let verdict_code = gate_verdict(json, p)?;
+    if verdict_code != 0 { return Ok(verdict_code); }
+    gate_coverage(json, p)
+}
+
+/// Whether the inspection saw everything. `None` means the archive carries
+/// no coverage record at all, which is not the same as "complete".
+fn coverage_incomplete(json: &Value) -> Option<bool> {
+    if let Some(coverage) = json.get("coverage").filter(|v| !matches!(v, Value::Null)) {
+        return coverage.get("complete").and_then(Value::as_bool).map(|complete| !complete);
+    }
+    // Older archives: per-report scan_issues are the only coverage evidence.
+    // If none of the bodies recorded any, there is nothing to gate on.
+    let bodies: Vec<&Value> = ["report", "installer_report", "drops_report"]
+        .iter()
+        .filter_map(|key| json.get(key))
+        .filter(|v| !matches!(v, Value::Null))
+        .collect();
+    if !bodies.iter().any(|body| body.get("scan_issues").is_some()) {
+        return None;
+    }
+    Some(bodies.iter().any(|body| {
+        matches!(body.get("scan_issues"), Some(Value::Array(items)) if !items.is_empty())
+    }))
+}
+
+/// Exit code for `--fail-on-incomplete`: 3 when the evidence is partial.
+fn gate_coverage(json: &Value, p: &Parsed) -> rea_offline::Result<u8> {
+    if !p.has("fail-on-incomplete") { return Ok(0); }
+    let incomplete = coverage_incomplete(json).ok_or_else(|| rea_offline::Error::InvalidInput(
+        "--fail-on-incomplete requires a report that records coverage; this archive does not".into()
+    ))?;
+    if !incomplete { return Ok(0); }
+    if !p.has("quiet") {
+        eprintln!("[rea-offline] --fail-on-incomplete: inspection coverage is incomplete — exiting 3");
+    }
+    Ok(3)
+}
+
+/// Exit code for `--fail-on`: 2 when the report's verdict reaches the level.
+fn gate_verdict(json: &Value, p: &Parsed) -> rea_offline::Result<u8> {
     let Some(level) = p.get("fail-on") else { return Ok(0) };
     let threshold = severity_parse(level)?;
     let verdict = json
@@ -460,6 +508,51 @@ mod tests {
         assert!(severity_parse("apocalyptic").is_err());
         assert_eq!(Format::parse("md").unwrap(), Format::Markdown);
         assert_eq!(severity_parse("CRIT").unwrap(), Severity::Critical);
+    }
+
+    #[test]
+    fn fail_on_incomplete_gates_on_coverage_not_on_risk() {
+        let complete = rea_offline::json::parse(
+            r#"{"verdict":"low","coverage":{"complete":true,"issue_count":0,"issues":[]}}"#
+        ).unwrap();
+        let blind = rea_offline::json::parse(
+            r#"{"verdict":"low","coverage":{"complete":false,"issue_count":1,"issues":
+                [{"area":"sandbox snapshot (after)","path":"locked","stage":"traverse","message":"denied"}]}}"#
+        ).unwrap();
+        let p = parse("report", &args(&["r.json", "--fail-on-incomplete"])).unwrap();
+        assert_eq!(gate(&complete, &p).unwrap(), 0, "a calm, fully observed run passes");
+        assert_eq!(gate(&blind, &p).unwrap(), 3, "a calm but blind run must not pass");
+
+        // Without the flag, coverage never changes the exit code.
+        let plain = parse("report", &args(&["r.json"])).unwrap();
+        assert_eq!(gate(&blind, &plain).unwrap(), 0);
+    }
+
+    #[test]
+    fn the_verdict_gate_wins_when_both_gates_trip() {
+        let blind_and_hot = rea_offline::json::parse(
+            r#"{"verdict":"critical","coverage":{"complete":false,"issue_count":1,"issues":
+                [{"path":"locked","stage":"traverse","message":"denied"}]}}"#
+        ).unwrap();
+        let p = parse("report", &args(&["r.json", "--fail-on", "high", "--fail-on-incomplete"])).unwrap();
+        assert_eq!(gate(&blind_and_hot, &p).unwrap(), 2);
+    }
+
+    #[test]
+    fn coverage_gate_refuses_archives_that_never_recorded_coverage() {
+        // No coverage block and no scan_issues: "unknown" is not "complete".
+        let legacy = rea_offline::json::parse(r#"{"verdict":"low","report":{"files":[]}}"#).unwrap();
+        let p = parse("report", &args(&["r.json", "--fail-on-incomplete"])).unwrap();
+        let error = gate(&legacy, &p).unwrap_err().to_string();
+        assert!(error.contains("does not"), "{error}");
+
+        // Older archives that did record analysis limits remain gateable.
+        let old_clean = rea_offline::json::parse(r#"{"verdict":"low","report":{"scan_issues":[]}}"#).unwrap();
+        assert_eq!(gate(&old_clean, &p).unwrap(), 0);
+        let old_blind = rea_offline::json::parse(
+            r#"{"verdict":"low","report":{"scan_issues":[{"path":"a","stage":"hash","message":"m"}]}}"#
+        ).unwrap();
+        assert_eq!(gate(&old_blind, &p).unwrap(), 3);
     }
 
     #[test]
