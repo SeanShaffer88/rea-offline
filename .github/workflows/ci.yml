@@ -106,6 +106,10 @@ jobs:
           if "$EXE" report invalid-report.json --fail-on low --quiet; then
             echo "invalid archive must not pass a gate" >&2; exit 1
           fi
+          printf '{"schema_version":3,"schema_version":3,"mode":"local-scan","report":{"file_count":0,"files":[]}}' > duplicate-key.json
+          if "$EXE" report duplicate-key.json --quiet; then
+            echo "duplicate JSON keys must be rejected" >&2; exit 1
+          fi
           if "$EXE" scan sample.exe --outpt typo.json --quiet; then
             echo "mistyped option must be rejected" >&2; exit 1
           fi

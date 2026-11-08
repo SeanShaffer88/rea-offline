@@ -6,6 +6,7 @@ snapshot-*.json
 # Local CI smoke-test outputs
 /archived.md
 /invalid-report.json
+/duplicate-key.json
 /report.json
 /report.text
 /report.markdown

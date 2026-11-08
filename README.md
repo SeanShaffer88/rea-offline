@@ -154,7 +154,9 @@ severity and a score contribution:
 REA ([morluto/rea](https://github.com/morluto/rea)) is invoked locally when
 found via `--rea <path>`, the `REA_PATH` environment variable, or a PATH
 probe (executable or Node `.js` entry). Its JSON is merged into the report
-under `rea_external`. When REA is absent, the native analyzer still
+under `rea_external`. External stdout/stderr are captured through bounded
+temporary files (32 MiB / 1 MiB) so a large report cannot deadlock the pipe;
+stderr tails are included in failure diagnostics. When REA is absent, the native analyzer still
 produces SHA-256 hashes, format detection, deep PE analysis (imported
 functions incl. ordinals, per-section entropy, ASLR/NX/CFG mitigations,
 Authenticode presence, overlay size), Shannon entropy (packed-binary
@@ -223,6 +225,16 @@ Created by Sean Shaffer
 MIT — see [LICENSE](LICENSE).
 
 ## Changelog
+
+### 0.5.1
+- **Strict JSON input**: the std-only parser now rejects malformed numbers,
+  unescaped control characters, lone surrogates, duplicate object keys and
+  excessive nesting instead of silently repairing untrusted reports/REA output.
+- **External REA capture**: stdout/stderr are drained through bounded temporary
+  files while the child runs, fixing pipe-buffer deadlocks on large reports and
+  preserving stderr diagnostics; capture files are cleaned up on every exit path.
+- **Tests**: JSON conformance/hostile-input cases, large-stream capture, timeout
+  cleanup, and an end-to-end external REA merge with >200 KB of JSON.
 
 ### 0.5.0
 - **Archived reports** (`report`): validate and render saved scan/sandbox JSON,

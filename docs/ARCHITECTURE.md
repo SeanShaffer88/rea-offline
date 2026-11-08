@@ -30,7 +30,7 @@ User / CLI
 | `src/rea_bridge.rs` | 4. REA Engine Bridge | Invokes local REA CLI/Node (`--rea`, `REA_PATH`, or PATH probe) with `--format json`; merges with built-in native analyzer: deep PE parsing (imported functions incl. ordinals, per-section entropy, DllCharacteristics mitigations ASLR/NX/CFG, Authenticode presence, entry point, timestamp, overlay size), Shannon entropy, capability-indicator strings, risk score, and a report `summary` block. Reports carry `schema_version: 3`; coverage fields are additive. |
 | `src/cleanup.rs` | 5. Cleanup & Purge | Unmount → retrying recursive delete → existence verification. Refuses non-`rea_sandbox_*` paths without `--force`. |
 | `src/report.rs` | Archived evidence | Validate scan/sandbox envelopes before rendering or gating; no target access or REA execution. |
-| `src/json.rs`, `src/sha256.rs` | support | Std-only JSON + SHA-256 so the offline build needs no registry access. |
+| `src/json.rs`, `src/sha256.rs` | support | Std-only strict JSON (depth-limited, no duplicate keys/lone surrogates) + SHA-256 so the offline build needs no registry access. |
 
 ## Security model & honest limits
 
@@ -50,7 +50,11 @@ report carries a `registry_warning` field rather than failing silently.
 
 Set `REA_PATH` or pass `--rea C:\path\to\rea` (executable or Node `.js`
 entry). If REA is absent, the native analyzer still produces hashes,
-formats, PE metadata, indicators and a 0–100 risk score.
+formats, PE metadata, indicators and a 0–100 risk score. External output is
+captured through temporary files created with `create_new` (no symlink follow),
+bounded to 32 MiB stdout / 1 MiB stderr, and removed on success, failure and
+timeout. This avoids the classic pipe-buffer deadlock when REA emits a large
+JSON report while stderr is also noisy.
 
 ## Coverage is not risk
 
