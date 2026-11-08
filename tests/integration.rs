@@ -211,3 +211,115 @@ fn external_rea_large_json_is_merged_without_pipe_deadlock() {
     assert!(report.files[0].indicators.iter().any(|i| i.category == "injection"));
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// A PE that trips the injection/packing/hardening rules — the payload an
+/// installer drops behind the user's back, not the installer itself.
+fn hostile_payload() -> Vec<u8> {
+    use rea_offline::testutil::{Import, PeBuilder};
+    let mut bytes = PeBuilder::new()
+        .signed(false)
+        .dll_characteristics(0x0100) // NX only: no ASLR, no CFG
+        .sections(vec![
+            (".text".to_string(), 0x200, 0x200, 0x6000_0020),
+            ("UPX1".to_string(), 0x1000, 0x200, 0xE000_0020), // exec + write
+        ])
+        .imports(
+            "KERNEL32.dll",
+            vec![
+                Import::Named("VirtualAllocEx"),
+                Import::Named("WriteProcessMemory"),
+                Import::Named("CreateRemoteThread"),
+                Import::Named("IsDebuggerPresent"),
+            ],
+        )
+        .overlay(8192)
+        .build();
+    bytes.extend_from_slice(b"http://example.invalid/gate.php\x00powershell -enc AAAA\x00");
+    bytes
+}
+
+#[cfg(unix)]
+#[test]
+fn a_payload_dropped_outside_the_install_tree_decides_the_verdict() {
+    use rea_offline::app::{mode_sandbox, SandboxOptions};
+    use rea_offline::universal_sandbox::SandboxConfig;
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tmp_dir("drop-verdict");
+    let payload = dir.join("payload.bin");
+    std::fs::write(&payload, hostile_payload()).unwrap();
+    // Nothing is written into install\ — the whole payload lands in the
+    // redirected profile, which the install-tree analysis never sees.
+    let script = dir.join("dropper.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nmkdir -p \"$REASANDBOX/AppData/Roaming\"\ncp '{}' \"$REASANDBOX/AppData/Roaming/payload.exe\"\n",
+            payload.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let report = mode_sandbox(SandboxOptions {
+        installer: script,
+        installer_args: vec![],
+        rea_path: None,
+        sandbox: SandboxConfig::default(),
+    })
+    .unwrap();
+
+    let number = |v: Option<&rea_offline::json::Value>| match v {
+        Some(rea_offline::json::Value::Number(n)) => *n as u64,
+        other => panic!("expected a number, got {other:?}"),
+    };
+    let text_of = |v: Option<&rea_offline::json::Value>| v.and_then(|x| x.as_str()).unwrap_or("").to_string();
+
+    // The install tree really is empty: the old verdict would have been low.
+    let install = report.get("report").expect("install-tree body");
+    assert_eq!(number(install.get("file_count")), 0);
+    assert_eq!(text_of(install.get("verdict")), "low");
+
+    // The drop was analyzed, with a sandbox-relative path.
+    let drops = report.get("drops_report").expect("drops_report");
+    assert_eq!(number(drops.get("file_count")), 1);
+    let files = match drops.get("files") {
+        Some(rea_offline::json::Value::Array(items)) => items,
+        other => panic!("files array expected, got {other:?}"),
+    };
+    assert_eq!(text_of(files[0].get("path")), "AppData/Roaming/payload.exe");
+    assert_eq!(text_of(files[0].get("format")), "PE");
+    assert_eq!(files[0].get("sha256").and_then(|v| v.as_str()).map(str::len), Some(64));
+
+    // The envelope carries the worst part, and says where it came from.
+    let score = number(report.get("risk_score"));
+    assert!(score >= 70, "dropped implant must score critical, got {score}");
+    assert_eq!(text_of(report.get("verdict")), "critical");
+    let sources = report.get("verdict_sources").expect("verdict_sources");
+    assert_eq!(text_of(sources.get("drops").and_then(|s| s.get("verdict"))), "critical");
+    assert_eq!(text_of(sources.get("install_tree").and_then(|s| s.get("verdict"))), "low");
+    assert_eq!(number(sources.get("drops").and_then(|s| s.get("risk_score"))), score);
+
+    // The archive is self-consistent, and every human format keeps the decision.
+    rea_offline::report::validate(&report).expect("sandbox envelope must validate");
+    let text = rea_offline::render::summary_text(&report);
+    assert!(text.contains("overall verdict"), "{text}");
+    assert!(text.contains("CRITICAL"), "{text}");
+    assert!(text.contains("Dropped-file findings"), "{text}");
+    assert!(text.contains("PE140"), "{text}");
+    let md = rea_offline::render::to_markdown(&report);
+    assert!(md.contains("## Dropped-file analysis"), "{md}");
+    assert!(md.contains("AppData/Roaming/payload.exe"), "{md}");
+
+    // The window shows the same evidence and the same number.
+    let page = rea_offline::gui::Page::new(report.clone(), "sandbox");
+    assert_eq!(page.score(), score);
+    assert_eq!(page.verdict(), "critical");
+    let details = rea_offline::gui::tree::details_text(&page.tree, "AppData/Roaming/payload.exe");
+    assert!(details.contains("PE140"), "{details}");
+    let html = rea_offline::gui::page_html(&page, "");
+    assert!(html.contains("chip verdict-critical"), "verdict chip");
+    assert!(html.contains("payload.exe"), "the drop must be visible in the grid");
+
+    std::fs::remove_dir_all(&dir).unwrap();
+}

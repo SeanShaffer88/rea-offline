@@ -51,7 +51,7 @@ fn issue_line(issue: &Value) -> String {
 /// Coverage warnings belong next to the decision, not buried after findings.
 /// They are operational limitations and never contribute to the risk score.
 fn append_coverage_text(out: &mut String, root: &Value) {
-    for (label, key) in [("", "report"), ("installer ", "installer_report")] {
+    for (label, key) in [("", "report"), ("installer ", "installer_report"), ("dropped files ", "drops_report")] {
         let Some(issues) = root.get(key).and_then(|r| r.get("scan_issues")) else { continue };
         let issues = array(Some(issues));
         if issues.is_empty() { continue; }
@@ -63,6 +63,113 @@ fn append_coverage_text(out: &mut String, root: &Value) {
             out.push_str(&format!("  … {} more; see JSON\n", issues.len() - 8));
         }
     }
+}
+
+/// The parts a sandbox verdict is built from, in reporting order.
+const VERD_PARTS: [(&str, &str); 3] = [
+    ("installer", "installer"),
+    ("install_tree", "install tree"),
+    ("drops", "drops"),
+];
+
+/// A sandbox envelope carries the *combined* decision, which can be worse
+/// than the install-tree body shown below it. Surface it first, with the
+/// per-part scores that produced it.
+fn overall_verdict(root: &Value) -> Option<(String, u64)> {
+    if s(root.get("mode")) != "sandbox-installer" {
+        return None;
+    }
+    let verdict = s(root.get("verdict"));
+    if verdict.is_empty() {
+        return None;
+    }
+    Some((verdict, n(root.get("risk_score"))))
+}
+
+/// Labels for the primary body's score/verdict. In a sandbox report that
+/// body is only the install tree, and saying so keeps it from looking like it
+/// contradicts the overall decision printed above it.
+fn part_labels(root: &Value) -> (&'static str, &'static str) {
+    let install_tree_body = root
+        .get("report")
+        .map(|r| r.get("file_count").is_some())
+        .unwrap_or(false);
+    if overall_verdict(root).is_some() && install_tree_body {
+        ("install-tree risk score", "install-tree verdict")
+    } else {
+        ("risk score", "verdict")
+    }
+}
+
+/// `name  score/100  verdict` for each analyzed part; a part that could not
+/// be analyzed says so instead of quietly disappearing.
+fn verdict_source_lines(root: &Value) -> Vec<String> {
+    let Some(sources) = root.get("verdict_sources") else { return Vec::new() };
+    VERD_PARTS
+        .iter()
+        .filter_map(|(key, label)| {
+            let source = sources.get(key)?;
+            if nullish(Some(source)) {
+                return Some(format!("{label}: not analyzed"));
+            }
+            Some(format!(
+                "{label}: {}/100 {}",
+                n(source.get("risk_score")),
+                s(source.get("verdict"))
+            ))
+        })
+        .collect()
+}
+
+/// Findings of one analysis body as a Markdown table (shared by the install
+/// tree, the installer and the dropped files).
+fn findings_table(rules: &Value) -> Option<String> {
+    let findings = sorted_findings(rules);
+    if findings.is_empty() {
+        return None;
+    }
+    let mut table = Table::new(["severity", "rule", "file", "evidence"]);
+    for f in findings.iter().take(MAX_ROWS) {
+        table.row([
+            s(f.get("severity")),
+            format!("`{}` — {}", s(f.get("rule")), s(f.get("title"))),
+            format!("`{}`", s(f.get("file"))),
+            s(f.get("evidence")),
+        ]);
+    }
+    let mut out = table.render();
+    if findings.len() > MAX_ROWS {
+        out.push_str(&format!(
+            "\n_{} further findings omitted; see the JSON report._\n",
+            findings.len() - MAX_ROWS
+        ));
+    }
+    out.push('\n');
+    Some(out)
+}
+
+/// Hashes are the part operators copy into other tools.
+fn files_table(files: &[Value]) -> Option<String> {
+    if files.is_empty() {
+        return None;
+    }
+    let mut table = Table::new(["path", "size", "format", "sha256", "md5", "imphash"]);
+    for f in files.iter().take(MAX_ROWS) {
+        table.row([
+            s(f.get("path")),
+            human_bytes(n(f.get("size"))),
+            s(f.get("format")),
+            s(f.get("sha256")),
+            s(f.get("md5")),
+            s(f.get("imphash")),
+        ]);
+    }
+    let mut out = table.render();
+    if files.len() > MAX_ROWS {
+        out.push_str(&format!("\n_{} further files omitted._\n", files.len() - MAX_ROWS));
+    }
+    out.push('\n');
+    Some(out)
 }
 
 fn human_bytes(bytes: u64) -> String {
@@ -141,6 +248,15 @@ pub fn summary_text(root: &Value) -> String {
     out.push_str(&"=".repeat(30));
     out.push('\n');
 
+    if let Some((verdict, score)) = overall_verdict(root) {
+        out.push_str(&format!("{}{}\n", pad("overall verdict"), verdict.to_uppercase()));
+        out.push_str(&format!("{}{}/100\n", pad("overall risk score"), score));
+        for line in verdict_source_lines(root) {
+            out.push_str(&format!("  {line}\n"));
+        }
+        out.push('\n');
+    }
+
     if let Some(r) = primary_report(root) {
         let summary = r.get("summary");
         out.push_str(&format!("{}{}\n", pad("target"), s(r.get("target"))));
@@ -152,8 +268,11 @@ pub fn summary_text(root: &Value) -> String {
             human_bytes(n(summary.and_then(|x| x.get("total_bytes"))))
         ));
         let score = n(r.get("risk_score"));
-        out.push_str(&format!("{}{}/100\n", pad("risk score"), score));
-        out.push_str(&format!("{}{}\n", pad("verdict"), s(r.get("verdict")).to_uppercase()));
+        // With an overall decision above, name the part this block describes
+        // so two different verdict lines cannot be read as a contradiction.
+        let (score_label, verdict_label) = part_labels(root);
+        out.push_str(&format!("{}{}/100\n", pad(score_label), score));
+        out.push_str(&format!("{}{}\n", pad(verdict_label), s(r.get("verdict")).to_uppercase()));
 
         let rules = r.get("rules");
         if let Some(by) = rules.and_then(|x| x.get("by_severity")) {
@@ -200,6 +319,30 @@ pub fn summary_text(root: &Value) -> String {
                 out.push_str(&format!("  {line}\n"));
             }
         }
+    }
+
+    for (title, key) in [("Installer findings", "installer_report"), ("Dropped-file findings", "drops_report")] {
+        let Some(part) = root.get(key).filter(|p| p.get("file_count").is_some()) else { continue };
+        let Some(rules) = part.get("rules") else { continue };
+        let findings: Vec<&Value> = sorted_findings(rules)
+            .into_iter()
+            .filter(|f| s(f.get("severity")) != "info")
+            .take(8)
+            .collect();
+        if findings.is_empty() { continue; }
+        out.push_str(&format!("\n{title} ({}/100 {})\n", n(part.get("risk_score")), s(part.get("verdict"))));
+        for f in findings {
+            out.push_str(&format!(
+                "  {:<8} {}  {}  ({})\n",
+                s(f.get("severity")).to_uppercase(),
+                s(f.get("rule")),
+                s(f.get("title")),
+                s(f.get("file")),
+            ));
+        }
+    }
+    if let Some(error) = root.get("installer_error") {
+        out.push_str(&format!("\n{}{}\n", pad("installer analysis"), s(Some(error))));
     }
 
     if let Some(exec) = root.get("execution") {
@@ -300,16 +443,30 @@ pub fn summary_markdown(root: &Value) -> String {
         let score = n(r.get("risk_score"));
         let verdict = s(r.get("verdict")).to_uppercase();
         out.push_str("## Verdict\n\n| field | value |\n|---|---|\n");
-        out.push_str(&format!("| risk score | **{score}/100** |\n"));
-        out.push_str(&format!("| verdict | **{verdict}** |\n"));
+        if let Some((overall, overall_score)) = overall_verdict(root) {
+            out.push_str(&format!("| overall verdict | **{}** |\n", overall.to_uppercase()));
+            out.push_str(&format!("| overall risk score | **{overall_score}/100** |\n"));
+        }
+        let (score_label, verdict_label) = part_labels(root);
+        out.push_str(&format!("| {score_label} | **{score}/100** |\n"));
+        out.push_str(&format!("| {verdict_label} | **{verdict}** |\n"));
         out.push_str(&format!("| target | `{}` |\n", s(r.get("target"))));
         out.push_str(&format!("| engine | `{}` |\n", s(r.get("engine"))));
         out.push_str(&format!("| files analyzed | {} |\n", n(r.get("file_count"))));
         let total = human_bytes(n(r.get("summary").and_then(|x| x.get("total_bytes"))));
         out.push_str(&format!("| total size | {total} |\n\n"));
 
+        let sources = verdict_source_lines(root);
+        if !sources.is_empty() {
+            out.push_str("\nThe overall verdict is the worst of the analyzed parts, not their sum:\n\n");
+            for line in sources {
+                out.push_str(&format!("- {line}\n"));
+            }
+            out.push('\n');
+        }
+
         let mut coverage = String::new();
-        for (label, key) in [("Install tree", "report"), ("Installer", "installer_report")] {
+        for (label, key) in [("Install tree", "report"), ("Installer", "installer_report"), ("Dropped files", "drops_report")] {
             let issues = array(root.get(key).and_then(|r| r.get("scan_issues")));
             if issues.is_empty() { continue; }
             coverage.push_str(&format!("### {label}\n\n"));
@@ -328,51 +485,36 @@ pub fn summary_markdown(root: &Value) -> String {
             out.push_str(&coverage);
         }
 
-        if let Some(rules) = r.get("rules") {
-            let findings = sorted_findings(rules);
-            if !findings.is_empty() {
-                out.push_str("## Findings\n\n");
-                let mut table = Table::new(["severity", "rule", "file", "evidence"]);
-                for f in findings.iter().take(MAX_ROWS) {
-                    table.row([
-                        s(f.get("severity")),
-                        format!("`{}` — {}", s(f.get("rule")), s(f.get("title"))),
-                        format!("`{}`", s(f.get("file"))),
-                        s(f.get("evidence")),
-                    ]);
-                }
-                out.push_str(&table.render());
-                if findings.len() > MAX_ROWS {
-                    out.push_str(&format!(
-                        "\n_{} further findings omitted; see the JSON report._\n",
-                        findings.len() - MAX_ROWS
-                    ));
-                }
-                out.push('\n');
-            }
+        if let Some(table) = r.get("rules").and_then(findings_table) {
+            out.push_str("## Findings\n\n");
+            out.push_str(&table);
         }
-
-        // Hashes are the part operators copy into other tools.
-        let files = array(r.get("files"));
-        if !files.is_empty() {
+        if let Some(table) = files_table(array(r.get("files"))) {
             out.push_str("## Files\n\n");
-            let mut table = Table::new(["path", "size", "format", "sha256", "md5", "imphash"]);
-            for f in files.iter().take(MAX_ROWS) {
-                table.row([
-                    s(f.get("path")),
-                    human_bytes(n(f.get("size"))),
-                    s(f.get("format")),
-                    s(f.get("sha256")),
-                    s(f.get("md5")),
-                    s(f.get("imphash")),
-                ]);
-            }
-            out.push_str(&table.render());
-            if files.len() > MAX_ROWS {
-                out.push_str(&format!("\n_{} further files omitted._\n", files.len() - MAX_ROWS));
-            }
-            out.push('\n');
+            out.push_str(&table);
         }
+    }
+
+    // The installer binary and the files dropped outside the install tree
+    // are separate evidence sets; each gets its own findings and hashes.
+    for (title, key) in [("Installer findings", "installer_report"), ("Dropped-file analysis", "drops_report")] {
+        let Some(part) = root.get(key).filter(|p| p.get("file_count").is_some()) else { continue };
+        out.push_str(&format!("## {title}\n\n"));
+        out.push_str(&format!(
+            "{} file(s) · risk score **{}/100** · verdict **{}**\n\n",
+            n(part.get("file_count")),
+            n(part.get("risk_score")),
+            s(part.get("verdict")).to_uppercase(),
+        ));
+        if let Some(table) = part.get("rules").and_then(findings_table) {
+            out.push_str(&table);
+        }
+        if let Some(table) = files_table(array(part.get("files"))) {
+            out.push_str(&table);
+        }
+    }
+    if let Some(error) = root.get("installer_error") {
+        out.push_str(&format!("## Installer analysis\n\n- could not analyze the installer: {}\n\n", s(Some(error))));
     }
 
     if let Some(exec) = root.get("execution") {
@@ -644,6 +786,65 @@ mod tests {
         let text = summary_text(&root);
         assert!(text.contains("killed (timeout)"), "{text}");
         assert!(to_markdown(&root).contains("killed (timeout)"));
+    }
+
+    #[test]
+    fn sandbox_output_leads_with_the_combined_decision() {
+        let mut root = sample_report();
+        if let Value::Object(map) = &mut root {
+            map.insert("verdict".into(), Value::str("critical"));
+            map.insert("risk_score".into(), Value::num(94));
+            map.insert("verdict_sources".into(), Value::obj(vec![
+                ("installer", Value::obj(vec![("risk_score", Value::num(6)), ("verdict", Value::str("low"))])),
+                ("install_tree", Value::obj(vec![("risk_score", Value::num(52)), ("verdict", Value::str("high"))])),
+                ("drops", Value::obj(vec![("risk_score", Value::num(94)), ("verdict", Value::str("critical"))])),
+            ]));
+            map.insert("drops_report".into(), Value::obj(vec![
+                ("file_count", Value::num(1)),
+                ("risk_score", Value::num(94)),
+                ("verdict", Value::str("critical")),
+                ("rules", Value::obj(vec![("findings", Value::Array(vec![Value::obj(vec![
+                    ("rule", Value::str("PE140")), ("title", Value::str("Injection API set")),
+                    ("severity", Value::str("high")), ("file", Value::str("AppData/payload.exe")),
+                    ("evidence", Value::str("VirtualAllocEx + WriteProcessMemory")),
+                ])]))])),
+                ("files", Value::Array(vec![Value::obj(vec![
+                    ("path", Value::str("AppData/payload.exe")), ("size", Value::num(4096)),
+                    ("format", Value::str("PE")), ("sha256", Value::str("ab")),
+                ])])),
+                ("scan_issues", Value::Array(vec![Value::obj(vec![
+                    ("path", Value::str("AppData/locked.bin")), ("stage", Value::str("analysis")),
+                    ("message", Value::str("access denied")),
+                ])])),
+            ]));
+        }
+        let text = summary_text(&root);
+        assert!(text.contains("overall verdict           : CRITICAL"), "{text}");
+        assert!(text.contains("overall risk score        : 94/100"), "{text}");
+        assert!(text.contains("drops: 94/100 critical"), "{text}");
+        // The body's own decision is labelled so it cannot read as a conflict.
+        assert!(text.contains("install-tree verdict"), "{text}");
+        assert!(text.contains("Dropped-file findings (94/100 critical)"), "{text}");
+        assert!(text.contains("dropped files coverage: INCOMPLETE"), "{text}");
+
+        let md = to_markdown(&root);
+        assert!(md.contains("| overall verdict | **CRITICAL** |"), "{md}");
+        assert!(md.contains("| install-tree verdict | **HIGH** |"), "{md}");
+        assert!(md.contains("## Dropped-file analysis"), "{md}");
+        assert!(md.contains("AppData/payload.exe"), "{md}");
+        assert!(md.contains("### Dropped files"), "coverage is attributed: {md}");
+    }
+
+    #[test]
+    fn plain_scans_keep_their_unqualified_labels() {
+        let mut root = sample_report();
+        if let Value::Object(map) = &mut root {
+            map.insert("mode".into(), Value::str("local-scan"));
+        }
+        let text = summary_text(&root);
+        assert!(!text.contains("overall verdict"), "{text}");
+        assert!(text.contains("risk score"), "{text}");
+        assert!(!text.contains("install-tree"), "{text}");
     }
 
     #[test]

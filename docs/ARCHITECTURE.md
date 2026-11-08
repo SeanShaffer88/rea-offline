@@ -17,6 +17,9 @@ User / CLI
          plus a whole-sandbox delta catching drops into the redirected
          profile (tmp/ work/ and the hive file are filtered out)
       6. REA analysis of install\  (external REA if found, else native)
+         + native analysis of the installer binary (installer_report)
+         + native analysis of the changed files outside install\
+           (drops_report); verdict = worst of the three parts
       7. unmount hive → purge sandbox → verify zero residue
 ```
 
@@ -69,3 +72,24 @@ are never followed by static directory analysis.
 `report <archive.json>` validates saved evidence and renders/gates it without
 revisiting the target. Schema 2 remains readable; a gate requires a valid
 verdict, and conflicting envelope/body verdicts are rejected.
+
+## One verdict, three evidence sets
+
+A sandbox run produces three analysis bodies: `installer_report` (the binary
+that was run), `report` (the install tree) and `drops_report` (files added or
+modified elsewhere inside the sandbox — the redirected profile, startup
+folders, and so on). The envelope's `verdict`/`risk_score` are the **worst**
+of the three, and `verdict_sources` records each part's score so the decision
+is explainable. Worst rather than sum because the installer is frequently
+copied into its own install tree: summing would score one binary twice.
+
+Drops are analyzed natively, not through external REA: REA is invoked per
+target, and aiming it at the sandbox root would feed it our own bookkeeping.
+Each dropped path is re-checked with `symlink_metadata` immediately before
+analysis so a link planted after the snapshot cannot pull an outside file
+into the report. A part that could not be analyzed is `null` in
+`verdict_sources`, with the reason in `installer_error` — never a silent zero.
+
+Because `verdict_sources` is part of the record, validation can check the
+arithmetic: an archive whose envelope is calmer than its worst listed part is
+rejected rather than rendered or gated.

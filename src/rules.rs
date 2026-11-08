@@ -202,6 +202,37 @@ fn add(
     });
 }
 
+/// Extensions that promise a Windows executable.
+const EXECUTABLE_EXTENSIONS: &[&str] = &["exe", "dll", "sys", "ocx", "scr", "cpl", "com"];
+/// Extensions that promise a document, image or other passive data.
+const DATA_EXTENSIONS: &[&str] = &[
+    "txt", "log", "csv", "json", "xml", "pdf", "rtf", "png", "jpg", "jpeg", "gif", "bmp",
+    "mp3", "mp4", "avi", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
+];
+
+/// FMT002 — the name promises one kind of content and the bytes are another.
+///
+/// Only *known* formats count. `unknown`/`binary` mean "we could not classify
+/// it" (including files above the content-analysis limit), and turning our
+/// own blind spot into a masquerade finding would be dishonest.
+fn format_mismatch(file: &FileAnalysis) -> Option<String> {
+    let extension = std::path::Path::new(&file.path).extension()?.to_string_lossy().to_ascii_lowercase();
+    if EXECUTABLE_EXTENSIONS.contains(&extension.as_str())
+        && matches!(file.format.as_str(), "script" | "text" | "ZIP" | "OLE/MSI" | "ELF")
+    {
+        return Some(format!(
+            "'.{extension}' promises a Windows executable, but the content is {}",
+            file.format
+        ));
+    }
+    if file.format == "PE" && DATA_EXTENSIONS.contains(&extension.as_str()) {
+        return Some(format!(
+            "'.{extension}' promises passive data, but the content is a PE executable"
+        ));
+    }
+    None
+}
+
 /// Evaluate every rule against one file. Deterministic order: the rules run
 /// in a fixed sequence and findings are returned in rule order.
 pub fn evaluate_file(file: &FileAnalysis, t: &Thresholds) -> Vec<Finding> {
@@ -402,14 +433,28 @@ pub fn evaluate_file(file: &FileAnalysis, t: &Thresholds) -> Vec<Finding> {
             format!("entropy {:.2} over {} bytes", file.entropy, file.size),
         );
     }
-    if file.pe.is_none() && matches!(file.format.as_str(), "PE" | "ELF") {
+    // --- Format sanity -----------------------------------------------------
+    // FMT001 is about a *broken* PE, not about other executable formats:
+    // an ELF file legitimately has no PE header, and claiming its "magic
+    // bytes disagree" was both wrong and noisy on Linux trees.
+    if file.pe.is_none() && file.format == "PE" {
         add(&mut out, file,
             "FMT001",
-            "Extension/format mismatch".into(),
-            Severity::Low,
+            "PE header could not be parsed".into(),
+            Severity::Medium,
             "masquerade",
-            4,
-            format!("claimed {} but the magic bytes disagree", file.format),
+            8,
+            "MZ signature present but the PE headers are missing or malformed (DOS-only, truncated or deliberately broken image)".into(),
+        );
+    }
+    if let Some(evidence) = format_mismatch(file) {
+        add(&mut out, file,
+            "FMT002",
+            "Extension/format mismatch".into(),
+            Severity::Medium,
+            "masquerade",
+            8,
+            evidence,
         );
     }
 
@@ -470,13 +515,18 @@ pub fn risk(findings: &[Finding]) -> (u64, &'static str) {
     } else if highest == Severity::High {
         score = score.max(30);
     }
-    let verdict = match score {
+    (score, verdict_for_score(score))
+}
+
+/// The band a score falls in. Every verdict in every report comes from here,
+/// so a verdict can never disagree with the number next to it.
+pub fn verdict_for_score(score: u64) -> &'static str {
+    match score {
         0..=9 => "low",
         10..=29 => "medium",
         30..=59 => "high",
         _ => "critical",
-    };
-    (score, verdict)
+    }
 }
 
 /// Findings aggregated into the shape reports carry under `"rules"`.
@@ -620,6 +670,74 @@ mod tests {
         assert_eq!(network[0].severity, Severity::Medium);
         assert!(network[0].evidence.contains("WinHttp"));
         assert!(!findings.iter().any(|x| x.category == "crypto"), "crypto is intentionally skipped");
+    }
+
+    #[test]
+    fn elf_without_a_pe_header_is_not_a_format_finding() {
+        // FMT001 used to fire on every ELF file: no PE header is exactly
+        // what an ELF is supposed to have.
+        let mut f = file_with(None);
+        f.path = "usr/bin/tool".into();
+        f.format = "ELF".into();
+        let findings = evaluate_file(&f, &Thresholds::default());
+        assert!(!findings.iter().any(|x| x.rule == "FMT001" || x.rule == "FMT002"), "{findings:?}");
+    }
+
+    #[test]
+    fn broken_pe_header_is_reported_once() {
+        let mut f = file_with(None);
+        f.format = "PE".into();
+        let findings = evaluate_file(&f, &Thresholds::default());
+        let fmt: Vec<&Finding> = findings.iter().filter(|x| x.rule == "FMT001").collect();
+        assert_eq!(fmt.len(), 1, "{findings:?}");
+        assert_eq!(fmt[0].severity, Severity::Medium);
+    }
+
+    #[test]
+    fn extension_mismatch_fires_only_on_known_formats() {
+        let mut f = file_with(None);
+        f.path = "photos/picture.jpg".into();
+        f.format = "PE".into();
+        // A PE named .jpg is a masquerade; the broken header is a separate fact.
+        assert!(evaluate_file(&f, &Thresholds::default()).iter().any(|x| x.rule == "FMT002"));
+
+        f.path = "setup.exe".into();
+        f.format = "script".into();
+        let findings = evaluate_file(&f, &Thresholds::default());
+        let mismatch: Vec<&Finding> = findings.iter().filter(|x| x.rule == "FMT002").collect();
+        assert_eq!(mismatch.len(), 1, "{findings:?}");
+        assert!(mismatch[0].evidence.contains("script"), "{:?}", mismatch[0]);
+
+        // Our own blind spots must never become findings: an unclassified
+        // file (e.g. one above the content limit) is not evidence of disguise.
+        for format in ["unknown", "binary"] {
+            f.format = format.into();
+            assert!(!evaluate_file(&f, &Thresholds::default()).iter().any(|x| x.rule == "FMT002"), "{format}");
+        }
+
+        // Matching name and content stay quiet.
+        f.path = "app.exe".into();
+        f.format = "PE".into();
+        assert!(format_mismatch(&f).is_none());
+        f.path = "notes.txt".into();
+        f.format = "text".into();
+        assert!(format_mismatch(&f).is_none());
+        f.path = "README".into();
+        f.format = "text".into();
+        assert!(format_mismatch(&f).is_none(), "no extension, no promise");
+    }
+
+    #[test]
+    fn verdict_always_matches_the_score_band() {
+        for score in [0, 9, 10, 29, 30, 59, 60, 100] {
+            let expected = match score {
+                0..=9 => "low",
+                10..=29 => "medium",
+                30..=59 => "high",
+                _ => "critical",
+            };
+            assert_eq!(verdict_for_score(score), expected);
+        }
     }
 
     #[test]

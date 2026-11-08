@@ -96,23 +96,96 @@ pub fn validate(report: &Value) -> Result<()> {
     }
     let body = report.get("report").ok_or_else(|| invalid("invalid report: missing report block"))?;
     validate_body(body, "report")?;
-    if let Some(installer) = report.get("installer_report").filter(|v| !matches!(v, Value::Null)) {
-        validate_body(installer, "installer_report")?;
+    for key in ["installer_report", "drops_report"] {
+        if let Some(part) = report.get(key).filter(|v| !matches!(v, Value::Null)) {
+            validate_body(part, key)?;
+        }
     }
+    if let Some(score) = report.get("risk_score") {
+        match score {
+            Value::Number(n) if n.is_finite() && (0.0..=100.0).contains(n) => {}
+            _ => return Err(invalid("invalid report: risk_score must be between 0 and 100")),
+        }
+    }
+    // A sandbox verdict is the worst of its parts, so it is expected to
+    // differ from the install-tree body. It must still agree with the
+    // per-source scores it claims to be derived from.
+    let combined = match report.get("verdict_sources").filter(|v| !matches!(v, Value::Null)) {
+        Some(sources) if mode == "sandbox-installer" => {
+            validate_verdict_sources(sources, report)?;
+            true
+        }
+        Some(_) => return Err(invalid("invalid report: verdict_sources is only valid for sandbox-installer")),
+        None => false,
+    };
     if let Some(verdict) = report.get("verdict") {
         if !verdict.as_str().is_some_and(known_verdict) {
             return Err(invalid("invalid report: verdict is not a recognized severity"));
         }
         // A gate reads the envelope first, while the window displays the
-        // analysis body. Never let those two disagree in an archived report.
-        if let Some(body_verdict) = body.get("verdict").and_then(Value::as_str) {
-            if verdict.as_str() != Some(body_verdict) {
-                return Err(invalid("invalid report: envelope verdict disagrees with report.verdict"));
+        // analysis body. Never let those two disagree in an archived report
+        // — unless the envelope is an explained combination of parts.
+        if !combined {
+            if let Some(body_verdict) = body.get("verdict").and_then(Value::as_str) {
+                if verdict.as_str() != Some(body_verdict) {
+                    return Err(invalid("invalid report: envelope verdict disagrees with report.verdict"));
+                }
             }
         }
     }
     if mode == "sandbox-installer" && report.get("execution").is_none() {
         return Err(invalid("invalid report: sandbox-installer is missing its execution block"));
+    }
+    Ok(())
+}
+
+/// `verdict_sources` records the score/verdict of each analyzed part. Check
+/// the shape, then check the arithmetic: the envelope may not be calmer
+/// than the worst part it lists.
+fn validate_verdict_sources(sources: &Value, report: &Value) -> Result<()> {
+    let map = match sources {
+        Value::Object(map) => map,
+        _ => return Err(invalid("invalid report: verdict_sources must be an object")),
+    };
+    let mut worst: Option<u64> = None;
+    for (name, source) in map {
+        if matches!(source, Value::Null) {
+            continue;
+        }
+        let score = integer(source.get("risk_score"))
+            .filter(|n| *n <= 100)
+            .ok_or_else(|| invalid(format!(
+                "invalid report: verdict_sources.{name}.risk_score must be an integer between 0 and 100"
+            )))?;
+        let verdict = source.get("verdict").and_then(Value::as_str).unwrap_or("");
+        if !known_verdict(verdict) {
+            return Err(invalid(format!(
+                "invalid report: verdict_sources.{name}.verdict is not a recognized severity"
+            )));
+        }
+        if verdict != crate::rules::verdict_for_score(score) {
+            return Err(invalid(format!(
+                "invalid report: verdict_sources.{name} says '{verdict}' for a score of {score}"
+            )));
+        }
+        worst = Some(worst.map_or(score, |w: u64| w.max(score)));
+    }
+    let Some(worst) = worst else { return Ok(()) };
+    let expected = crate::rules::verdict_for_score(worst);
+    match report.get("verdict").and_then(Value::as_str) {
+        Some(verdict) if verdict != expected => {
+            return Err(invalid(format!(
+                "invalid report: verdict is '{verdict}' but the worst analyzed part scores {worst} ({expected})"
+            )));
+        }
+        _ => {}
+    }
+    if let Some(score) = integer(report.get("risk_score")) {
+        if score != worst {
+            return Err(invalid(format!(
+                "invalid report: risk_score is {score} but the worst analyzed part scores {worst}"
+            )));
+        }
     }
     Ok(())
 }
@@ -165,6 +238,60 @@ mod tests {
         ] {
             assert!(validate(&crate::json::parse(text).unwrap()).is_err(), "accepted {text}");
         }
+    }
+
+    fn sandbox_archive() -> Value {
+        crate::json::parse(r#"{
+            "schema_version":3,"mode":"sandbox-installer","verdict":"critical","risk_score":94,
+            "verdict_sources":{
+                "installer":{"risk_score":12,"verdict":"medium"},
+                "install_tree":{"risk_score":0,"verdict":"low"},
+                "drops":{"risk_score":94,"verdict":"critical"}
+            },
+            "execution":{"command":"setup.exe","timed_out":false},
+            "report":{"file_count":0,"risk_score":0,"verdict":"low","files":[]},
+            "installer_report":{"file_count":1,"risk_score":12,"verdict":"medium",
+                "files":[{"path":"setup.exe","size":10}]},
+            "drops_report":{"file_count":1,"risk_score":94,"verdict":"critical",
+                "files":[{"path":"AppData/Roaming/payload.exe","size":20}],"scan_issues":[]}
+        }"#).unwrap()
+    }
+
+    #[test]
+    fn sandbox_verdict_may_exceed_the_install_tree_body() {
+        // The whole point of the combined verdict: nothing landed in
+        // install\, yet a critical payload was dropped into the profile.
+        validate(&sandbox_archive()).unwrap();
+    }
+
+    #[test]
+    fn sandbox_verdict_cannot_be_calmer_than_its_sources() {
+        for (verdict, score) in [("low", 94u64), ("critical", 12)] {
+            let mut report = sandbox_archive();
+            if let Value::Object(map) = &mut report {
+                map.insert("verdict".into(), Value::str(verdict));
+                map.insert("risk_score".into(), Value::num(score));
+            }
+            assert!(validate(&report).is_err(), "accepted {verdict}/{score}");
+        }
+        let mut report = sandbox_archive();
+        if let Value::Object(map) = &mut report {
+            map.insert("verdict_sources".into(), Value::obj(vec![
+                ("drops", Value::obj(vec![
+                    ("risk_score", Value::num(94)), ("verdict", Value::str("low")),
+                ])),
+            ]));
+        }
+        assert!(validate(&report).is_err(), "a source verdict must match its own score");
+    }
+
+    #[test]
+    fn local_scans_still_reject_conflicting_verdicts_and_stray_sources() {
+        let mut report = archive();
+        if let Value::Object(map) = &mut report {
+            map.insert("verdict_sources".into(), Value::obj(vec![]));
+        }
+        assert!(validate(&report).is_err(), "verdict_sources is a sandbox-only field");
     }
 
     #[test]

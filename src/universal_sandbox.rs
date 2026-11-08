@@ -124,7 +124,12 @@ impl Sandbox {
         #[cfg(not(windows))]
         {
             let _ = self;
-            Ok((installer.to_path_buf(), args.to_vec()))
+            // `Command::new("dropper.sh")` is looked up on PATH, not in the
+            // working directory, so a relative installer that plainly exists
+            // would fail to spawn. Resolve it first (Windows already searches
+            // the current directory), and record the absolute path as evidence.
+            let program = std::fs::canonicalize(installer).unwrap_or_else(|_| installer.to_path_buf());
+            Ok((program, args.to_vec()))
         }
     }
 

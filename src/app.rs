@@ -114,12 +114,50 @@ fn run_sandbox_inner(opts: &SandboxOptions, sandbox: &Sandbox, install_dir: &Pat
     // installer binary itself (its own PE/scripts are evidence too).
     let bridge = ReaBridge::new(ReaConfig { rea_path: opts.rea_path.clone(), timeout: None });
     let rea_report = bridge.analyze(install_dir)?;
-    let installer_report = bridge.analyze(&opts.installer).ok();
-    Ok(Value::obj(vec![
+    // The installer is evidence in its own right: a failure to read it is
+    // reported, never silently dropped from the record.
+    let (installer_report, installer_error) = match bridge.analyze(&opts.installer) {
+        Ok(report) => (Some(report), None),
+        Err(e) => (None, Some(e.to_string())),
+    };
+    // Files written outside install\ (redirected profile, startup folder…)
+    // are inspected too. A payload dropped into AppData is exactly as much
+    // evidence as one dropped into the install tree.
+    let drops_report = analyze_drops(&sandbox.root, &sandbox_delta);
+
+    // The verdict covers *everything* analyzed. It is the worst of the
+    // three parts, not their sum: installers are routinely copied into the
+    // install tree, and double-counting the same binary would inflate the
+    // score without adding evidence.
+    let sources = [
+        ("installer", installer_report.as_ref()),
+        ("install_tree", Some(&rea_report)),
+        ("drops", Some(&drops_report)),
+    ];
+    let score = sources.iter().filter_map(|(_, r)| r.map(|r| r.risk_score())).max().unwrap_or(0);
+    let verdict_sources = Value::Object(
+        sources
+            .iter()
+            .map(|(name, report)| {
+                let value = match report {
+                    Some(r) => Value::obj(vec![
+                        ("risk_score", Value::num(r.risk_score())),
+                        ("verdict", Value::str(r.verdict())),
+                    ]),
+                    None => Value::Null,
+                };
+                ((*name).to_string(), value)
+            })
+            .collect(),
+    );
+
+    let mut report = Value::obj(vec![
         ("schema_version", Value::num(crate::SCHEMA_VERSION)),
         ("mode", Value::str("sandbox-installer")),
         ("generated_unix", Value::num(unix_secs())),
-        ("verdict", Value::str(rea_report.verdict())),
+        ("verdict", Value::str(crate::rules::verdict_for_score(score))),
+        ("risk_score", Value::num(score)),
+        ("verdict_sources", verdict_sources),
         ("installer", Value::str(opts.installer.display().to_string())),
         ("execution", Value::obj(vec![
             ("command", Value::str(outcome.command.clone())),
@@ -137,8 +175,62 @@ fn run_sandbox_inner(opts: &SandboxOptions, sandbox: &Sandbox, install_dir: &Pat
         // redirected profile). Anything changed outside the sandbox tree
         // itself is, by definition, not visible to this zero-driver view.
         ("sandbox_delta", sandbox_delta.to_json()),
+        ("drops_report", drops_report.to_json()),
         ("report", rea_report.to_json()),
-    ]))
+    ]);
+    if let (Some(error), Value::Object(map)) = (installer_error, &mut report) {
+        map.insert("installer_error".into(), Value::str(error));
+    }
+    Ok(report)
+}
+
+/// Native analysis of the files an installer added/modified **outside** the
+/// install directory, with paths relative to the sandbox root.
+///
+/// External REA is deliberately not run here: it is invoked per target, and
+/// pointing it at the sandbox root would hand it our own bookkeeping files.
+/// The native analyzer covers exactly the changed set instead.
+fn analyze_drops(root: &Path, delta: &crate::snapshot::Delta) -> crate::rea_bridge::ReaReport {
+    use crate::rea_bridge::{
+        analyze_file, content_limit_issue, ReaReport, ScanIssue, MAX_ANALYZE_BYTES,
+    };
+    let mut files = Vec::new();
+    let mut scan_issues = Vec::new();
+    for entry in delta.changed_files() {
+        let path = root.join(&entry.path);
+        // The snapshot recorded a regular file; re-check before reading so a
+        // link planted after the snapshot cannot pull an outside file in.
+        match std::fs::symlink_metadata(&path) {
+            Ok(meta) if meta.is_file() => {}
+            Ok(_) => {
+                scan_issues.push(ScanIssue::new(
+                    entry.path.clone(), "analysis", "no longer a regular file at analysis time",
+                ));
+                continue;
+            }
+            Err(e) => {
+                scan_issues.push(ScanIssue::new(entry.path.clone(), "metadata", e.to_string()));
+                continue;
+            }
+        }
+        match analyze_file(&path, Path::new(&entry.path)) {
+            Ok(file) => {
+                if file.size > MAX_ANALYZE_BYTES {
+                    scan_issues.push(content_limit_issue(&entry.path, file.size));
+                }
+                files.push(file);
+            }
+            Err(e) => scan_issues.push(ScanIssue::new(entry.path.clone(), "analysis", e.to_string())),
+        }
+    }
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    ReaReport {
+        engine: "rea-offline-native".to_string(),
+        target: crate::util::path_to_slash_string(root),
+        files,
+        external_json: None,
+        scan_issues,
+    }
 }
 
 /// Preflight checks for an offline machine: platform, temp/sandbox

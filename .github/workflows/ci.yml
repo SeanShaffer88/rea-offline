@@ -115,6 +115,11 @@ jobs:
           fi
           test ! -e typo.json
 
+          # 3c. A PE wearing a document extension must be called out.
+          cp sample.exe disguised.pdf
+          "$EXE" scan disguised.pdf --output masquerade.json --quiet
+          grep -q 'FMT002' masquerade.json
+
           # 4. Report on real source files (mixed, non-binary content).
           "$EXE" scan src --output repo.json --quiet
           test -s repo.json
