@@ -997,10 +997,12 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn external_capture_drains_large_stdout_and_stderr_without_deadlock() {
+        // Parenthesize each loop so the second loop is not parsed as part of
+        // the first loop's body (which made stderr grow without bound).
         let mut cmd = std::process::Command::new("cmd");
         cmd.arg("/C").arg(
-            "for /L %i in (1,1,4096) do @echo xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx & \
-             for /L %i in (1,1,2048) do @echo yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy 1>&2",
+            "(for /L %i in (1,1,4096) do @echo xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx) & \
+             (for /L %i in (1,1,2048) do @echo yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy 1>&2)",
         );
         let out = run_with_timeout(cmd, Duration::from_secs(30)).unwrap();
         assert!(out.status_ok);
