@@ -138,3 +138,48 @@ fn sandbox_runs_harmless_program_and_captures_delta() {
     CleanupController::purge_dir(&root, false).unwrap();
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn external_rea_failure_is_reported_without_losing_native_evidence() {
+    let dir = tmp_dir("rea-failure");
+    let target = dir.join("sample.txt");
+    let broken_rea = dir.join("broken-rea");
+    std::fs::write(&target, b"CreateRemoteThread https://example.invalid").unwrap();
+    // Exists but is not executable: discovery selects it, spawning fails on
+    // both Unix and Windows. Native analysis must still produce evidence.
+    std::fs::write(&broken_rea, b"not an executable").unwrap();
+    let bridge = ReaBridge::new(ReaConfig { rea_path: Some(broken_rea), timeout: None });
+    let report = bridge.analyze(&target).unwrap();
+    assert_eq!(report.files.len(), 1);
+    assert!(report.files[0].indicators.iter().any(|i| i.category == "injection"));
+    assert!(report.scan_issues.iter().any(|i| i.stage == "rea-external"), "{:?}", report.scan_issues);
+    let json = report.to_json();
+    assert_eq!(json.get("summary").and_then(|s| s.get("complete")), Some(&rea_offline::json::Value::Bool(false)));
+    let envelope = rea_offline::json::Value::obj(vec![
+        ("schema_version", rea_offline::json::Value::num(rea_offline::SCHEMA_VERSION)),
+        ("mode", rea_offline::json::Value::str("local-scan")),
+        ("verdict", rea_offline::json::Value::str(report.verdict())),
+        ("report", json),
+    ]);
+    assert!(rea_offline::report::validate(&envelope).is_ok());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn directory_analysis_does_not_follow_symlinks_outside_the_target() {
+    let dir = tmp_dir("symlink");
+    let target = dir.join("tree");
+    let outside = dir.join("outside");
+    std::fs::create_dir_all(&target).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(target.join("inside.txt"), b"inside").unwrap();
+    std::fs::write(outside.join("secret.txt"), b"outside secret").unwrap();
+    std::os::unix::fs::symlink(&outside, target.join("linked-dir")).unwrap();
+    std::os::unix::fs::symlink(outside.join("secret.txt"), target.join("linked-file.txt")).unwrap();
+    let report = ReaBridge::new(ReaConfig::default()).analyze(&target).unwrap();
+    assert_eq!(report.files.len(), 1);
+    assert_eq!(report.files[0].path, "inside.txt");
+    assert!(report.scan_issues.is_empty());
+    std::fs::remove_dir_all(&dir).unwrap();
+}

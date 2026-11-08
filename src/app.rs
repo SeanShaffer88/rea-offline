@@ -28,6 +28,11 @@ pub fn mode_scan(opts: ScanOptions) -> Result<Value> {
     ]))
 }
 
+/// Reopen an archived inspection without touching its original target.
+pub fn mode_report(path: &Path) -> Result<Value> {
+    crate::report::load(path)
+}
+
 pub struct SandboxOptions {
     pub installer: PathBuf,
     pub installer_args: Vec<String>,

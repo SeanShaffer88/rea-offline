@@ -44,6 +44,27 @@ fn nullish(v: Option<&Value>) -> bool {
     matches!(v, None | Some(Value::Null))
 }
 
+fn issue_line(issue: &Value) -> String {
+    format!("{} [{}]: {}", s(issue.get("path")), s(issue.get("stage")), s(issue.get("message")))
+}
+
+/// Coverage warnings belong next to the decision, not buried after findings.
+/// They are operational limitations and never contribute to the risk score.
+fn append_coverage_text(out: &mut String, root: &Value) {
+    for (label, key) in [("", "report"), ("installer ", "installer_report")] {
+        let Some(issues) = root.get(key).and_then(|r| r.get("scan_issues")) else { continue };
+        let issues = array(Some(issues));
+        if issues.is_empty() { continue; }
+        out.push_str(&format!("\n{}coverage: INCOMPLETE ({} issue(s))\n", label, issues.len()));
+        for issue in issues.iter().take(8) {
+            out.push_str(&format!("  {}\n", issue_line(issue)));
+        }
+        if issues.len() > 8 {
+            out.push_str(&format!("  … {} more; see JSON\n", issues.len() - 8));
+        }
+    }
+}
+
 fn human_bytes(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
     let mut value = bytes as f64;
@@ -152,6 +173,8 @@ pub fn summary_text(root: &Value) -> String {
             unsigned,
             pe
         ));
+
+        append_coverage_text(&mut out, root);
 
         let top: Vec<String> = rules
             .map(|rules| {
@@ -284,6 +307,26 @@ pub fn summary_markdown(root: &Value) -> String {
         out.push_str(&format!("| files analyzed | {} |\n", n(r.get("file_count"))));
         let total = human_bytes(n(r.get("summary").and_then(|x| x.get("total_bytes"))));
         out.push_str(&format!("| total size | {total} |\n\n"));
+
+        let mut coverage = String::new();
+        for (label, key) in [("Install tree", "report"), ("Installer", "installer_report")] {
+            let issues = array(root.get(key).and_then(|r| r.get("scan_issues")));
+            if issues.is_empty() { continue; }
+            coverage.push_str(&format!("### {label}\n\n"));
+            let mut table = Table::new(["path", "stage", "message"]);
+            for issue in issues.iter().take(MAX_ROWS) {
+                table.row([s(issue.get("path")), s(issue.get("stage")), s(issue.get("message"))]);
+            }
+            coverage.push_str(&table.render());
+            if issues.len() > MAX_ROWS {
+                coverage.push_str(&format!("\n_{} further coverage issues omitted._\n", issues.len() - MAX_ROWS));
+            }
+            coverage.push('\n');
+        }
+        if !coverage.is_empty() {
+            out.push_str("## Coverage warnings\n\n**Inspection incomplete.** These are operational limitations, not risk findings.\n\n");
+            out.push_str(&coverage);
+        }
 
         if let Some(rules) = r.get("rules") {
             let findings = sorted_findings(rules);

@@ -263,3 +263,102 @@ fn purge_refuses_arbitrary_directories() {
     assert!(!sandbox.exists());
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn report_command_reopens_archives_without_rescanning_and_gates_them() {
+    let dir = workdir("report");
+    let sample = dir.join("sample.exe");
+    assert_eq!(run(&dir, &["sample", sample.to_str().unwrap()]).code, 0);
+    let archived = dir.join("archived.json");
+    assert_eq!(run(&dir, &["scan", "sample.exe", "--output", "archived.json", "--quiet"]).code, 0);
+    let before = std::fs::read_to_string(&archived).unwrap();
+    let original = rea_offline::json::parse(&before).unwrap();
+    std::fs::remove_file(&sample).unwrap();
+
+    let json = run(&dir, &["report", "archived.json"]);
+    assert_eq!(json.code, 0, "{}", json.stderr);
+    assert_eq!(rea_offline::json::parse(&json.stdout).unwrap(), original);
+    let text = run(&dir, &["report", "archived.json", "--format", "text"]);
+    assert_eq!(text.code, 0, "{}", text.stderr);
+    assert!(text.stdout.contains("risk score"), "{}", text.stdout);
+    let md = run(&dir, &["report", "archived.json", "--format", "markdown", "--output", "report.md", "--quiet"]);
+    assert_eq!(md.code, 0, "{}", md.stderr);
+    assert!(std::fs::read_to_string(dir.join("report.md")).unwrap().starts_with("# rea-offline inspection report"));
+    assert_eq!(run(&dir, &["report", "archived.json", "--fail-on", "low", "--quiet"]).code, 2);
+    assert_eq!(run(&dir, &["report", "archived.json", "--fail-on", "critical", "--quiet"]).code, 0);
+    assert_eq!(std::fs::read_to_string(&archived).unwrap(), before, "archive must not be rewritten");
+
+    let invalid = dir.join("invalid.json");
+    std::fs::write(&invalid, r#"{"verdict":"low"}"#).unwrap();
+    let rejected = run(&dir, &["report", "invalid.json", "--fail-on", "low"]);
+    assert_eq!(rejected.code, 1, "invalid evidence must not pass a gate: {}", rejected.stderr);
+    assert!(rejected.stderr.contains("invalid report"), "{}", rejected.stderr);
+    let gui = run(&dir, &["gui", "invalid.json", "--from-report", "--output", "bad.html", "--no-open"]);
+    assert_ne!(gui.code, 0);
+    assert!(!dir.join("bad.html").exists());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn cli_rejects_mistyped_and_misplaced_options_before_doing_work() {
+    let dir = workdir("args");
+    let sample = dir.join("sample.exe");
+    assert_eq!(run(&dir, &["sample", sample.to_str().unwrap()]).code, 0);
+    for args in [
+        vec!["scan", "sample.exe", "--outpt", "report.json"],
+        vec!["scan", "sample.exe", "--output"],
+        vec!["scan", "sample.exe", "--output", "--quiet"],
+        vec!["scan", "sample.exe", "--quiet=false"],
+        vec!["scan", "sample.exe", "--port", "9000"],
+        vec!["scan", "sample.exe", "--output", "a.json", "--output", "b.json"],
+        vec!["scan", "sample.exe", "extra.exe"],
+        vec!["doctor", "extra"],
+        vec!["diff", "only-one.json"],
+        vec!["report", "missing.json", "--rea", "rea.exe"],
+        vec!["sandbox", "sample.exe", "--memory-mb", "0"],
+        vec!["gui", "sample.exe", "--port", "0", "--no-open"],
+    ] {
+        let result = run(&dir, &args);
+        assert_eq!(result.code, 1, "accepted {args:?}: {}", result.stdout);
+        assert!(result.stderr.contains("invalid input"), "{}", result.stderr);
+    }
+    assert!(!dir.join("report.json").exists());
+    assert!(!dir.join("a.json").exists());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn unreadable_files_are_visible_as_coverage_issues_in_every_format() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = workdir("coverage");
+    let target = dir.join("tree");
+    std::fs::create_dir_all(&target).unwrap();
+    std::fs::write(target.join("readable.txt"), b"visible").unwrap();
+    let locked = target.join("locked.bin");
+    std::fs::write(&locked, b"hidden").unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    let result = run(&dir, &["scan", "tree"]);
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    let json = rea_offline::json::parse(&result.stdout).unwrap();
+    let report = json.get("report").unwrap();
+    let issues = format!("{:?}", report.get("scan_issues"));
+    assert!(issues.contains("locked.bin"), "{issues}");
+    assert_eq!(report.get("file_count"), Some(&rea_offline::json::Value::num(1)));
+    assert_eq!(report.get("summary").and_then(|s| s.get("complete")), Some(&rea_offline::json::Value::Bool(false)));
+    let text = run(&dir, &["scan", "tree", "--format", "text"]);
+    assert!(text.stdout.contains("coverage: INCOMPLETE"), "{}", text.stdout);
+    assert!(text.stdout.contains("locked.bin"), "{}", text.stdout);
+    let md = run(&dir, &["scan", "tree", "--format", "markdown"]);
+    assert!(md.stdout.contains("## Coverage warnings"), "{}", md.stdout);
+    assert!(md.stdout.contains("locked.bin"), "{}", md.stdout);
+    let gui = run(&dir, &["gui", "tree", "--output", "window.html", "--no-open"]);
+    assert_eq!(gui.code, 0, "{}", gui.stderr);
+    let html = std::fs::read_to_string(dir.join("window.html")).unwrap();
+    assert!(html.contains("coverage: INCOMPLETE"), "GUI must disclose incomplete coverage");
+    assert!(html.contains("chip coverage-incomplete"), "coverage chip stays visible regardless of selection");
+
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o600)).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+}
