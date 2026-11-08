@@ -76,6 +76,7 @@ jobs:
           "$EXE" doctor --output doctor.json
           grep -q '"sha256_selftest": true' doctor.json
           grep -q '"md5_selftest": true' doctor.json
+          grep -q '"imphash_selftest": true' doctor.json
           grep -q '"sandbox_rehearsal_ok": true' doctor.json
 
           # 2. Build a synthetic sample, then scan it in every format.

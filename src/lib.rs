@@ -12,6 +12,7 @@ pub mod app;
 pub mod cleanup;
 pub mod error;
 pub mod gui;
+pub mod imphash_ordinals;
 pub mod json;
 pub mod md5;
 pub mod mdtable;
