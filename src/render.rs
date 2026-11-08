@@ -620,6 +620,17 @@ pub fn doctor_markdown(root: &Value) -> String {
     let ok = |b: bool| if b { "yes" } else { "no" };
     let mut table = Table::new(["check", "value"]);
     table.row(["version", &s(root.get("version"))]);
+    if let Some(hashes) = root.get("hashes") {
+        for (key, label) in [
+            ("sha256_selftest", "SHA-256 self-test"),
+            ("md5_selftest", "MD5 self-test"),
+            ("imphash_selftest", "imphash self-test (pefile)"),
+        ] {
+            if hashes.get(key).is_some() {
+                table.row([label, ok(flag(hashes.get(key)))]);
+            }
+        }
+    }
     table.row(["platform", &format!("{} / {}", s(root.get("os")), s(root.get("arch")))]);
     table.row(["Win32 Job Objects", ok(flag(root.get("windows_job_objects")))]);
     table.row(["registry hive mount", &s(root.get("registry_hive_mount"))]);

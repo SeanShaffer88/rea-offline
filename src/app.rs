@@ -250,6 +250,21 @@ pub fn mode_doctor(rea_path: Option<PathBuf>) -> Result<Value> {
     // operator trusts a hash in a report.
     let sha_ok = crate::sha256::hash_bytes(b"abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
     let md5_ok = crate::md5::hash_bytes(b"abc") == "900150983cd24fb0d6963f7d28e17f72";
+    // imphash is only worth quoting if it matches everyone else's. These two
+    // digests were produced by upstream pefile's get_imphash(); the second
+    // exercises the frozen ordinal table, so a build that lost or "corrected"
+    // it fails here instead of quietly publishing incomparable hashes.
+    let imphash_ok = crate::rea_bridge::imphash(&[
+        "KERNEL32.dll!Sleep".to_string(),
+        "KERNEL32.dll!CreateFileW".to_string(),
+        "USER32.dll!MessageBoxW".to_string(),
+    ]).as_deref() == Some("84e38f1bb1f12dd4775179ef0334737c")
+        && crate::rea_bridge::imphash(&[
+            "wsock32.dll!#10".to_string(),
+            "wsock32.dll!#11".to_string(),
+            "wsock32.dll!#1".to_string(),
+            "wsock32.dll!#24".to_string(),
+        ]).as_deref() == Some("5a9c08dc18a3c8d966264b0e82ff61ed");
     Ok(Value::obj(vec![
         ("schema_version", Value::num(3)),
         ("mode", Value::str("doctor")),
@@ -257,6 +272,7 @@ pub fn mode_doctor(rea_path: Option<PathBuf>) -> Result<Value> {
         ("hashes", Value::obj(vec![
             ("sha256_selftest", Value::Bool(sha_ok)),
             ("md5_selftest", Value::Bool(md5_ok)),
+            ("imphash_selftest", Value::Bool(imphash_ok)),
         ])),
         ("os", Value::str(std::env::consts::OS)),
         ("arch", Value::str(std::env::consts::ARCH)),

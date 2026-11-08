@@ -580,46 +580,62 @@ pub fn bare_function(import: &str) -> &str {
     import.rsplit('!').next().unwrap_or(import)
 }
 
-/// Import hash ("imphash"): MD5 over the normalized import list, matching
-/// the convention used by pefile / VirusTotal so values are comparable with
-/// public corpora.
+/// Import hash ("imphash"): MD5 over the normalized import list, byte-for-byte
+/// the convention `pefile` uses, so values line up with VirusTotal, YARA and
+/// YARA-X rather than merely looking like them.
 ///
-/// Normalization, per the convention:
-///   * `DLL.dll!Func`        → `dll.func`
-///   * `DLL.dll!#42`         → `dll.ord42`
-///   * DLL name lowercased, `.dll`/`.sys`/`.ocx` suffix dropped
-///   * ordinal entries are sorted numerically and appended as trailing
-///     `ord<N>` items (pefile's convention), after all named imports.
+/// Normalization, per pefile's `get_imphash()`:
+///   * libraries and functions are visited in **file order** — descriptor
+///     order, then thunk order. Order is significant: reordering imports
+///     changes the digest, which is what makes it a build fingerprint.
+///   * the library is lowercased and loses its extension **only** when that
+///     extension is `.ocx`, `.sys` or `.dll` (so `.drv`/`.cpl` keep theirs).
+///   * `DLL.dll!Func`  → `dll.func`
+///   * `DLL.dll!#42`   → `dll.<name>` when the frozen ordinal table knows it
+///     (`ws2_32.dll!#23` → `ws2_32.socket`), otherwise `dll.ord42`. The lookup
+///     keys on the full lowercased DLL name, before the extension is dropped.
+///   * entries are joined with `,` and hashed with MD5.
+///
+/// Earlier versions of this function sorted ordinals to the end, emitted them
+/// unqualified, and stripped `.drv`/`.cpl` too. All three diverged from pefile,
+/// so digests for ordinal-importing samples did not match public corpora.
 pub fn imphash(imported_functions: &[String]) -> Option<String> {
-    if imported_functions.is_empty() { return None; }
-    let mut named: Vec<String> = Vec::new();
-    let mut ordinals: Vec<u32> = Vec::new();
+    let normalized = imphash_source(imported_functions);
+    if normalized.is_empty() {
+        return None;
+    }
+    Some(crate::md5::hash_bytes(normalized.as_bytes()))
+}
+
+/// The exact string [`imphash`] hashes. Exposed because "why is this digest
+/// what it is" is otherwise unanswerable without re-deriving the algorithm,
+/// and because it lets tests assert the normalization directly instead of
+/// only comparing opaque hashes.
+pub fn imphash_source(imported_functions: &[String]) -> String {
+    let mut entries: Vec<String> = Vec::new();
     for entry in imported_functions {
-        let (dll, func) = match entry.split_once('!') {
-            Some(pair) => pair,
-            None => continue,
+        let Some((dll, func)) = entry.split_once('!') else { continue };
+        if func.is_empty() {
+            continue;
+        }
+        let dll_lower = dll.to_lowercase();
+        // rsplit(".", 1): only a recognised executable extension is dropped.
+        let stem = match dll_lower.rsplit_once('.') {
+            Some((prefix, "ocx" | "sys" | "dll")) => prefix,
+            _ => dll_lower.as_str(),
         };
-        let mut stem = dll.to_ascii_lowercase();
-        for suffix in [".dll", ".sys", ".ocx", ".drv", ".cpl"] {
-            if let Some(stripped) = stem.strip_suffix(suffix) {
-                stem = stripped.to_string();
-                break;
-            }
-        }
-        if let Some(ord) = func.strip_prefix('#') {
-            ordinals.push(ord.trim().parse::<u32>().unwrap_or(0));
-        } else {
-            named.push(format!("{stem}.{}", func.to_ascii_lowercase()));
-        }
+        let name = match func.strip_prefix('#') {
+            Some(ordinal) => match ordinal.trim().parse::<u16>() {
+                Ok(ordinal) => crate::imphash_ordinals::lookup(&dll_lower, ordinal),
+                // Only our own parser writes these, and it always emits a
+                // u16; anything else is not an import we can name.
+                Err(_) => continue,
+            },
+            None => func.to_lowercase(),
+        };
+        entries.push(format!("{stem}.{name}"));
     }
-    // pefile sorts the ordinal list numerically and appends it after the
-    // named imports; mirror that so the digest is comparable.
-    ordinals.sort_unstable();
-    for ord in ordinals {
-        named.push(format!("ord{ord}"));
-    }
-    if named.is_empty() { return None; }
-    Some(crate::md5::hash_bytes(named.join(",").as_bytes()))
+    entries.join(",")
 }
 
 fn detect_format(data: &[u8], path: &Path) -> String {
@@ -944,6 +960,142 @@ mod tests {
         assert_eq!(pe.section_details.len(), 1);
         assert!(pe.section_details[0].executable && !pe.section_details[0].writable);
         assert_eq!(pe.overlay_size, 0x40);
+    }
+
+    /// Import lists whose digests were produced by **upstream pefile itself**
+    /// (`PE(...).get_imphash()`, erocarrera/pefile master f35dfc5, which uses the
+    /// frozen imphash ordinal tables). Each entry is
+    /// `(imports, normalized string, md5)`.
+    ///
+    /// These are the contract: if a change makes this tool stop agreeing with
+    /// VirusTotal/YARA, it fails here rather than in someone's investigation
+    /// months later. `wsock32` and `oleaut32` deliberately differ from the
+    /// *released* pefile 2024.8.26, whose general ordinal tables were corrected
+    /// after the imphash convention froze — the frozen values are the ones
+    /// other tools still publish.
+    const PEFILE_VECTORS: &[(&[&str], &str, &str)] = &[
+        (
+            &["KERNEL32.dll!Sleep", "KERNEL32.dll!CreateFileW", "USER32.dll!MessageBoxW"],
+            "kernel32.sleep,kernel32.createfilew,user32.messageboxw",
+            "84e38f1bb1f12dd4775179ef0334737c",
+        ),
+        (
+            &["KERNEL32.dll!#42", "KERNEL32.dll!Sleep", "KERNEL32.dll!#7"],
+            "kernel32.ord42,kernel32.sleep,kernel32.ord7",
+            "7e3efb465fa7c0e9ea58e9983eb65e07",
+        ),
+        (
+            &["WS2_32.dll!#23", "WS2_32.dll!#1", "WS2_32.dll!#111", "WS2_32.dll!#500", "WS2_32.dll!WSAStartup"],
+            "ws2_32.socket,ws2_32.accept,ws2_32.wsagetlasterror,ws2_32.wep,ws2_32.wsastartup",
+            "60783a553ab6e93c4f7b912f48e0c62d",
+        ),
+        (
+            &["wsock32.dll!#10", "wsock32.dll!#11", "wsock32.dll!#1", "wsock32.dll!#24"],
+            "wsock32.ioctlsocket,wsock32.inet_addr,wsock32.accept,wsock32.getaddrinfow",
+            "5a9c08dc18a3c8d966264b0e82ff61ed",
+        ),
+        (
+            &["OLEAUT32.dll!#2", "OLEAUT32.dll!#144", "OLEAUT32.dll!#6", "OLEAUT32.dll!#999"],
+            "oleaut32.sysallocstring,oleaut32.dllcanunloadnow,oleaut32.sysfreestring,oleaut32.ord999",
+            "8f5066f2b9ba7f9212493982daffdcf7",
+        ),
+        (
+            &["driver.drv!DrvEntry", "panel.cpl!CPlApplet", "control.OCX!DllMain", "kernel.SYS!IoCreateDevice"],
+            "driver.drv.drventry,panel.cpl.cplapplet,control.dllmain,kernel.iocreatedevice",
+            "2a7355b060c343efa0b26ef027e2b61a",
+        ),
+        (
+            &["noext!Alpha", "api-ms-win-core-x-l1-1-0.dll!Beta"],
+            "noext.alpha,api-ms-win-core-x-l1-1-0.beta",
+            "0a613db77c9d52cef7d86dc114998204",
+        ),
+        (
+            &["KERNEL32.dll!Sleep", "KERNEL32.dll!ExitProcess"],
+            "kernel32.sleep,kernel32.exitprocess",
+            "9951ea482cdf88d83ed64c8866836e90",
+        ),
+        (
+            &["KERNEL32.dll!ExitProcess", "KERNEL32.dll!Sleep"],
+            "kernel32.exitprocess,kernel32.sleep",
+            "a3b183a3587e60809b7099ba787a3790",
+        ),
+        (
+            &["KERNEL32.dll!VirtualAllocEx", "KERNEL32.dll!#9", "ws2_32.dll!#23", "ws2_32.dll!connect", "ADVAPI32.dll!RegSetValueExW"],
+            "kernel32.virtualallocex,kernel32.ord9,ws2_32.socket,ws2_32.connect,advapi32.regsetvalueexw",
+            "ff6c1d896e7b926b4daed13b01d67379",
+        ),
+    ];
+
+    #[test]
+    fn imphash_matches_pefile_reference_vectors() {
+        for (imports, expected_source, expected_hash) in PEFILE_VECTORS {
+            let owned: Vec<String> = imports.iter().map(|s| s.to_string()).collect();
+            assert_eq!(imphash_source(&owned), *expected_source, "normalization of {imports:?}");
+            assert_eq!(imphash(&owned).as_deref(), Some(*expected_hash), "digest of {imports:?}");
+        }
+    }
+
+    #[test]
+    fn import_order_changes_the_digest() {
+        // Vectors 7 and 8 are the same imports in opposite order: a build
+        // fingerprint must notice, which the old sort-ordinals-to-the-end
+        // implementation could not.
+        let a: Vec<String> = PEFILE_VECTORS[7].0.iter().map(|s| s.to_string()).collect();
+        let b: Vec<String> = PEFILE_VECTORS[8].0.iter().map(|s| s.to_string()).collect();
+        assert_ne!(imphash(&a), imphash(&b));
+    }
+
+    #[test]
+    fn imphash_survives_a_real_parse_of_the_same_imports() {
+        // The vectors above feed strings directly; this proves the PE parser
+        // hands imphash the same list in the same order.
+        let bytes = crate::testutil::PeBuilder::new()
+            .imports("WS2_32.dll", vec![
+                crate::testutil::Import::Ordinal(23),
+                crate::testutil::Import::Ordinal(1),
+                crate::testutil::Import::Ordinal(111),
+                crate::testutil::Import::Ordinal(500),
+                crate::testutil::Import::Named("WSAStartup"),
+            ])
+            .build();
+        let pe = parse_pe(&bytes).expect("parse");
+        assert_eq!(imphash_source(&pe.imported_functions), PEFILE_VECTORS[2].1);
+        assert_eq!(imphash(&pe.imported_functions).as_deref(), Some(PEFILE_VECTORS[2].2));
+    }
+
+    #[test]
+    fn frozen_ordinal_tables_are_sorted_and_searchable() {
+        use crate::imphash_ordinals::{OLEAUT32, WS2_32};
+        for table in [WS2_32, OLEAUT32] {
+            assert!(!table.is_empty());
+            assert!(table.windows(2).all(|w| w[0].0 < w[1].0), "must be sorted and unique");
+        }
+    }
+
+    #[test]
+    fn known_ordinals_resolve_and_unknown_ones_fall_back() {
+        use crate::imphash_ordinals::lookup;
+        assert_eq!(lookup("ws2_32.dll", 23), "socket");
+        assert_eq!(lookup("ws2_32.dll", 1), "accept");
+        assert_eq!(lookup("oleaut32.dll", 2), "sysallocstring");
+        // Upstream maps wsock32 onto the ws2_32 table, quirk included.
+        assert_eq!(lookup("wsock32.dll", 10), "ioctlsocket");
+        // No table for this DLL, and an ordinal past the end of one that has one.
+        assert_eq!(lookup("kernel32.dll", 42), "ord42");
+        assert_eq!(lookup("ws2_32.dll", 60000), "ord60000");
+        // Keys are the full lowercased name: an extension-less or prefixed
+        // name has no table, exactly as in pefile.
+        assert_eq!(lookup("ws2_32", 23), "ord23");
+        assert_eq!(lookup("c:/windows/ws2_32.dll", 23), "ord23");
+    }
+
+    #[test]
+    fn imphash_ignores_entries_it_cannot_name() {
+        assert!(imphash(&[]).is_none());
+        assert!(imphash(&["no-separator".to_string()]).is_none());
+        assert!(imphash(&["a.dll!".to_string(), "b.dll!#notanumber".to_string()]).is_none());
+        let mixed = vec!["junk".to_string(), "A.dll!Real".to_string()];
+        assert_eq!(imphash_source(&mixed), "a.real");
     }
 
     #[test]

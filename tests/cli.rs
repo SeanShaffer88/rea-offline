@@ -211,6 +211,12 @@ fn doctor_reports_a_working_build() {
         hashes.get("md5_selftest"),
         Some(&rea_offline::json::Value::Bool(true))
     );
+    // An air-gapped operator can prove this build's imphash still agrees with
+    // pefile/VirusTotal without sending a sample anywhere.
+    assert_eq!(
+        hashes.get("imphash_selftest"),
+        Some(&rea_offline::json::Value::Bool(true))
+    );
     assert_eq!(
         json.get("sandbox_rehearsal_ok"),
         Some(&rea_offline::json::Value::Bool(true))
@@ -218,6 +224,7 @@ fn doctor_reports_a_working_build() {
 
     let md = run(&dir, &["doctor", "--format", "markdown"]);
     assert!(md.stdout.starts_with("# rea-offline doctor"), "{}", md.stdout);
+    assert!(md.stdout.contains("| imphash self-test (pefile) | yes |"), "{}", md.stdout);
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
