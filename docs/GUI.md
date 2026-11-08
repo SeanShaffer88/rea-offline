@@ -117,3 +117,12 @@ nothing to merge, paths stay exactly as the report recorded them.
 * The loopback port is not authenticated. It binds `127.0.0.1`, so only local
   processes can reach it — on a shared machine, stop the server when done
   (`Ctrl+C`).
+
+## Coverage warnings
+
+The window reads the envelope's `coverage` block when present (falling back to
+per-report `scan_issues` for older archives) and shows an amber
+`incomplete coverage — N issue(s)` chip beside the verdict. The compact summary
+repeats the warning even when the file list is truncated, so a glance at a
+partially observed run cannot read as a clean one. The chip is a statement
+about what the inspection could see; it never changes the score.

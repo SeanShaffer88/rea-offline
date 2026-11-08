@@ -401,9 +401,12 @@ pub fn page_html(page: &Page, query: &str) -> String {
         html_escape(&page.verdict().to_uppercase()),
         page.score()
     ));
-    let issue_count: usize = ["report", "installer_report", "drops_report"].iter()
-        .map(|key| array(page.report.get(key).and_then(|r| r.get("scan_issues"))).len())
-        .sum();
+    let issue_count: usize = match page.report.get("coverage").and_then(|c| c.get("issues")) {
+        Some(issues) => array(Some(issues)).len(),
+        None => ["report", "installer_report", "drops_report"].iter()
+            .map(|key| array(page.report.get(key).and_then(|r| r.get("scan_issues"))).len())
+            .sum(),
+    };
     if issue_count > 0 {
         body.push_str(&format!(
             "<span class=\"chip coverage-incomplete\">incomplete coverage — {issue_count} issue(s)</span>"
@@ -603,6 +606,14 @@ fn compact_summary(page: &Page) -> String {
     }
     // Never let the compact view turn an incomplete scan into a clean-looking
     // summary: coverage warnings are appended even when the cutoff hit first.
+    if let Some(issues) = page.report.get("coverage").and_then(|c| c.get("issues")) {
+        let count = array(Some(issues)).len();
+        if count > 0 {
+            let heading = format!("coverage: INCOMPLETE ({count} issue(s))");
+            if !lines.contains(&heading) { lines.push(heading); }
+        }
+        return lines.join("\n");
+    }
     for (label, key) in [("", "report"), ("installer ", "installer_report"), ("dropped files ", "drops_report")] {
         let issues = array(page.report.get(key).and_then(|r| r.get("scan_issues")));
         if issues.is_empty() { continue; }
@@ -829,6 +840,24 @@ mod tests {
         assert_eq!(sandbox_view_path("_installer", "/tmp/x/setup.exe"), "_installer/tmp/x/setup.exe");
         assert_eq!(sandbox_view_path("install", "bin/app.exe"), "install/bin/app.exe");
         assert_eq!(sandbox_view_path("", "AppData/Roaming/payload.exe"), "AppData/Roaming/payload.exe");
+    }
+
+    #[test]
+    fn the_window_flags_incomplete_coverage_from_the_aggregated_block() {
+        let report = crate::json::parse(
+            r#"{"mode":"sandbox-installer","verdict":"low","risk_score":0,
+                "coverage":{"complete":false,"issue_count":1,"unverified_count":0,"issues":[
+                    {"area":"sandbox snapshot (after)","path":"AppData/hidden",
+                     "stage":"traverse","message":"Permission denied"}]},
+                "report":{"target":"C:/sandbox/install","file_count":0,"risk_score":0,
+                          "verdict":"low","files":[],"scan_issues":[]}}"#
+        ).unwrap();
+        let page = Page::new(report, "sandbox");
+        let html = page_html(&page, "");
+        assert!(html.contains("coverage-incomplete"), "the chip must warn: {html}");
+        assert!(html.contains("incomplete coverage — 1 issue(s)"), "{html}");
+        // The compact summary is what a glance reads; it cannot look clean.
+        assert!(compact_summary(&page).contains("coverage: INCOMPLETE (1 issue(s))"));
     }
 
     #[test]

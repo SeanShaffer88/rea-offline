@@ -24,6 +24,7 @@ pub fn mode_scan(opts: ScanOptions) -> Result<Value> {
         ("mode", Value::str("local-scan")),
         ("generated_unix", Value::num(unix_secs())),
         ("verdict", Value::str(report.verdict())),
+        ("coverage", coverage_block(vec![("analysis", report.scan_issues.clone())], vec![])),
         ("report", report.to_json()),
     ]))
 }
@@ -110,6 +111,7 @@ fn run_sandbox_inner(opts: &SandboxOptions, sandbox: &Sandbox, install_dir: &Pat
     sandbox_delta.modified.retain(|e| !is_internal(&e.path));
     sandbox_delta.deleted.retain(|e| !is_internal(&e.path));
     sandbox_delta.unchanged.retain(|e| !is_internal(&e.path));
+    sandbox_delta.unverified.retain(|e| !is_internal(&e.path));
     // 5. REA inspection of exactly what the installer changed, plus the
     // installer binary itself (its own PE/scripts are evidence too).
     let bridge = ReaBridge::new(ReaConfig { rea_path: opts.rea_path.clone(), timeout: None });
@@ -151,6 +153,25 @@ fn run_sandbox_inner(opts: &SandboxOptions, sandbox: &Sandbox, install_dir: &Pat
             .collect(),
     );
 
+    // Snapshot coverage from the install tree and the whole sandbox, plus
+    // every analysis limit. install/ is snapshotted in its own right, so its
+    // sandbox-side duplicate (and our tmp/work bookkeeping) is dropped here.
+    let sandbox_issues = |snap: &Snapshot| -> Vec<crate::rea_bridge::ScanIssue> {
+        snap.issues.iter().filter(|i| !is_internal(&i.path)).cloned().collect()
+    };
+    let coverage = coverage_block(
+        vec![
+            ("install-tree snapshot (before)", before.issues.clone()),
+            ("install-tree snapshot (after)", after.issues.clone()),
+            ("sandbox snapshot (before)", sandbox_issues(&sandbox_before)),
+            ("sandbox snapshot (after)", sandbox_issues(&sandbox_after)),
+            ("installer analysis", installer_report.as_ref().map(|r| r.scan_issues.clone()).unwrap_or_default()),
+            ("install-tree analysis", rea_report.scan_issues.clone()),
+            ("drops analysis", drops_report.scan_issues.clone()),
+        ],
+        vec![("install tree", &delta), ("sandbox", &sandbox_delta)],
+    );
+
     let mut report = Value::obj(vec![
         ("schema_version", Value::num(crate::SCHEMA_VERSION)),
         ("mode", Value::str("sandbox-installer")),
@@ -158,6 +179,7 @@ fn run_sandbox_inner(opts: &SandboxOptions, sandbox: &Sandbox, install_dir: &Pat
         ("verdict", Value::str(crate::rules::verdict_for_score(score))),
         ("risk_score", Value::num(score)),
         ("verdict_sources", verdict_sources),
+        ("coverage", coverage),
         ("installer", Value::str(opts.installer.display().to_string())),
         ("execution", Value::obj(vec![
             ("command", Value::str(outcome.command.clone())),
@@ -182,6 +204,47 @@ fn run_sandbox_inner(opts: &SandboxOptions, sandbox: &Sandbox, install_dir: &Pat
         map.insert("installer_error".into(), Value::str(error));
     }
     Ok(report)
+}
+
+/// One place that answers "did this inspection actually see everything?".
+///
+/// Per-report `scan_issues` already recorded *analysis* limits, but snapshot
+/// traversal failures and files whose contents could not be compared never
+/// reached the envelope. An operator reading `low` needs to know whether that
+/// means "clean" or "we were not allowed to look" — the two demand opposite
+/// responses, and only one of them is a verdict.
+///
+/// Coverage never contributes to the risk score: it is a statement about the
+/// evidence, not about the sample.
+fn coverage_block(sources: Vec<(&str, Vec<crate::rea_bridge::ScanIssue>)>, deltas: Vec<(&str, &crate::snapshot::Delta)>) -> Value {
+    let mut issues: Vec<Value> = Vec::new();
+    let mut push = |area: &str, path: &str, stage: &str, message: &str| {
+        issues.push(Value::obj(vec![
+            ("area", Value::str(area)),
+            ("path", Value::str(path)),
+            ("stage", Value::str(stage)),
+            ("message", Value::str(message)),
+        ]));
+    };
+    for (area, list) in &sources {
+        for issue in list {
+            push(area, &issue.path, &issue.stage, &issue.message);
+        }
+    }
+    let mut unverified_count = 0u64;
+    for (area, delta) in &deltas {
+        for entry in &delta.unverified {
+            unverified_count += 1;
+            push(area, &entry.path, "compare",
+                 "contents could not be compared: unreadable in one or both snapshots");
+        }
+    }
+    Value::obj(vec![
+        ("complete", Value::Bool(issues.is_empty())),
+        ("issue_count", Value::num(issues.len() as u64)),
+        ("unverified_count", Value::num(unverified_count)),
+        ("issues", Value::Array(issues)),
+    ])
 }
 
 /// Native analysis of the files an installer added/modified **outside** the

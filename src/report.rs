@@ -133,8 +133,68 @@ pub fn validate(report: &Value) -> Result<()> {
             }
         }
     }
+    if let Some(coverage) = report.get("coverage").filter(|v| !matches!(v, Value::Null)) {
+        validate_coverage(coverage, report)?;
+    }
     if mode == "sandbox-installer" && report.get("execution").is_none() {
         return Err(invalid("invalid report: sandbox-installer is missing its execution block"));
+    }
+    Ok(())
+}
+
+/// The coverage block says what the inspection could not see. Rewriting it
+/// to `complete: true` is the cheapest way to make a blind run look clean, so
+/// it is checked against the issues it lists and against the per-report
+/// limits that produced it.
+fn validate_coverage(coverage: &Value, report: &Value) -> Result<()> {
+    if !matches!(coverage, Value::Object(_)) {
+        return Err(invalid("invalid report: coverage must be an object"));
+    }
+    let complete = coverage.get("complete").and_then(Value::as_bool)
+        .ok_or_else(|| invalid("invalid report: coverage.complete must be a boolean"))?;
+    let issues = match coverage.get("issues") {
+        Some(Value::Array(items)) => items,
+        _ => return Err(invalid("invalid report: coverage.issues must be an array")),
+    };
+    for issue in issues {
+        for key in ["path", "stage", "message"] {
+            if issue.get(key).and_then(Value::as_str).is_none() {
+                return Err(invalid(format!("invalid report: coverage.issues contains an entry without {key}")));
+            }
+        }
+    }
+    if let Some(count) = integer(coverage.get("issue_count")) {
+        if count != issues.len() as u64 {
+            return Err(invalid(format!(
+                "invalid report: coverage.issue_count is {count}, but issues contains {} entries",
+                issues.len()
+            )));
+        }
+    }
+    if let Some(unverified) = integer(coverage.get("unverified_count")) {
+        if unverified > issues.len() as u64 {
+            return Err(invalid("invalid report: coverage.unverified_count exceeds issue_count"));
+        }
+    }
+    if !complete {
+        return Ok(());
+    }
+    if !issues.is_empty() {
+        return Err(invalid(format!(
+            "invalid report: coverage claims to be complete while listing {} issue(s)",
+            issues.len()
+        )));
+    }
+    for key in ["report", "installer_report", "drops_report"] {
+        let Some(body) = report.get(key).filter(|v| !matches!(v, Value::Null)) else { continue };
+        if let Some(Value::Array(items)) = body.get("scan_issues") {
+            if !items.is_empty() {
+                return Err(invalid(format!(
+                    "invalid report: coverage claims to be complete but {key} records {} scan issue(s)",
+                    items.len()
+                )));
+            }
+        }
     }
     Ok(())
 }
@@ -224,6 +284,65 @@ mod tests {
         }
         validate(&legacy).unwrap();
         assert_eq!(legacy.get("generated_unix"), Some(&Value::num(123)));
+    }
+
+    fn with_coverage(json: &str) -> Value {
+        let mut report = archive();
+        if let Value::Object(map) = &mut report {
+            map.insert("coverage".into(), crate::json::parse(json).unwrap());
+        }
+        report
+    }
+
+    #[test]
+    fn accepts_an_honest_incomplete_coverage_block() {
+        let report = with_coverage(r#"{
+            "complete":false,"issue_count":1,"unverified_count":0,
+            "issues":[{"area":"sandbox snapshot (after)","path":"AppData/locked",
+                       "stage":"traverse","message":"Permission denied"}]
+        }"#);
+        validate(&report).unwrap();
+    }
+
+    #[test]
+    fn rejects_coverage_that_claims_to_be_complete_while_listing_issues() {
+        let report = with_coverage(r#"{
+            "complete":true,"issue_count":1,
+            "issues":[{"path":"AppData/locked","stage":"traverse","message":"Permission denied"}]
+        }"#);
+        let error = validate(&report).unwrap_err().to_string();
+        assert!(error.contains("claims to be complete"), "{error}");
+    }
+
+    #[test]
+    fn rejects_coverage_that_contradicts_the_bodies_it_summarizes() {
+        // Flipping `complete` alone is not enough: the per-report limits are
+        // still in the archive and must agree with the summary.
+        let mut report = with_coverage(r#"{"complete":true,"issue_count":0,"issues":[]}"#);
+        if let Value::Object(map) = &mut report {
+            if let Some(Value::Object(body)) = map.get_mut("report") {
+                body.insert("scan_issues".into(), crate::json::parse(
+                    r#"[{"path":"big.bin","stage":"analysis","message":"too large"}]"#
+                ).unwrap());
+            }
+        }
+        let error = validate(&report).unwrap_err().to_string();
+        assert!(error.contains("report records 1 scan issue"), "{error}");
+    }
+
+    #[test]
+    fn rejects_malformed_or_miscounted_coverage() {
+        for (json, expected) in [
+            (r#"{"complete":"yes","issues":[]}"#, "coverage.complete must be a boolean"),
+            (r#"{"complete":true}"#, "coverage.issues must be an array"),
+            (r#"{"complete":false,"issue_count":7,"issues":[]}"#, "coverage.issue_count is 7"),
+            (r#"{"complete":false,"issues":[{"path":"x"}]}"#, "without stage"),
+            (r#"{"complete":false,"issue_count":1,"unverified_count":5,
+                 "issues":[{"path":"x","stage":"hash","message":"m"}]}"#, "exceeds issue_count"),
+        ] {
+            let error = validate(&with_coverage(json)).unwrap_err().to_string();
+            assert!(error.contains(expected), "expected {expected:?}, got {error}");
+        }
     }
 
     #[test]

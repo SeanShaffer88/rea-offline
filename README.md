@@ -165,6 +165,50 @@ script:
 rea-offline.exe scan Downloads\setup.exe --fail-on high --quiet
 ```
 
+### Coverage: a blind run is not a clean run
+
+A verdict only describes what was actually inspected. Snapshot traversal
+records every path it could not read (`issues`, `issue_count`, `complete`),
+and a file it could not hash is never reported as `unchanged` — two empty
+hashes are not evidence of equality, so it lands in `delta.unverified`
+instead. Scan and sandbox reports aggregate all of it into one `coverage`
+block naming the phase that went blind:
+
+```json
+"coverage": {
+  "complete": false,
+  "issue_count": 2,
+  "unverified_count": 1,
+  "issues": [
+    {"area": "sandbox snapshot (after)", "path": "AppData/hidden",
+     "stage": "traverse", "message": "Permission denied (os error 13)"},
+    {"area": "sandbox", "path": "locked.bin", "stage": "compare",
+     "message": "contents could not be compared: unreadable in one or both snapshots"}
+  ]
+}
+```
+
+Stages are `traverse` (a directory could not be listed), `entry`, `metadata`,
+`path`, `hash` (a file exists but could not be read) and `compare` (present in
+both snapshots, contents not comparable). Text, Markdown and the window show
+the warning next to the decision, and coverage never inflates the risk score
+— it is a statement about the evidence, not about the sample.
+
+`--fail-on-incomplete` makes partial evidence a build failure (exit `3`),
+independently of how calm the verdict is:
+
+```bat
+rea-offline.exe sandbox setup.exe --fail-on high --fail-on-incomplete
+rea-offline.exe report report.json --fail-on-incomplete --quiet
+```
+
+Exit codes: `0` pass, `1` error/invalid archive, `2` verdict gate, `3`
+incomplete coverage. The verdict gate wins when both trip. An archive that
+records no coverage at all is refused by this gate rather than assumed
+complete. Archives cannot be edited into looking clean either: `coverage`
+is validated against the issues it lists and the per-report `scan_issues`
+that produced it, so flipping `complete` to `true` is rejected.
+
 ### imphash compatibility
 
 Import hashing only helps if the digest means the same thing everywhere, so
@@ -298,6 +342,29 @@ Created by Sean Shaffer
 MIT — see [LICENSE](LICENSE).
 
 ## Changelog
+
+### 0.8.0
+- **Snapshot coverage is recorded, not skipped**: an unreadable directory used
+  to vanish from the manifest with no trace, so a sandbox run could under-report
+  drops and still look complete. Every traversal, entry, metadata and hashing
+  failure is now an issue with a stable stage name; `complete` says whether
+  absence from the manifest means absence from disk.
+- **Unreadable files are no longer "unchanged"**: two empty hashes with equal
+  size compared equal, so an installer rewriting a locked file disappeared
+  from the delta. Those files are now reported as `unverified`. A size or kind
+  change is still a modification, since that needs no hash.
+- **One coverage block per report**: scan and sandbox envelopes aggregate
+  snapshot and analysis limits into `coverage`, naming the phase that went
+  blind. Surfaced in text, Markdown and the window next to the decision.
+- **`--fail-on-incomplete`** (exit `3`): refuse a verdict built on partial
+  evidence, independently of the risk gate. Archives with no coverage record
+  are refused rather than assumed complete.
+- **Tamper resistance**: `coverage.complete` is validated against its own
+  issues and the per-report `scan_issues`, so an archive cannot be flipped to
+  "complete" while still listing what it never saw.
+- **Tests**: real unreadable trees and files (POSIX), portable diff semantics,
+  gate exit codes, archive tampering, and an end-to-end sandbox run whose
+  payload hides in a directory the snapshot cannot read.
 
 ### 0.7.0
 - **pefile-compatible imphash**: imports are hashed in file order (ordinals no

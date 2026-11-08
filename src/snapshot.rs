@@ -2,8 +2,14 @@
 //!
 //! Recursive traversal + SHA-256 hashing. No filesystem driver, no
 //! minifilter: take a baseline, re-scan, and diff the two manifests.
+//!
+//! A manifest is only evidence if it says what it could not see. Every
+//! traversal failure is recorded in `issues`, and a file whose contents
+//! could not be read is never silently reported as unchanged: an empty
+//! hash means "not verified", not "identical".
 
 use crate::json::Value;
+use crate::rea_bridge::ScanIssue;
 use crate::sha256::hash_file;
 use crate::util::{extension_lower, path_to_slash_string};
 use crate::{Error, Result};
@@ -16,8 +22,19 @@ pub struct FileEntry {
     pub path: String,
     pub size: u64,
     /// SHA-256 hex; empty for directories / symlinks / unreadable files.
+    /// For a [`EntryKind::File`] an empty hash means the contents were
+    /// **not** verified — see [`FileEntry::content_verified`].
     pub sha256: String,
     pub kind: EntryKind,
+}
+
+impl FileEntry {
+    /// True when this entry's contents were actually hashed. Directories,
+    /// symlinks and special files have nothing to hash and are not
+    /// "unverified"; a regular file with an empty hash could not be read.
+    pub fn content_verified(&self) -> bool {
+        self.kind != EntryKind::File || !self.sha256.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,6 +56,17 @@ pub struct Snapshot {
     pub root: PathBuf,
     pub created_unix: u64,
     pub entries: BTreeMap<String, FileEntry>,
+    /// What the traversal could not see. Empty means the manifest covers
+    /// the whole tree; non-empty means absence from `entries` proves nothing.
+    pub issues: Vec<ScanIssue>,
+}
+
+impl Snapshot {
+    /// True when nothing was skipped, so "not in the manifest" really does
+    /// mean "not on disk".
+    pub fn is_complete(&self) -> bool {
+        self.issues.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -47,31 +75,70 @@ pub struct Delta {
     pub modified: Vec<FileEntry>,
     pub deleted: Vec<FileEntry>,
     pub unchanged: Vec<FileEntry>,
+    /// Present in both manifests, but at least one side could not be
+    /// hashed, so the contents cannot be compared. Reported separately
+    /// rather than counted as unchanged: "we could not tell" is not "no
+    /// change", and an installer that rewrites a locked file must not
+    /// disappear from the record.
+    pub unverified: Vec<FileEntry>,
 }
 
 impl Snapshot {
     /// Capture every file/dir under `root`. Symlinked directories are
     /// recorded but never followed (loop / escape protection).
+    ///
+    /// Failures never abort the walk — a partial manifest is far more use
+    /// than none — but each one is recorded in `issues` so the caller can
+    /// tell a clean tree from a tree it was not allowed to read.
     pub fn capture(root: &Path) -> Result<Snapshot> {
         if !root.exists() { return Err(Error::NotFound(root.to_path_buf())); }
         let mut entries = BTreeMap::new();
+        let mut issues: Vec<ScanIssue> = Vec::new();
+        // Label failures with a root-relative path so a manifest stays
+        // readable (and comparable) after it is moved between machines.
+        let label = |path: &Path| -> String {
+            match path.strip_prefix(root) {
+                Ok(rel) if rel.as_os_str().is_empty() => ".".to_string(),
+                Ok(rel) => path_to_slash_string(rel),
+                Err(_) => path_to_slash_string(path),
+            }
+        };
         let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
         while let Some(dir) = stack.pop() {
             let read = match std::fs::read_dir(&dir) {
                 Ok(r) => r,
-                Err(_) => continue, // unreadable dir: skip, never abort a scan
+                Err(e) => {
+                    // Previously `continue`: the entire subtree vanished
+                    // and the manifest still looked complete.
+                    issues.push(ScanIssue::new(label(&dir), "traverse", e.to_string()));
+                    continue;
+                }
             };
-            let mut children: Vec<PathBuf> = read.filter_map(|e| e.ok().map(|e| e.path())).collect();
+            let mut children: Vec<PathBuf> = Vec::new();
+            for entry in read {
+                match entry {
+                    Ok(entry) => children.push(entry.path()),
+                    Err(e) => issues.push(ScanIssue::new(label(&dir), "entry", e.to_string())),
+                }
+            }
             children.sort();
             for path in children {
                 let rel = match path.strip_prefix(root) {
                     Ok(r) => path_to_slash_string(r),
-                    Err(_) => continue,
+                    Err(_) => {
+                        issues.push(ScanIssue::new(
+                            path_to_slash_string(&path), "path", "escapes the snapshot root",
+                        ));
+                        continue;
+                    }
                 };
                 if rel.is_empty() { continue; }
                 let meta = match std::fs::symlink_metadata(&path) {
                     Ok(m) => m,
-                    Err(_) => continue,
+                    Err(e) => {
+                        issues.push(ScanIssue::new(rel, "metadata", e.to_string()));
+                        continue;
+                    }
                 };
                 let ft = meta.file_type();
                 let (kind, size, sha) = if ft.is_symlink() {
@@ -80,9 +147,16 @@ impl Snapshot {
                     stack.push(path.clone());
                     (EntryKind::Directory, 0, String::new())
                 } else if ft.is_file() {
-                    // Unreadable / locked files are recorded with an empty
-                    // hash instead of aborting the whole snapshot.
-                    let sha = hash_file(&path).unwrap_or_default();
+                    // Still recorded, so the file is known to exist; the
+                    // empty hash plus this issue says its contents are
+                    // unverified rather than pretending they matched.
+                    let sha = match hash_file(&path) {
+                        Ok(sha) => sha,
+                        Err(e) => {
+                            issues.push(ScanIssue::new(rel.clone(), "hash", e.to_string()));
+                            String::new()
+                        }
+                    };
                     (EntryKind::File, meta.len(), sha)
                 } else {
                     (EntryKind::Other, 0, String::new())
@@ -90,7 +164,8 @@ impl Snapshot {
                 entries.insert(rel.clone(), FileEntry { path: rel, size, sha256: sha, kind });
             }
         }
-        Ok(Snapshot { root: root.to_path_buf(), created_unix: crate::util::unix_secs(), entries })
+        issues.sort_by(|a, b| a.path.cmp(&b.path).then(a.stage.cmp(&b.stage)));
+        Ok(Snapshot { root: root.to_path_buf(), created_unix: crate::util::unix_secs(), entries, issues })
     }
 
     pub fn diff(&self, after: &Snapshot) -> Delta {
@@ -98,9 +173,17 @@ impl Snapshot {
         for (path, new) in &after.entries {
             match self.entries.get(path) {
                 None => delta.added.push(new.clone()),
-                Some(old) if old.sha256 != new.sha256 || old.size != new.size || old.kind != new.kind => {
+                // A kind or size change is proof of modification even when
+                // the contents were never readable.
+                Some(old) if old.kind != new.kind || old.size != new.size => {
                     delta.modified.push(new.clone())
                 }
+                // Same size, but one side never got hashed: two empty
+                // hashes are not evidence of equality.
+                Some(old) if !old.content_verified() || !new.content_verified() => {
+                    delta.unverified.push(new.clone())
+                }
+                Some(old) if old.sha256 != new.sha256 => delta.modified.push(new.clone()),
                 Some(_) => delta.unchanged.push(new.clone()),
             }
         }
@@ -124,6 +207,9 @@ impl Snapshot {
             ("root", Value::str(path_to_slash_string(&self.root))),
             ("created_unix", Value::num(self.created_unix)),
             ("entries", Value::Array(self.entries.values().map(Self::entry_json).collect())),
+            ("issues", Value::Array(self.issues.iter().map(ScanIssue::to_json).collect())),
+            ("issue_count", Value::num(self.issues.len() as u64)),
+            ("complete", Value::Bool(self.is_complete())),
         ])
     }
 
@@ -149,10 +235,21 @@ impl Snapshot {
                 });
             }
         }
+        // Manifests written before coverage was recorded carry no issues
+        // block. They are still readable; files they could not hash have an
+        // empty digest and therefore diff as `unverified`, not `unchanged`.
+        let mut issues = Vec::new();
+        if let Some(Value::Array(items)) = value.get("issues") {
+            for item in items {
+                let field = |k: &str| item.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
+                issues.push(ScanIssue::new(field("path"), field("stage"), field("message")));
+            }
+        }
         Ok(Snapshot {
             root: PathBuf::from(value.get("root").and_then(Value::as_str).unwrap_or_default()),
             created_unix: match value.get("created_unix") { Some(Value::Number(n)) => *n as u64, _ => 0 },
             entries,
+            issues,
         })
     }
 }
@@ -173,6 +270,8 @@ impl Delta {
             ("modified", list(&self.modified)),
             ("deleted", list(&self.deleted)),
             ("unchanged_count", Value::num(self.unchanged.len() as u64)),
+            ("unverified", list(&self.unverified)),
+            ("unverified_count", Value::num(self.unverified.len() as u64)),
         ])
     }
 }
@@ -191,6 +290,172 @@ pub fn is_interesting(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Build a manifest by hand so diff semantics can be tested without
+    /// depending on filesystem permissions (which behave differently on
+    /// Windows, and are bypassed entirely when running as root).
+    fn manifest(entries: &[(&str, u64, &str, EntryKind)]) -> Snapshot {
+        Snapshot {
+            root: PathBuf::from("/virtual"),
+            created_unix: 0,
+            entries: entries.iter().map(|(path, size, sha, kind)| {
+                (path.to_string(), FileEntry {
+                    path: path.to_string(), size: *size, sha256: sha.to_string(), kind: *kind,
+                })
+            }).collect(),
+            issues: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn two_unreadable_captures_are_unverified_not_unchanged() {
+        // The bug: both hashes empty and equal size compared equal, so an
+        // installer rewriting a locked file vanished from the delta.
+        let before = manifest(&[("locked.bin", 4, "", EntryKind::File)]);
+        let after = manifest(&[("locked.bin", 4, "", EntryKind::File)]);
+        let delta = before.diff(&after);
+        assert!(delta.unchanged.is_empty(), "must not claim a file it never read is unchanged");
+        assert!(delta.modified.is_empty());
+        assert_eq!(delta.unverified.iter().map(|e| e.path.as_str()).collect::<Vec<_>>(), vec!["locked.bin"]);
+        let json = delta.to_json();
+        assert_eq!(json.get("unverified_count"), Some(&Value::num(1)));
+    }
+
+    #[test]
+    fn one_readable_side_is_enough_to_report_a_change() {
+        let locked = manifest(&[("f.bin", 4, "", EntryKind::File)]);
+        let read = manifest(&[("f.bin", 4, "aa", EntryKind::File)]);
+        // Unreadable -> readable: contents cannot be compared either way.
+        assert_eq!(locked.diff(&read).unverified.len(), 1);
+        assert_eq!(read.diff(&locked).unverified.len(), 1);
+    }
+
+    #[test]
+    fn a_size_or_kind_change_is_a_modification_even_when_unreadable() {
+        let before = manifest(&[("f.bin", 4, "", EntryKind::File)]);
+        let bigger = manifest(&[("f.bin", 9, "", EntryKind::File)]);
+        let delta = before.diff(&bigger);
+        assert_eq!(delta.modified.len(), 1, "size proves a change without a hash");
+        assert!(delta.unverified.is_empty());
+
+        let replaced = manifest(&[("f.bin", 4, "", EntryKind::Symlink)]);
+        assert_eq!(before.diff(&replaced).modified.len(), 1, "kind proves a change too");
+    }
+
+    #[test]
+    fn directories_and_symlinks_are_not_unverified() {
+        // Empty hashes are normal for non-files; only regular files can be
+        // "unverified", otherwise every directory would raise a warning.
+        let entries = [("d", 0, "", EntryKind::Directory), ("l", 0, "", EntryKind::Symlink)];
+        let delta = manifest(&entries).diff(&manifest(&entries));
+        assert!(delta.unverified.is_empty());
+        assert_eq!(delta.unchanged.len(), 2);
+        assert!(manifest(&entries).entries.values().all(FileEntry::content_verified));
+        assert!(!manifest(&[("f", 1, "", EntryKind::File)]).entries["f"].content_verified());
+    }
+
+    #[test]
+    fn coverage_survives_a_save_load_round_trip() {
+        let mut snap = manifest(&[("a.txt", 1, "aa", EntryKind::File)]);
+        snap.issues.push(ScanIssue::new("secret", "traverse", "Permission denied"));
+        let path = std::env::temp_dir().join(format!("rea_snap_{}.json", crate::util::new_id()));
+        snap.save(&path).unwrap();
+        let loaded = Snapshot::load(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert!(!loaded.is_complete());
+        assert_eq!(loaded.issues.len(), 1);
+        assert_eq!(loaded.issues[0].path, "secret");
+        assert_eq!(loaded.issues[0].stage, "traverse");
+        assert_eq!(loaded.to_json().get("complete"), Some(&Value::Bool(false)));
+    }
+
+    #[test]
+    fn a_manifest_with_no_issues_claims_completeness() {
+        let snap = manifest(&[("a.txt", 1, "aa", EntryKind::File)]);
+        assert!(snap.is_complete());
+        let json = snap.to_json();
+        assert_eq!(json.get("complete"), Some(&Value::Bool(true)));
+        assert_eq!(json.get("issue_count"), Some(&Value::num(0)));
+    }
+
+    #[test]
+    fn capturing_a_file_instead_of_a_directory_is_not_an_empty_success() {
+        // Cross-platform: read_dir on a regular file always fails. It used
+        // to produce an empty manifest that claimed the tree was empty.
+        let path = std::env::temp_dir().join(format!("rea_notadir_{}.bin", crate::util::new_id()));
+        std::fs::write(&path, b"not a directory").unwrap();
+        let snap = Snapshot::capture(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert!(snap.entries.is_empty());
+        assert!(!snap.is_complete(), "an unreadable root must not look like an empty tree");
+        assert_eq!(snap.issues[0].stage, "traverse");
+        assert_eq!(snap.issues[0].path, ".");
+    }
+
+    /// POSIX mode bits are the portable way to make a real unreadable tree.
+    /// Returns false (and restores nothing) when the process can read it
+    /// anyway, e.g. running as root, so the caller can skip the assertion.
+    #[cfg(unix)]
+    fn make_unreadable(path: &Path) -> bool {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let blocked = std::fs::read_dir(path).is_err()
+            || std::fs::File::open(path).is_err();
+        if !blocked {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        blocked
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_directory_is_recorded_instead_of_silently_skipped() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("rea_locked_{}", crate::util::new_id()));
+        let locked = root.join("locked");
+        std::fs::create_dir_all(&locked).unwrap();
+        std::fs::write(locked.join("payload.exe"), b"MZ hidden").unwrap();
+        std::fs::write(root.join("visible.txt"), b"hi").unwrap();
+        if !make_unreadable(&locked) {
+            std::fs::remove_dir_all(&root).unwrap();
+            return; // privileged process: mode bits do not block it
+        }
+        let snap = Snapshot::capture(&root).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+
+        assert!(!snap.entries.contains_key("locked/payload.exe"));
+        assert!(snap.entries.contains_key("visible.txt"), "the walk still covers what it can");
+        assert!(!snap.is_complete(), "absence from the manifest must not look like absence from disk");
+        let issue = snap.issues.iter().find(|i| i.path == "locked").expect("traversal issue");
+        assert_eq!(issue.stage, "traverse");
+        assert!(!issue.message.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_file_is_listed_but_marked_unverified() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("rea_lockedfile_{}", crate::util::new_id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("locked.bin");
+        std::fs::write(&file, b"AAAA").unwrap();
+        if !make_unreadable(&file) {
+            std::fs::remove_dir_all(&root).unwrap();
+            return;
+        }
+        let snap = Snapshot::capture(&root).unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+
+        let entry = &snap.entries["locked.bin"];
+        assert_eq!(entry.kind, EntryKind::File);
+        assert_eq!(entry.size, 4, "its existence and size are still evidence");
+        assert!(entry.sha256.is_empty());
+        assert!(!entry.content_verified());
+        assert_eq!(snap.issues[0].stage, "hash");
+        assert!(!snap.is_complete());
+    }
+
     #[test]
     fn delta_detects_add_modify_delete() {
         let dir = std::env::temp_dir().join(format!("rea_offline_test_{}", crate::util::new_id()));
