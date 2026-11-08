@@ -43,11 +43,19 @@ pub struct Page {
 
 impl Page {
     pub fn new(report: Value, root_name: &str) -> Page {
-        let body = report
-            .get("report")
-            .filter(|r| r.get("files").is_some())
-            .or_else(|| report.get("installer_report").filter(|r| r.get("files").is_some()))
-            .unwrap_or(&report);
+        // A sandbox run analyzes three sets: the install tree, the installer
+        // itself and the files dropped outside the install dir. Showing only
+        // one of them would hide the payload that decided the verdict, so
+        // the tree merges them under labelled folders.
+        let merged = sandbox_view_body(&report);
+        let body = match &merged {
+            Some(body) => body,
+            None => report
+                .get("report")
+                .filter(|r| r.get("files").is_some())
+                .or_else(|| report.get("installer_report").filter(|r| r.get("files").is_some()))
+                .unwrap_or(&report),
+        };
         let mut node = tree::from_report(body);
         if node.name.is_empty() {
             node.name = root_name.to_string();
@@ -70,6 +78,13 @@ impl Page {
     }
 
     pub fn score(&self) -> u64 {
+        // The envelope carries the combined sandbox score; the body only
+        // knows about the install tree. Chip and verdict must agree.
+        if let Some(Value::Number(x)) = self.report.get("risk_score") {
+            if *x >= 0.0 {
+                return *x as u64;
+            }
+        }
         let source = self.report.get("report").unwrap_or(&self.report);
         match source.get("risk_score") {
             Some(Value::Number(x)) if *x >= 0.0 => *x as u64,
@@ -80,6 +95,80 @@ impl Page {
     pub fn summary_text(&self) -> String {
         crate::render::summary_text(&self.report)
     }
+}
+
+/// Path of a file inside the merged sandbox tree. Absolute installer paths
+/// are made relative (and lose their drive letter) so the grid never grows
+/// a `C:` folder or an empty root segment.
+fn sandbox_view_path(prefix: &str, path: &str) -> String {
+    let normalized = path.replace('\\', "/");
+    let relative = normalized.trim_start_matches('/');
+    let relative = match relative.as_bytes() {
+        [drive, b':', ..] if drive.is_ascii_alphabetic() => relative[2..].trim_start_matches('/'),
+        _ => relative,
+    };
+    if prefix.is_empty() {
+        relative.to_string()
+    } else {
+        format!("{prefix}/{relative}")
+    }
+}
+
+/// One analysis body describing every file a sandbox run inspected, with
+/// `install/`, `_installer/` and profile-relative drop paths side by side.
+/// Returns `None` when there is nothing to merge (plain scans, or a sandbox
+/// run with no installer body and no drops).
+fn sandbox_view_body(report: &Value) -> Option<Value> {
+    if report.get("mode").and_then(Value::as_str) != Some("sandbox-installer") {
+        return None;
+    }
+    let has_extra = ["installer_report", "drops_report"].iter().any(|key| {
+        report
+            .get(key)
+            .map(|part| !array(part.get("files")).is_empty())
+            .unwrap_or(false)
+    });
+    if !has_extra {
+        return None;
+    }
+    let parts = [
+        ("_installer", report.get("installer_report")),
+        ("install", report.get("report")),
+        ("", report.get("drops_report")),
+    ];
+    let mut files: Vec<Value> = Vec::new();
+    let mut findings: Vec<Value> = Vec::new();
+    let mut target = String::new();
+    for (prefix, part) in parts {
+        let Some(part) = part.filter(|p| !matches!(p, Value::Null)) else { continue };
+        if prefix.is_empty() {
+            target = part.get("target").and_then(Value::as_str).unwrap_or("").to_string();
+        }
+        for file in array(part.get("files")) {
+            let path = sandbox_view_path(prefix, file.get("path").and_then(Value::as_str).unwrap_or(""));
+            if path.is_empty() {
+                continue;
+            }
+            if let Value::Object(mut map) = file.clone() {
+                map.insert("path".into(), Value::str(path));
+                files.push(Value::Object(map));
+            }
+        }
+        // Findings are matched to files by path, so they must be rewritten
+        // exactly the same way or every tint/detail lookup would miss.
+        for finding in array(part.get("rules").and_then(|r| r.get("findings"))) {
+            let file = sandbox_view_path(prefix, finding.get("file").and_then(Value::as_str).unwrap_or(""));
+            if let Value::Object(mut map) = finding.clone() {
+                map.insert("file".into(), Value::str(file));
+                findings.push(Value::Object(map));
+            }
+        }
+    }
+    Some(Value::obj(vec![
+        ("target", Value::str(target)),
+        ("files", Value::Array(files)),
+        ("rules", Value::obj(vec![("findings", Value::Array(findings))])),
+    ]))
 }
 
 /// Percent-encode for query strings / JSON-in-HTML attributes.
@@ -312,7 +401,7 @@ pub fn page_html(page: &Page, query: &str) -> String {
         html_escape(&page.verdict().to_uppercase()),
         page.score()
     ));
-    let issue_count: usize = ["report", "installer_report"].iter()
+    let issue_count: usize = ["report", "installer_report", "drops_report"].iter()
         .map(|key| array(page.report.get(key).and_then(|r| r.get("scan_issues"))).len())
         .sum();
     if issue_count > 0 {
@@ -514,7 +603,7 @@ fn compact_summary(page: &Page) -> String {
     }
     // Never let the compact view turn an incomplete scan into a clean-looking
     // summary: coverage warnings are appended even when the cutoff hit first.
-    for (label, key) in [("", "report"), ("installer ", "installer_report")] {
+    for (label, key) in [("", "report"), ("installer ", "installer_report"), ("dropped files ", "drops_report")] {
         let issues = array(page.report.get(key).and_then(|r| r.get("scan_issues")));
         if issues.is_empty() { continue; }
         let heading = format!("{label}coverage: INCOMPLETE ({} issue(s))", issues.len());
@@ -669,11 +758,17 @@ fn respond(stream: &mut TcpStream, status: &str, content_type: &str, body: &[u8]
 /// rescanning the machine.
 pub fn page_from_report_file(path: &Path) -> crate::Result<Page> {
     let report = crate::report::load(path)?;
-    let name = report
-        .get("report")
-        .and_then(|r| r.get("target"))
-        .and_then(Value::as_str)
-        .unwrap_or(&path.display().to_string())
+    let fallback = path.display().to_string();
+    // A merged sandbox tree is rooted at the sandbox, so the header must name
+    // the sandbox too — not the install subdirectory the tree no longer sits in.
+    let sandbox_root = if report.get("mode").and_then(Value::as_str) == Some("sandbox-installer") {
+        report.get("drops_report").and_then(|r| r.get("target")).and_then(Value::as_str)
+    } else {
+        None
+    };
+    let name = sandbox_root
+        .or_else(|| report.get("report").and_then(|r| r.get("target")).and_then(Value::as_str))
+        .unwrap_or(&fallback)
         .to_string();
     Ok(Page::new(report, &name))
 }
@@ -704,6 +799,66 @@ mod tests {
         )
         .unwrap();
         Page::new(report, "C:/demo")
+    }
+
+    /// A sandbox report with an absolute Windows installer path, a file in
+    /// the install tree and a profile drop that decided the verdict.
+    fn sandbox_page() -> Page {
+        let report = crate::json::parse(
+            r#"{"mode":"sandbox-installer","verdict":"critical","risk_score":94,
+                "verdict_sources":{"installer":{"risk_score":6,"verdict":"low"},
+                                   "install_tree":{"risk_score":0,"verdict":"low"},
+                                   "drops":{"risk_score":94,"verdict":"critical"}},
+                "installer_report":{"target":"C:/Downloads/setup.exe","file_count":1,"risk_score":6,"verdict":"low",
+                  "rules":{"findings":[{"rule":"PE001","title":"unsigned","severity":"low","file":"C:/Downloads/setup.exe","evidence":"x"}]},
+                  "files":[{"path":"C:/Downloads/setup.exe","size":100,"format":"PE","sha256":"aa","md5":"bb"}]},
+                "report":{"target":"C:/temp/rea_sandbox_1/install","file_count":1,"risk_score":0,"verdict":"low",
+                  "rules":{"findings":[]},
+                  "files":[{"path":"bin/app.exe","size":200,"format":"PE","sha256":"cc","md5":"dd"}]},
+                "drops_report":{"target":"C:/temp/rea_sandbox_1","file_count":1,"risk_score":94,"verdict":"critical",
+                  "rules":{"findings":[{"rule":"PE140","title":"injection","severity":"high","file":"AppData/Roaming/payload.exe","evidence":"y"}]},
+                  "files":[{"path":"AppData/Roaming/payload.exe","size":300,"format":"PE","sha256":"ee","md5":"ff"}]}}"#,
+        )
+        .unwrap();
+        Page::new(report, "sandbox")
+    }
+
+    #[test]
+    fn sandbox_view_paths_never_grow_a_drive_letter_folder() {
+        assert_eq!(sandbox_view_path("_installer", "C:\\Downloads\\setup.exe"), "_installer/Downloads/setup.exe");
+        assert_eq!(sandbox_view_path("_installer", "/tmp/x/setup.exe"), "_installer/tmp/x/setup.exe");
+        assert_eq!(sandbox_view_path("install", "bin/app.exe"), "install/bin/app.exe");
+        assert_eq!(sandbox_view_path("", "AppData/Roaming/payload.exe"), "AppData/Roaming/payload.exe");
+    }
+
+    #[test]
+    fn sandbox_window_merges_every_analyzed_set() {
+        let page = sandbox_page();
+        // The chip must agree with the envelope, not the calm install tree.
+        assert_eq!(page.verdict(), "critical");
+        assert_eq!(page.score(), 94);
+        assert_eq!(page.tree.file_count, 3, "installer + install tree + drop");
+        assert_eq!(page.tree.size, 600);
+
+        // Each set keeps its own namespace, and findings still find their file.
+        let drop = tree::details_text(&page.tree, "AppData/Roaming/payload.exe");
+        assert!(drop.contains("PE140"), "{drop}");
+        let installer = tree::details_text(&page.tree, "_installer/Downloads/setup.exe");
+        assert!(installer.contains("PE001"), "{installer}");
+        let installed = tree::details_text(&page.tree, "install/bin/app.exe");
+        assert!(installed.contains("SHA-256: cc"), "{installed}");
+
+        let html = page_html(&page, "");
+        assert!(html.contains("chip verdict-critical"));
+        assert!(html.contains("94/100"));
+        assert!(html.contains("payload.exe"));
+    }
+
+    #[test]
+    fn plain_scans_are_not_renamespaced() {
+        let page = sample();
+        assert_eq!(page.score(), 41);
+        assert!(tree::details_text(&page.tree, "bin/a.exe").contains("PE100"));
     }
 
     #[test]

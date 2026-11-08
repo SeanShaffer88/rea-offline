@@ -86,6 +86,26 @@ must not leave an empty folder behind; risk colouring must match the rules.
   report summary. Hashes are the part people copy into other tools, so they
   are printed in full, never truncated.
 
+## Sandbox runs: one tree, three evidence sets
+
+A sandbox report contains three analyses, and the window shows all of them
+together instead of picking one:
+
+| Folder in the grid | What it holds |
+|---|---|
+| `install/` | the install tree (`report`) |
+| `_installer/` | the installer binary that was executed (`installer_report`) |
+| anything else | files added/modified outside the install dir, relative to the sandbox root — e.g. `AppData/Roaming/payload.exe` (`drops_report`) |
+
+Absolute installer paths are made relative and lose their drive letter, so
+the grid never grows a `C:` folder. Findings are re-keyed to the same paths,
+which is what keeps the tile colours and the details pane correct.
+
+The verdict chip shows the **combined** score from the envelope, not the
+install tree's — otherwise a clean install directory would sit next to a
+critical dropped payload under a green chip. Plain scans are untouched: with
+nothing to merge, paths stay exactly as the report recorded them.
+
 ## Limitations, honestly
 
 * The page is rebuilt per request. Scans of very large trees (hundreds of

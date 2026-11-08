@@ -362,3 +362,142 @@ fn unreadable_files_are_visible_as_coverage_issues_in_every_format() {
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o600)).unwrap();
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// An archived sandbox run whose install tree is clean but whose profile
+/// drop is critical. Written by hand so the gate/GUI/render path is covered
+/// on Windows too, where the POSIX dropper fixture cannot run.
+const SANDBOX_ARCHIVE: &str = r#"{
+  "schema_version": 3,
+  "mode": "sandbox-installer",
+  "generated_unix": 1700000000,
+  "verdict": "critical",
+  "risk_score": 94,
+  "verdict_sources": {
+    "installer": {"risk_score": 6, "verdict": "low"},
+    "install_tree": {"risk_score": 0, "verdict": "low"},
+    "drops": {"risk_score": 94, "verdict": "critical"}
+  },
+  "installer": "setup.exe",
+  "execution": {"command": "setup.exe", "exit_code": 0, "timed_out": false, "duration_ms": 10},
+  "installer_report": {
+    "file_count": 1, "risk_score": 6, "verdict": "low", "target": "setup.exe",
+    "files": [{"path": "setup.exe", "size": 100, "format": "PE", "sha256": "aa", "md5": "bb"}],
+    "rules": {"findings": []}, "scan_issues": []
+  },
+  "delta": {"added": [], "modified": [], "deleted": []},
+  "sandbox_delta": {
+    "added": [{"path": "AppData/Roaming/payload.exe", "size": 200, "sha256": "cc"}],
+    "modified": [], "deleted": []
+  },
+  "drops_report": {
+    "file_count": 1, "risk_score": 94, "verdict": "critical", "target": "/tmp/rea_sandbox_x",
+    "files": [{"path": "AppData/Roaming/payload.exe", "size": 200, "format": "PE", "sha256": "cc", "md5": "dd"}],
+    "rules": {"findings": [
+      {"rule": "PE140", "title": "Injection API set present", "severity": "high",
+       "file": "AppData/Roaming/payload.exe",
+       "evidence": "VirtualAllocEx + WriteProcessMemory + CreateRemoteThread"}
+    ]},
+    "scan_issues": []
+  },
+  "report": {
+    "file_count": 0, "risk_score": 0, "verdict": "low", "target": "/tmp/rea_sandbox_x/install",
+    "files": [], "rules": {"findings": []}, "scan_issues": []
+  }
+}"#;
+
+#[test]
+fn archived_sandbox_gates_on_the_combined_verdict_not_the_install_tree() {
+    let dir = workdir("sandbox-archive");
+    let archive = dir.join("sandbox.json");
+    std::fs::write(&archive, SANDBOX_ARCHIVE).unwrap();
+
+    // The install-tree body says "low"; the gate must still fire.
+    let gate = run(&dir, &["report", "sandbox.json", "--fail-on", "high", "--quiet"]);
+    assert_eq!(gate.code, 2, "combined verdict must gate: {}", gate.stderr);
+    let calm = run(&dir, &["report", "sandbox.json", "--fail-on", "critical", "--quiet"]);
+    assert_eq!(calm.code, 2, "{}", calm.stderr);
+
+    let text = run(&dir, &["report", "sandbox.json", "--format", "text"]);
+    assert_eq!(text.code, 0, "{}", text.stderr);
+    assert!(text.stdout.contains("overall verdict"), "{}", text.stdout);
+    assert!(text.stdout.contains("CRITICAL"), "{}", text.stdout);
+    assert!(text.stdout.contains("Dropped-file findings"), "{}", text.stdout);
+    assert!(text.stdout.contains("install tree: 0/100 low"), "{}", text.stdout);
+
+    let md = run(&dir, &["report", "sandbox.json", "--format", "markdown"]);
+    assert_eq!(md.code, 0, "{}", md.stderr);
+    assert!(md.stdout.contains("| overall verdict | **CRITICAL** |"), "{}", md.stdout);
+    assert!(md.stdout.contains("## Dropped-file analysis"), "{}", md.stdout);
+    assert!(md.stdout.contains("AppData/Roaming/payload.exe"), "{}", md.stdout);
+
+    // The window merges the three sets and shows the combined score.
+    let gui = run(&dir, &["gui", "sandbox.json", "--from-report", "--output", "sandbox.html", "--no-open"]);
+    assert_eq!(gui.code, 0, "{}", gui.stderr);
+    let html = std::fs::read_to_string(dir.join("sandbox.html")).unwrap();
+    assert!(html.contains("chip verdict-critical"), "combined verdict chip");
+    assert!(html.contains("94/100"), "combined score, not the install tree's 0");
+    assert!(html.contains("payload.exe"), "the drop is in the grid");
+    assert!(html.contains("_installer"), "the installer is in the grid too");
+    assert!(!html.contains("<script"), "still no JavaScript");
+
+    // An archive rewritten to look calm while its own sources say otherwise
+    // is rejected instead of passing a gate.
+    let tampered = SANDBOX_ARCHIVE
+        .replace("\"verdict\": \"critical\",\n  \"risk_score\": 94", "\"verdict\": \"low\",\n  \"risk_score\": 6");
+    assert_ne!(tampered, SANDBOX_ARCHIVE, "fixture must actually be rewritten");
+    std::fs::write(dir.join("tampered.json"), tampered).unwrap();
+    let rejected = run(&dir, &["report", "tampered.json", "--fail-on", "high", "--quiet"]);
+    assert_eq!(rejected.code, 1, "tampered archive must fail closed: {}", rejected.stdout);
+    assert!(rejected.stderr.contains("worst analyzed part"), "{}", rejected.stderr);
+
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn sandbox_gate_fires_on_a_profile_drop() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = workdir("sandbox-gate");
+    let payload = dir.join("payload.bin");
+    let bytes = rea_offline::testutil::PeBuilder::new()
+        .dll_characteristics(0x0100)
+        .sections(vec![
+            (".text".to_string(), 0x200, 0x200, 0x6000_0020),
+            ("UPX1".to_string(), 0x1000, 0x200, 0xE000_0020),
+        ])
+        .imports(
+            "KERNEL32.dll",
+            vec![
+                rea_offline::testutil::Import::Named("VirtualAllocEx"),
+                rea_offline::testutil::Import::Named("WriteProcessMemory"),
+                rea_offline::testutil::Import::Named("CreateRemoteThread"),
+            ],
+        )
+        .overlay(8192)
+        .build();
+    std::fs::write(&payload, bytes).unwrap();
+    let script = dir.join("dropper.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nmkdir -p \"$REASANDBOX/AppData/Roaming\"\ncp '{}' \"$REASANDBOX/AppData/Roaming/payload.exe\"\n",
+            payload.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let gated = run(&dir, &["sandbox", "dropper.sh", "--fail-on", "high", "--quiet", "--output", "run.json"]);
+    assert_eq!(gated.code, 2, "a critical profile drop must fail the gate: {}", gated.stderr);
+    let json = rea_offline::json::parse(&std::fs::read_to_string(dir.join("run.json")).unwrap()).unwrap();
+    assert_eq!(json.get("verdict").and_then(|v| v.as_str()), Some("critical"));
+    assert_eq!(
+        json.get("report").and_then(|r| r.get("verdict")).and_then(|v| v.as_str()),
+        Some("low"),
+        "the install tree stayed empty — the drop is what decided this"
+    );
+    // The recorded run gates the same way when reopened later.
+    let archived = run(&dir, &["report", "run.json", "--fail-on", "high", "--quiet"]);
+    assert_eq!(archived.code, 2, "{}", archived.stderr);
+    std::fs::remove_dir_all(&dir).unwrap();
+}

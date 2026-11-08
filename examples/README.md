@@ -16,3 +16,7 @@ rea-offline.exe purge %TEMP%\rea_sandbox_<id-from-report>
 rea-offline.exe report report.json --format markdown --output review.md
 rea-offline.exe report report.json --fail-on high --quiet
 rea-offline.exe gui report.json --from-report
+
+:: A sandbox verdict covers the installer, the install tree and profile drops
+rea-offline.exe sandbox setup.exe --fail-on high --output report.json
+rea-offline.exe report report.json --format text   :: shows the per-part scores

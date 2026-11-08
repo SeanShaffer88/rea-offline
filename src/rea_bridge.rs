@@ -533,9 +533,9 @@ fn run_with_timeout(mut cmd: std::process::Command, timeout: Duration) -> Result
 // Native static analysis
 // ---------------------------------------------------------------------------
 
-const MAX_ANALYZE_BYTES: u64 = 32 * 1024 * 1024;
+pub(crate) const MAX_ANALYZE_BYTES: u64 = 32 * 1024 * 1024;
 
-fn content_limit_issue(path: &str, size: u64) -> ScanIssue {
+pub(crate) fn content_limit_issue(path: &str, size: u64) -> ScanIssue {
     ScanIssue::new(
         path, "content",
         format!("file is {size} bytes, above the {} MiB content-analysis limit; hashes cover the full file, but content heuristics do not", MAX_ANALYZE_BYTES / (1024 * 1024)),

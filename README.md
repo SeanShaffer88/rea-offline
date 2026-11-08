@@ -30,9 +30,14 @@ How Mode B works (blueprint workflow):
 4. Creates the installer **suspended**, assigns it to a Win32 **Job Object**
    (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, 1 GB default process-memory
    ceiling), then resumes it — closing the job kills the whole tree.
-5. Re-snapshots, computes the exact added/modified/deleted delta.
+5. Re-snapshots, computes the exact added/modified/deleted delta — for the
+   install tree *and* for the whole sandbox, so profile drops are visible.
 6. Runs REA over the install tree (external REA if configured, otherwise
-   the built-in native analyzer) and emits a structured JSON report.
+   the built-in native analyzer), analyzes the installer binary itself, and
+   natively analyzes every file added/modified **outside** the install
+   directory (`drops_report`). The verdict is the worst of those three
+   parts, so a payload dropped into `AppData` cannot hide behind an empty
+   install directory.
 7. Unmounts the hive, recursively purges the sandbox, and verifies
    zero residue — on every exit path.
 
@@ -51,7 +56,10 @@ rea-offline.exe gui report.json --from-report --output window.html --no-open
 ```
 
 The window is served from `127.0.0.1` only and contains no JavaScript, no
-external assets and no write endpoints. See [`docs/GUI.md`](docs/GUI.md).
+external assets and no write endpoints. For a sandbox run it merges every
+analyzed set into one tree — `install/`, `_installer/` and the profile-relative
+drop paths — so the file that decided the verdict is one click away.
+See [`docs/GUI.md`](docs/GUI.md).
 
 ## Reports
 
@@ -96,6 +104,36 @@ Inspection commands write JSON (schema `3`). `scan`, `sandbox`, `report`, and
   rule with the evidence that triggered it. The rulebook is
   [`src/rules.rs`](src/rules.rs) and is small enough to read in one sitting:
   no signatures, no ML, no feeds.
+
+### Sandbox verdicts
+
+A sandbox report carries a top-level `verdict` **and** `risk_score` covering
+everything that was analyzed, plus the parts they came from:
+
+```
+{
+  "verdict": "critical",
+  "risk_score": 94,
+  "verdict_sources": {
+    "installer":    { "risk_score": 6,  "verdict": "low" },
+    "install_tree": { "risk_score": 0,  "verdict": "low" },
+    "drops":        { "risk_score": 94, "verdict": "critical" }
+  },
+  "report":           { ... install tree ... },
+  "installer_report": { ... the installer binary ... },
+  "drops_report":     { ... files added/modified outside install\ ... }
+}
+```
+
+* The overall score is the **worst** part, not the sum: installers are often
+  copied into the install tree, and counting the same binary twice would
+  inflate the score without adding evidence.
+* `verdict_sources.installer` is `null` when the installer could not be
+  analyzed; the reason is recorded in `installer_error`.
+* `--fail-on` reads the combined verdict, so an empty install tree no longer
+  turns a critical profile drop into a passing pipeline.
+* Archived reports are checked against their own sources: an envelope that
+  claims a calmer verdict than its worst part is rejected, not rendered.
 
 ### Archived reports and coverage
 
@@ -147,6 +185,8 @@ severity and a score contribution:
 | `PE160` / `PE161` | Implausible / zeroed compile timestamp | low |
 | `PE170` | Empty import table | medium |
 | `ENT001` | Whole file above 7.5 entropy | medium |
+| `FMT001` | `MZ` present but the PE headers do not parse | medium |
+| `FMT002` | Extension/format mismatch (`.exe` that is a script, PE named `.jpg`, …) | medium |
 | `STR001` | Capability strings, rolled up per category | low–medium |
 
 ## REA integration
@@ -225,6 +265,28 @@ Created by Sean Shaffer
 MIT — see [LICENSE](LICENSE).
 
 ## Changelog
+
+### 0.6.0
+- **Sandbox verdict completeness**: files added/modified outside the install
+  directory are now analyzed (`drops_report`), and the top-level
+  `verdict`/`risk_score` cover the installer, the install tree and the drops
+  (worst part wins). `verdict_sources` shows the breakdown; `--fail-on` gates
+  on it. Previously an installer that dropped its payload into the redirected
+  profile could produce a `low` verdict with an empty install tree.
+- **Honest installer failures**: a failed installer analysis is recorded as
+  `installer_error` instead of vanishing into a null report.
+- **Format rules**: `FMT001` no longer fires on every ELF file — it now means
+  "MZ present but the PE headers do not parse" (medium). New `FMT002` flags
+  extension/format masquerades, and never fires on unclassified content.
+- **One verdict everywhere**: text/Markdown lead with the overall decision and
+  per-part scores, and the window merges `install/`, `_installer/` and drop
+  paths into a single tree with the combined score on the chip.
+- **Archive validation**: sandbox envelopes are checked against their
+  `verdict_sources`, so a rewritten "calm" verdict is rejected.
+- **POSIX sandbox fix**: a relative installer path is resolved before spawn
+  (it was looked up on `PATH` and failed even though the file existed).
+- **Tests**: end-to-end profile-drop verdict, gate and GUI coverage on both
+  platforms, merged-view path handling, and format-rule regressions.
 
 ### 0.5.1
 - **Strict JSON input**: the std-only parser now rejects malformed numbers,
