@@ -24,6 +24,155 @@ fn snapshot_save_load_diff_roundtrip() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// The manual workflow is snapshot → install → diff. A delta is only as
+/// trustworthy as the two manifests behind it, so the diff has to carry both
+/// sets of issues instead of silently agreeing wherever neither could look.
+#[test]
+fn a_diff_inherits_the_blindness_of_both_snapshots() {
+    let dir = tmp_dir("diff-coverage");
+    std::fs::write(dir.join("a.txt"), b"one").unwrap();
+    std::fs::write(dir.join("b.txt"), b"two").unwrap();
+
+    let before_path = dir.join("before.json");
+    let after_path = dir.join("after.json");
+    Snapshot::capture(&dir).unwrap().save(&before_path).unwrap();
+    std::fs::write(dir.join("c.txt"), b"three").unwrap();
+    Snapshot::capture(&dir).unwrap().save(&after_path).unwrap();
+
+    // A fully readable tree: the manifest's own fields and the coverage
+    // record the gate reads agree with each other.
+    let snapshot = rea_offline::app::mode_snapshot(&dir).unwrap();
+    assert_eq!(
+        snapshot.get("coverage").and_then(|c| c.get("complete")),
+        Some(&rea_offline::json::Value::Bool(true)),
+        "a fully readable tree is complete: {snapshot:?}"
+    );
+    assert_eq!(snapshot.get("complete"), Some(&rea_offline::json::Value::Bool(true)),
+        "the manifest's pre-existing fields are unchanged: {snapshot:?}");
+    // The saved manifest keeps the shape `diff` reads back: issues, not a
+    // coverage block, since the diff recomputes it from both sides.
+    let saved = rea_offline::json::parse(&std::fs::read_to_string(&before_path).unwrap()).unwrap();
+    assert_eq!(saved.get("complete"), Some(&rea_offline::json::Value::Bool(true)), "{saved:?}");
+
+    let diff = rea_offline::app::mode_diff(&before_path, &after_path).unwrap();
+    let coverage = diff.get("coverage").expect("a diff carries its coverage record");
+    assert_eq!(coverage.get("complete"), Some(&rea_offline::json::Value::Bool(true)),
+        "{coverage:?}");
+    // The change is still there: coverage describes the evidence, not the delta.
+    let added = format!("{:?}", diff.get("added"));
+    assert!(added.contains("c.txt"), "{added}");
+
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn an_unreadable_directory_makes_the_snapshot_and_the_diff_incomplete() {
+    use rea_offline::json::Value;
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tmp_dir("diff-blind");
+    let tree = dir.join("tree");
+    let locked = tree.join("locked");
+    std::fs::create_dir_all(&locked).unwrap();
+    std::fs::write(locked.join("payload.exe"), b"MZ").unwrap();
+    std::fs::write(tree.join("visible.txt"), b"hi").unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read_dir(&locked).is_ok() {
+        // Running with privilege that ignores mode bits: nothing to prove.
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        return;
+    }
+
+    let before_path = dir.join("before.json");
+    let after_path = dir.join("after.json");
+    Snapshot::capture(&tree).unwrap().save(&before_path).unwrap();
+    std::fs::write(tree.join("dropped.exe"), b"MZ dropped").unwrap();
+    Snapshot::capture(&tree).unwrap().save(&after_path).unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    // Both manifests were captured while the directory was locked, and both
+    // say so — before the diff is asked to compare them.
+    for (label, path) in [("before", &before_path), ("after", &after_path)] {
+        let saved = rea_offline::json::parse(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(
+            saved.get("complete"),
+            Some(&Value::Bool(false)),
+            "{label} snapshot must not claim to be complete: {saved:?}"
+        );
+    }
+    // ...so the diff between them is not evidence that nothing changed there.
+    let diff = rea_offline::app::mode_diff(&before_path, &after_path).unwrap();
+    let coverage = diff.get("coverage").expect("coverage record");
+    assert_eq!(coverage.get("complete"), Some(&Value::Bool(false)),
+        "two blind snapshots agreeing is not evidence: {coverage:?}");
+    let issues = match coverage.get("issues") {
+        Some(Value::Array(items)) => items.clone(),
+        other => panic!("issues array expected, got {other:?}"),
+    };
+    assert!(issues.len() >= 2, "both snapshots' blind spots are carried: {issues:?}");
+    assert!(
+        issues.iter().any(|i| i.get("area").and_then(Value::as_str) == Some("before snapshot"))
+            && issues.iter().any(|i| i.get("area").and_then(Value::as_str) == Some("after snapshot")),
+        "each phase is named: {issues:?}"
+    );
+    assert!(issues.iter().all(|i| i.get("path").and_then(Value::as_str)
+        .map(|p| p.contains("locked")).unwrap_or(false)), "the locked directory is named: {issues:?}");
+
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// The subtler blindness: a file both manifests listed but neither could
+/// read looks *unchanged*, because two empty hashes are not evidence of
+/// equality either. The diff must be no more permissive than the sandbox run
+/// it substitutes for, which already counts uncomparable files against its
+/// own coverage — that is what `unverified_count` is there to carry.
+#[cfg(unix)]
+#[test]
+fn a_file_neither_snapshot_could_read_counts_against_the_diff() {
+    use rea_offline::json::Value;
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tmp_dir("diff-unverified");
+    let tree = dir.join("tree");
+    std::fs::create_dir_all(&tree).unwrap();
+    let secret = tree.join("secret.bin");
+    std::fs::write(&secret, b"0123456789abcdef").unwrap();
+    std::fs::write(tree.join("visible.txt"), b"hi").unwrap();
+    std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::File::open(&secret).is_ok() {
+        // Privileged process: nothing here is unreadable, so nothing to prove.
+        std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        return;
+    }
+
+    let before_path = dir.join("before.json");
+    let after_path = dir.join("after.json");
+    Snapshot::capture(&tree).unwrap().save(&before_path).unwrap();
+    Snapshot::capture(&tree).unwrap().save(&after_path).unwrap();
+    std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+    // The manifest listed the file and admits it never hashed it...
+    let saved = rea_offline::json::parse(&std::fs::read_to_string(&before_path).unwrap()).unwrap();
+    assert_eq!(saved.get("complete"), Some(&Value::Bool(false)), "{saved:?}");
+    // ...and the diff does not call it unchanged.
+    let diff = rea_offline::app::mode_diff(&before_path, &after_path).unwrap();
+    let unverified = format!("{:?}", diff.get("unverified"));
+    assert!(unverified.contains("secret.bin"), "{unverified}");
+
+    let coverage = diff.get("coverage").expect("coverage record");
+    assert_eq!(coverage.get("complete"), Some(&Value::Bool(false)), "{coverage:?}");
+    let count = coverage.get("unverified_count");
+    match count {
+        Some(Value::Number(n)) if *n >= 1.0 => {}
+        other => panic!("unverified_count counts what could not be compared: {other:?}"),
+    }
+
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 #[test]
 fn native_analyzer_flags_indicators_and_hashes() {
     let dir = tmp_dir("rea");

@@ -20,8 +20,8 @@ USAGE:
   rea-offline sandbox  <installer.exe|.msi> [options] [-- <installer args>...]
   rea-offline gui      <path> [--port 8787] [--no-open] [--output page.html]
                        [--from-report]  (open an archived report.json instead)
-  rea-offline snapshot <dir> [--output snap.json]
-  rea-offline diff     <before.json> <after.json>
+  rea-offline snapshot <dir> [--output snap.json] [--fail-on-incomplete]
+  rea-offline diff     <before.json> <after.json> [--fail-on-incomplete]
   rea-offline purge    <rea_sandbox_dir> [--force]
   rea-offline doctor   [--rea <path>]
   rea-offline sample   <out.exe> [--kind pe|script]
@@ -35,7 +35,8 @@ OUTPUT:
                         (unreadable paths, unhashable or uncomparable files).
                         A blind run is not a clean run: use this in CI to
                         refuse a verdict built on partial evidence.
-                        (scan/sandbox/report; verdict gate wins if both trip)
+                        (scan/sandbox/report/snapshot/diff; verdict gate wins
+                        if both trip)
   --quiet               Suppress the "report written to" notice
 
 SANDBOX OPTIONS:
@@ -145,8 +146,8 @@ fn command_spec(command: &str) -> Option<CommandSpec> {
         ),
         "report" => spec(&["output", "format", "fail-on"], &["quiet", "fail-on-incomplete"], 1, false),
         "gui" => spec(&["output", "rea", "port"], &["quiet", "no-open", "from-report"], 1, false),
-        "snapshot" => spec(&["output"], &["quiet"], 1, false),
-        "diff" => spec(&["output"], &["quiet"], 2, false),
+        "snapshot" => spec(&["output"], &["quiet", "fail-on-incomplete"], 1, false),
+        "diff" => spec(&["output"], &["quiet", "fail-on-incomplete"], 2, false),
         "purge" => spec(&["output"], &["quiet", "force"], 1, false),
         "doctor" => spec(&["output", "rea", "format"], &["quiet"], 0, false),
         "sample" => spec(&["kind"], &[], 1, false),
@@ -275,7 +276,18 @@ fn gate(json: &Value, p: &Parsed) -> rea_offline::Result<u8> {
 /// no coverage record at all, which is not the same as "complete".
 fn coverage_incomplete(json: &Value) -> Option<bool> {
     if let Some(coverage) = json.get("coverage").filter(|v| !matches!(v, Value::Null)) {
-        return coverage.get("complete").and_then(Value::as_bool).map(|complete| !complete);
+        // Derived from the issues, not from the `complete` flag: an archived
+        // report is validated on load, but a snapshot or a diff document is
+        // not, and a boolean that disagrees with its own evidence is not
+        // evidence either way.
+        let Some(Value::Array(issues)) = coverage.get("issues") else { return None };
+        let incomplete = !issues.is_empty();
+        return match coverage.get("complete").and_then(Value::as_bool) {
+            // Claims it saw everything while listing what it never saw.
+            // A claim that disagrees with its own evidence is not evidence.
+            Some(true) if incomplete => None,
+            _ => Some(incomplete),
+        };
     }
     // Older archives: per-report scan_issues are the only coverage evidence.
     // If none of the bodies recorded any, there is nothing to gate on.
@@ -296,7 +308,12 @@ fn coverage_incomplete(json: &Value) -> Option<bool> {
 fn gate_coverage(json: &Value, p: &Parsed) -> rea_offline::Result<u8> {
     if !p.has("fail-on-incomplete") { return Ok(0); }
     let incomplete = coverage_incomplete(json).ok_or_else(|| rea_offline::Error::InvalidInput(
-        "--fail-on-incomplete requires a report that records coverage; this archive does not".into()
+        if json.get("coverage").is_some() {
+            "--fail-on-incomplete requires a coverage record that agrees with the issues \
+             it lists; this one does not".into()
+        } else {
+            "--fail-on-incomplete requires a report that records coverage; this archive does not".into()
+        }
     ))?;
     if !incomplete { return Ok(0); }
     if !p.has("quiet") {
@@ -404,12 +421,12 @@ fn run(args: &[String]) -> rea_offline::Result<u8> {
         "snapshot" => {
             let json = app::mode_snapshot(&need(0, "dir")?)?;
             emit(&json, &p, format)?;
-            Ok(0)
+            gate(&json, &p)
         }
         "diff" => {
             let json = app::mode_diff(&need(0, "before.json")?, &need(1, "after.json")?)?;
             emit(&json, &p, format)?;
-            Ok(0)
+            gate(&json, &p)
         }
         "purge" => {
             let json = app::mode_purge(&need(0, "rea_sandbox_dir")?, p.has("force"))?;
@@ -508,6 +525,31 @@ mod tests {
         assert!(severity_parse("apocalyptic").is_err());
         assert_eq!(Format::parse("md").unwrap(), Format::Markdown);
         assert_eq!(severity_parse("CRIT").unwrap(), Severity::Critical);
+    }
+
+    #[test]
+    fn a_coverage_record_that_contradicts_its_own_issues_is_not_evidence() {
+        // An archived report's coverage is validated when it is loaded, but a
+        // snapshot or a diff document is not: the gate reads the issues, so a
+        // boolean claiming "complete" over a list of blind spots is refused
+        // rather than believed.
+        let lying = rea_offline::json::parse(
+            r#"{"coverage":{"complete":true,"issue_count":1,"issues":[
+                {"area":"after snapshot","path":"locked","stage":"traverse","message":"denied"}]}}"#,
+        )
+        .unwrap();
+        assert_eq!(coverage_incomplete(&lying), None, "a contradiction is not a coverage record");
+
+        // The same document, honestly labelled, gates as incomplete.
+        let honest = rea_offline::json::parse(
+            r#"{"coverage":{"complete":false,"issue_count":1,"issues":[
+                {"area":"after snapshot","path":"locked","stage":"traverse","message":"denied"}]}}"#,
+        )
+        .unwrap();
+        assert_eq!(coverage_incomplete(&honest), Some(true));
+        // A record with no flag at all is still read from its issues.
+        let unlabelled = rea_offline::json::parse(r#"{"coverage":{"issues":[]}}"#).unwrap();
+        assert_eq!(coverage_incomplete(&unlabelled), Some(false));
     }
 
     #[test]

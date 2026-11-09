@@ -88,6 +88,16 @@ sandbox that could not be purged, makes a run incomplete — they are missing
 evidence and a broken promise respectively, and both are failures the report
 already admits in prose.
 
+The same record covers the manual workflow. `snapshot` and `diff` are how a
+machine where the sandbox cannot run is still inspected: snapshot, install for
+real, diff. A delta inherits the blind spots of **both** manifests — two
+snapshots that each failed to list the same directory agree completely, and
+that agreement is not evidence — so `mode_diff` carries forward both sets of
+issues, and both commands accept `--fail-on-incomplete`. Because those
+documents are not validated on load the way an archived report is, the gate
+derives incompleteness from the issues list rather than from the `complete`
+flag: a record claiming completeness while listing blind spots is refused.
+
 ## Offline REA
 
 Set `REA_PATH` or pass `--rea C:\path\to\rea` (executable or Node `.js`

@@ -45,6 +45,18 @@ Utilities: `report <report.json>` (render/gate an archived inspection without
 rescanning), `snapshot <dir>`, `diff <before.json> <after.json>`, and
 `purge <rea_sandbox_dir>` (refuses non-sandbox paths without `--force`).
 
+`snapshot` / `diff` are the workflow for a machine where the sandbox cannot
+run: snapshot, install for real, then diff. That delta is only as trustworthy
+as the two manifests behind it, so both commands carry the same `coverage`
+record a report does — a diff inherits the blind spots of **both** snapshots
+(two manifests that each failed to list the same directory agree completely,
+and that agreement is not evidence) — and both accept `--fail-on-incomplete`:
+
+```bat
+rea-offline.exe snapshot "C:\Program Files" --output before.json --fail-on-incomplete
+rea-offline.exe diff before.json after.json --fail-on-incomplete
+```
+
 **C. The window** — a WizTree-shaped view of an analysis: a sortable size
 grid on the left, a risk-coloured treemap on the right, and a details pane
 with hashes and the rules that fired:
@@ -269,12 +281,21 @@ row: the artifact the report most needs is gone. Its part of the verdict stays
 through a pipeline.
 
 `--fail-on-incomplete` makes partial evidence a build failure (exit `3`),
-independently of how calm the verdict is:
+independently of how calm the verdict is. It works on every command that
+produces evidence — `scan`, `sandbox`, `report`, and the `snapshot` / `diff`
+pair. A file neither snapshot could hash counts as something the inspection
+did not see: an empty hash on both sides is not evidence that nothing
+changed.
 
 ```bat
 rea-offline.exe sandbox setup.exe --fail-on high --fail-on-incomplete
 rea-offline.exe report report.json --fail-on-incomplete --quiet
+rea-offline.exe diff before.json after.json --fail-on-incomplete
 ```
+
+The gate reads the `issues` list, not the `complete` flag: a coverage record
+that claims to be complete while listing what it never saw is refused
+(exit `1`) instead of believed.
 
 Exit codes: `0` pass, `1` error/invalid archive, `2` verdict gate, `3`
 incomplete coverage. The verdict gate wins when both trip. An archive that
@@ -419,6 +440,29 @@ Created by Sean Shaffer
 MIT — see [LICENSE](LICENSE).
 
 ## Changelog
+
+### 0.12.0
+- **A diff inherits the blindness of both snapshots**: `diff before.json
+  after.json` dropped both manifests' traversal issues, so a directory neither
+  snapshot could list looked *unchanged*. The delta now carries a `coverage`
+  block aggregating both (`before snapshot` / `after snapshot`) plus every file
+  whose contents could not be compared — the same rule the sandbox already
+  applied to its own two deltas, so the manual workflow is neither more nor
+  less permissive than the run it stands in for.
+- **`snapshot` and `diff` are gateable**: both take `--fail-on-incomplete`
+  (exit `3`), so the manual workflow — snapshot, install for real, diff — can
+  refuse partial evidence the same way a sandbox run does. Both documents now
+  carry the standard `coverage` block alongside their existing fields.
+- **The gate reads evidence, not a flag**: `--fail-on-incomplete` derives
+  incompleteness from the `issues` list, so a coverage record claiming
+  `complete` while listing blind spots is refused (exit `1`) rather than
+  believed. Reports are validated when loaded; snapshots and diffs are not, so
+  the gate no longer trusts a boolean it can check.
+- **Tests**: a snapshot/diff round trip that carries coverage; an unreadable
+  directory making both incomplete and naming each phase; an unreadable *file*
+  that the diff refuses to call unchanged, pinning that the manual workflow is
+  no more permissive than the sandbox; CLI exit codes for both commands; and
+  CI checks including a real locked-directory diff.
 
 ### 0.11.0
 - **A failure the report admits is now a coverage failure**: a run whose
