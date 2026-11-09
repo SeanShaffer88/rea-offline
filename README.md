@@ -467,6 +467,11 @@ MIT — see [LICENSE](LICENSE).
 
 ## Changelog
 
+### 0.16.0
+
+- **A file that changes while it is being read no longer looks stable.** Snapshots took a file's size before streaming its contents for the hash; a file rewritten mid-read paired one version's hash with another's size, and later diffs trusted the pair. Capture now re-checks size and modification time after hashing: on any movement the file stays in the manifest but unverified, with a `changed` coverage issue naming it.
+- **Archives too old to have a coverage record now say so.** Text, Markdown, and the GUI window only warned when a coverage block existed; an archive with no block at all (schema-2 era) and no scan issues rendered exactly like a complete inspection. All three surfaces now state that coverage was **not recorded** and what the inspection could not see is unknown. (The risk gate already refused such archives; the displays now match it.)
+
 ### 0.15.0
 - **The sandbox no longer throws away the installer's temp folder**: the
   whole-sandbox delta filtered out everything under `tmp\` and `work\` as
