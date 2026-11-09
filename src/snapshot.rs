@@ -69,6 +69,13 @@ impl Snapshot {
     }
 }
 
+/// Whether a file moved between two stats of it. A different length or a
+/// different modification time means the bytes read in between may not be
+/// any single version of the file.
+fn changed_during(before: &std::fs::Metadata, after: &std::fs::Metadata) -> bool {
+    before.len() != after.len() || before.modified().ok() != after.modified().ok()
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Delta {
     pub added: Vec<FileEntry>,
@@ -150,14 +157,42 @@ impl Snapshot {
                     // Still recorded, so the file is known to exist; the
                     // empty hash plus this issue says its contents are
                     // unverified rather than pretending they matched.
-                    let sha = match hash_file(&path) {
+                    let mut size = meta.len();
+                    let mut sha = match hash_file(&path) {
                         Ok(sha) => sha,
                         Err(e) => {
                             issues.push(ScanIssue::new(rel.clone(), "hash", e.to_string()));
                             String::new()
                         }
                     };
-                    (EntryKind::File, meta.len(), sha)
+                    if !sha.is_empty() {
+                        // The size was taken before the contents were
+                        // streamed. A file rewritten mid-read would pair
+                        // the hash of one version with the size of another,
+                        // and a later diff would trust the pair. Re-stat:
+                        // on any movement the entry stays, but unverified.
+                        match std::fs::metadata(&path) {
+                            Ok(after) if changed_during(&meta, &after) => {
+                                size = after.len();
+                                sha = String::new();
+                                issues.push(ScanIssue::new(
+                                    rel.clone(),
+                                    "changed",
+                                    "file changed while it was being read; its contents are unverified",
+                                ));
+                            }
+                            Ok(_) => {}
+                            Err(e) => {
+                                sha = String::new();
+                                issues.push(ScanIssue::new(
+                                    rel.clone(),
+                                    "changed",
+                                    format!("file could not be re-checked after reading: {e}"),
+                                ));
+                            }
+                        }
+                    }
+                    (EntryKind::File, size, sha)
                 } else {
                     (EntryKind::Other, 0, String::new())
                 };
@@ -706,6 +741,53 @@ mod tests {
         assert_eq!(delta.modified.len(), 1);
         assert_eq!(delta.deleted.len(), 1);
         assert_eq!(delta.unchanged.len(), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn changed_during_compares_length_and_mtime() {
+        let dir = std::env::temp_dir().join(format!("rea_offline_test_{}", crate::util::new_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("f.bin");
+        std::fs::write(&file, b"1234").unwrap();
+        let before = std::fs::metadata(&file).unwrap();
+        assert!(!changed_during(&before, &std::fs::metadata(&file).unwrap()));
+        std::fs::write(&file, b"123456").unwrap();
+        assert!(changed_during(&before, &std::fs::metadata(&file).unwrap()));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_file_growing_during_capture_is_unverified_not_stable() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let dir = std::env::temp_dir().join(format!("rea_offline_test_{}", crate::util::new_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("growing.bin");
+        std::fs::write(&file, vec![7u8; 4 * 1024 * 1024]).unwrap();
+        // Keep appending for the whole capture, so the file provably moves
+        // between the pre-read stat and the post-read re-check.
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let writer = {
+            let stop = stop.clone();
+            let file = file.clone();
+            std::thread::spawn(move || {
+                let mut f = std::fs::OpenOptions::new().append(true).open(&file).unwrap();
+                use std::io::Write;
+                while !stop.load(Ordering::Relaxed) {
+                    let _ = f.write_all(&[1u8; 1024]);
+                    std::thread::sleep(std::time::Duration::from_micros(100));
+                }
+            })
+        };
+        let snap = Snapshot::capture(&dir).unwrap();
+        stop.store(true, Ordering::Relaxed);
+        writer.join().unwrap();
+        let entry = snap.entries.get("growing.bin").expect("the file is still recorded");
+        assert!(entry.sha256.is_empty(), "a torn read must not carry a trusted hash");
+        assert!(
+            snap.issues.iter().any(|i| i.path == "growing.bin" && i.stage == "changed"),
+            "the movement must be named: {:?}", snap.issues
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
