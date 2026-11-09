@@ -123,6 +123,56 @@ fn an_unreadable_directory_makes_the_snapshot_and_the_diff_incomplete() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// The subtler blindness: a file both manifests listed but neither could
+/// read looks *unchanged*, because two empty hashes are not evidence of
+/// equality either. The diff must be no more permissive than the sandbox run
+/// it substitutes for, which already counts uncomparable files against its
+/// own coverage — that is what `unverified_count` is there to carry.
+#[cfg(unix)]
+#[test]
+fn a_file_neither_snapshot_could_read_counts_against_the_diff() {
+    use rea_offline::json::Value;
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tmp_dir("diff-unverified");
+    let tree = dir.join("tree");
+    std::fs::create_dir_all(&tree).unwrap();
+    let secret = tree.join("secret.bin");
+    std::fs::write(&secret, b"0123456789abcdef").unwrap();
+    std::fs::write(tree.join("visible.txt"), b"hi").unwrap();
+    std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::File::open(&secret).is_ok() {
+        // Privileged process: nothing here is unreadable, so nothing to prove.
+        std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        return;
+    }
+
+    let before_path = dir.join("before.json");
+    let after_path = dir.join("after.json");
+    Snapshot::capture(&tree).unwrap().save(&before_path).unwrap();
+    Snapshot::capture(&tree).unwrap().save(&after_path).unwrap();
+    std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+    // The manifest listed the file and admits it never hashed it...
+    let saved = rea_offline::json::parse(&std::fs::read_to_string(&before_path).unwrap()).unwrap();
+    assert_eq!(saved.get("complete"), Some(&Value::Bool(false)), "{saved:?}");
+    // ...and the diff does not call it unchanged.
+    let diff = rea_offline::app::mode_diff(&before_path, &after_path).unwrap();
+    let unverified = format!("{:?}", diff.get("unverified"));
+    assert!(unverified.contains("secret.bin"), "{unverified}");
+
+    let coverage = diff.get("coverage").expect("coverage record");
+    assert_eq!(coverage.get("complete"), Some(&Value::Bool(false)), "{coverage:?}");
+    let count = coverage.get("unverified_count");
+    match count {
+        Some(Value::Number(n)) if *n >= 1.0 => {}
+        other => panic!("unverified_count counts what could not be compared: {other:?}"),
+    }
+
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 #[test]
 fn native_analyzer_flags_indicators_and_hashes() {
     let dir = tmp_dir("rea");
