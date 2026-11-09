@@ -553,6 +553,10 @@ mod tests {
     fn with_containment(containment_json: &str, coverage_json: Option<&str>) -> Value {
         let mut report = sandbox_archive();
         if let Value::Object(map) = &mut report {
+            // A run that finished: these cases are about containment, not
+            // about how the installer exited.
+            map.insert("execution".into(), crate::json::parse(
+                r#"{"command":"setup.exe","exit_code":0,"timed_out":false}"#).unwrap());
             map.insert("containment".into(), crate::json::parse(containment_json).unwrap());
             if let Some(coverage) = coverage_json {
                 map.insert("coverage".into(), crate::json::parse(coverage).unwrap());
