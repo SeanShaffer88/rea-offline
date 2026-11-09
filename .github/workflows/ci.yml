@@ -140,6 +140,15 @@ jobs:
           verdict=$(grep -o '"verdict": "[a-z]*"' repo-verdict.json | head -1 | cut -d'"' -f4)
           grep -qi "verdict-$verdict" window.html
 
+          # 4c. The picker (what a double-click opens) asks what to inspect
+          # and swaps in the chosen target's window.
+          "$EXE" gui --port 8899 --no-open &
+          picker_pid=$!
+          sleep 2
+          curl -s http://127.0.0.1:8899/ | grep -q 'action="/inspect"'
+          curl -s "http://127.0.0.1:8899/inspect?path=sample.exe" | grep -q 'Inspect something else'
+          kill $picker_pid || true
+
           # 5. Snapshot + diff round trip.
           mkdir -p tree && printf 'one' > tree/a.txt
           "$EXE" snapshot tree --output before.json --quiet
