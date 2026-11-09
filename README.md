@@ -467,6 +467,10 @@ MIT — see [LICENSE](LICENSE).
 
 ## Changelog
 
+### 0.17.0
+
+- **Double-clicking the .exe now opens the window.** The program is a console tool: run with no command it printed the help text and exited — and a console opened by a double-click closes the moment the program exits, so the release read as "the file does nothing". A launch with no console of the user's (the double-click signature) now opens the GUI picker instead: a page asking what to inspect — a file, folder or installer, or a report saved earlier — which then shows that inspection's window, with a link back to pick something else. `gui` with no path opens the same picker from a terminal. In a terminal, running with no command still prints help, and every command behaves exactly as before.
+
 ### 0.16.0
 
 - **A file that changes while it is being read no longer looks stable.** Snapshots took a file's size before streaming its contents for the hash; a file rewritten mid-read paired one version's hash with another's size, and later diffs trusted the pair. Capture now re-checks size and modification time after hashing: on any movement the file stays in the manifest but unverified, with a `changed` coverage issue naming it.
