@@ -57,6 +57,16 @@ rea-offline.exe snapshot "C:\Program Files" --output before.json --fail-on-incom
 rea-offline.exe diff before.json after.json --fail-on-incomplete
 ```
 
+A delta is only meaningful if the two manifests describe the same thing, so
+`diff` refuses anything that is not a snapshot manifest (a report archive
+handed to it by mistake exits `1` rather than reporting every file as
+deleted), and the document names both sides — `before_root`, `after_root`
+and their capture times. Two different directories compared by accident, or
+an `after` that predates the `before` (swapped arguments invert `added` and
+`deleted`), are recorded as coverage issues rather than quietly assumed
+away: they gate, they do not refuse, because a manifest stores root-relative
+paths precisely so it stays comparable after the tree is moved.
+
 **C. The window** — a WizTree-shaped view of an analysis: a sortable size
 grid on the left, a risk-coloured treemap on the right, and a details pane
 with hashes and the rules that fired:
@@ -440,6 +450,25 @@ Created by Sean Shaffer
 MIT — see [LICENSE](LICENSE).
 
 ## Changelog
+
+### 0.13.0
+- **A delta refuses what it cannot compare**: `diff` accepted any two JSON
+  documents. A report archive — or an empty file — loaded as "a snapshot of
+  nothing", and comparing it to a real tree reported every file as added or
+  deleted while the coverage block claimed the comparison was complete. Both
+  inputs must now be snapshot manifests, with a `root` and an `entries` list.
+- **A delta names both sides**: the document records `before_root`,
+  `after_root`, `before_created_unix` and `after_created_unix`, so what was
+  compared to what can be checked by hand.
+- **Comparability is coverage, not a crash**: two different directories, or
+  an `after` that predates the `before`, are recorded as coverage issues
+  (stages `root` and `order`) and fail `--fail-on-incomplete` — they are not
+  refused outright, because a manifest stores root-relative paths so it stays
+  comparable after the tree is moved to another machine.
+- **Tests**: manifests that are not manifests are refused in either position;
+  a cross-tree diff reports both roots and gates; unit coverage for swapped
+  arguments, undated manifests and same-second captures; CLI exit codes `1`
+  and `3`; and CI checks for the refusal and the cross-tree delta.
 
 ### 0.12.0
 - **A diff inherits the blindness of both snapshots**: `diff before.json

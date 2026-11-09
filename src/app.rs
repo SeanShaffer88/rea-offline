@@ -387,11 +387,18 @@ pub fn mode_diff(before_path: &Path, after_path: &Path) -> Result<Value> {
         vec![
             ("before snapshot", before.issues.clone()),
             ("after snapshot", after.issues.clone()),
+            ("compare", before.compare_issues(&after)),
         ],
         vec![("compare", &delta)],
     );
     let mut json = delta.to_json();
     if let Value::Object(map) = &mut json {
+        // What was compared to what: a delta that cannot name its two sides
+        // cannot be checked by the person reading it.
+        map.insert("before_root".into(), Value::str(before.root_label()));
+        map.insert("after_root".into(), Value::str(after.root_label()));
+        map.insert("before_created_unix".into(), Value::num(before.created_unix));
+        map.insert("after_created_unix".into(), Value::num(after.created_unix));
         map.insert("coverage".into(), coverage);
     }
     Ok(json)
