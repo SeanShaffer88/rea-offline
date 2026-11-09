@@ -45,7 +45,12 @@ fn nullish(v: Option<&Value>) -> bool {
 }
 
 fn issue_line(issue: &Value) -> String {
-    format!("{} [{}]: {}", s(issue.get("path")), s(issue.get("stage")), s(issue.get("message")))
+    format!(
+        "{} [{}]: {}",
+        s(issue.get("path")),
+        s(issue.get("stage")),
+        s(issue.get("message"))
+    )
 }
 
 /// `containment` as label/value pairs, so the terminal, Markdown and the
@@ -55,8 +60,9 @@ pub fn containment_lines(block: &Value) -> Vec<(String, String)> {
     out.push((
         "ran elevated".to_string(),
         match block.get("elevated") {
-            Some(Value::Bool(true)) =>
-                "yes — writes outside the sandbox tree are not in this report".to_string(),
+            Some(Value::Bool(true)) => {
+                "yes — writes outside the sandbox tree are not in this report".to_string()
+            }
             Some(Value::Bool(false)) => "no".to_string(),
             _ => "unknown".to_string(),
         },
@@ -65,7 +71,11 @@ pub fn containment_lines(block: &Value) -> Vec<(String, String)> {
         out.push(("registry hive".to_string(), s(registry.get("status"))));
     }
     for (index, limit) in array(block.get("limits")).iter().enumerate() {
-        let label = if index == 0 { "not visible to this method".to_string() } else { String::new() };
+        let label = if index == 0 {
+            "not visible to this method".to_string()
+        } else {
+            String::new()
+        };
         out.push((label, s(Some(limit))));
     }
     out
@@ -75,7 +85,11 @@ pub fn containment_lines(block: &Value) -> Vec<(String, String)> {
 /// timeout, or one that never reported success, is not "installed".
 fn exit_code_text(exec: &Value) -> String {
     if nullish(exec.get("exit_code")) {
-        if flag(exec.get("timed_out")) { "killed (timeout)".to_string() } else { "n/a".to_string() }
+        if flag(exec.get("timed_out")) {
+            "killed (timeout)".to_string()
+        } else {
+            "n/a".to_string()
+        }
     } else {
         let code = n(exec.get("exit_code"));
         let note = if crate::universal_sandbox::exit_code_completed(code as u32) {
@@ -93,11 +107,20 @@ fn append_coverage_text(out: &mut String, root: &Value) {
     // Current archives aggregate snapshot + analysis coverage in one block.
     if let Some(issues) = root.get("coverage").and_then(|c| c.get("issues")) {
         let issues = array(Some(issues));
-        if issues.is_empty() { return; }
-        out.push_str(&format!("\ncoverage: INCOMPLETE ({} issue(s))\n", issues.len()));
+        if issues.is_empty() {
+            return;
+        }
+        out.push_str(&format!(
+            "\ncoverage: INCOMPLETE ({} issue(s))\n",
+            issues.len()
+        ));
         for issue in issues.iter().take(8) {
             let area = s(issue.get("area"));
-            let prefix = if area.is_empty() { String::new() } else { format!("{area} — ") };
+            let prefix = if area.is_empty() {
+                String::new()
+            } else {
+                format!("{area} — ")
+            };
             out.push_str(&format!("  {prefix}{}\n", issue_line(issue)));
         }
         if issues.len() > 8 {
@@ -106,11 +129,23 @@ fn append_coverage_text(out: &mut String, root: &Value) {
         return;
     }
     // Older archives only carry per-report analysis limits.
-    for (label, key) in [("", "report"), ("installer ", "installer_report"), ("dropped files ", "drops_report")] {
-        let Some(issues) = root.get(key).and_then(|r| r.get("scan_issues")) else { continue };
+    for (label, key) in [
+        ("", "report"),
+        ("installer ", "installer_report"),
+        ("dropped files ", "drops_report"),
+    ] {
+        let Some(issues) = root.get(key).and_then(|r| r.get("scan_issues")) else {
+            continue;
+        };
         let issues = array(Some(issues));
-        if issues.is_empty() { continue; }
-        out.push_str(&format!("\n{}coverage: INCOMPLETE ({} issue(s))\n", label, issues.len()));
+        if issues.is_empty() {
+            continue;
+        }
+        out.push_str(&format!(
+            "\n{}coverage: INCOMPLETE ({} issue(s))\n",
+            label,
+            issues.len()
+        ));
         for issue in issues.iter().take(8) {
             out.push_str(&format!("  {}\n", issue_line(issue)));
         }
@@ -159,7 +194,9 @@ fn part_labels(root: &Value) -> (&'static str, &'static str) {
 /// `name  score/100  verdict` for each analyzed part; a part that could not
 /// be analyzed says so instead of quietly disappearing.
 fn verdict_source_lines(root: &Value) -> Vec<String> {
-    let Some(sources) = root.get("verdict_sources") else { return Vec::new() };
+    let Some(sources) = root.get("verdict_sources") else {
+        return Vec::new();
+    };
     VERD_PARTS
         .iter()
         .filter_map(|(key, label)| {
@@ -221,7 +258,10 @@ fn files_table(files: &[Value]) -> Option<String> {
     }
     let mut out = table.render();
     if files.len() > MAX_ROWS {
-        out.push_str(&format!("\n_{} further files omitted._\n", files.len() - MAX_ROWS));
+        out.push_str(&format!(
+            "\n_{} further files omitted._\n",
+            files.len() - MAX_ROWS
+        ));
     }
     out.push('\n');
     Some(out)
@@ -235,7 +275,11 @@ fn human_bytes(bytes: u64) -> String {
         value /= 1024.0;
         unit += 1;
     }
-    if unit == 0 { format!("{bytes} B") } else { format!("{value:.1} {}", UNITS[unit]) }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
 }
 
 /// The static-analysis block: `report` for scans, `installer_report` also
@@ -243,7 +287,10 @@ fn human_bytes(bytes: u64) -> String {
 fn primary_report(root: &Value) -> Option<&Value> {
     root.get("report")
         .filter(|r| r.get("file_count").is_some())
-        .or_else(|| root.get("installer_report").filter(|r| r.get("file_count").is_some()))
+        .or_else(|| {
+            root.get("installer_report")
+                .filter(|r| r.get("file_count").is_some())
+        })
         // Also accept a bare analysis body (what `ReaReport::to_json`
         // produces) so the renderer works on a sub-report too.
         .or_else(|| {
@@ -298,13 +345,21 @@ fn delta_line(label: &str, delta: &Value) -> String {
 pub fn summary_text(root: &Value) -> String {
     let mut out = String::new();
     let mode = s(root.get("mode"));
-    let mode = if mode.is_empty() { "report".to_string() } else { mode };
+    let mode = if mode.is_empty() {
+        "report".to_string()
+    } else {
+        mode
+    };
     out.push_str(&format!("rea-offline report ({mode})\n"));
     out.push_str(&"=".repeat(30));
     out.push('\n');
 
     if let Some((verdict, score)) = overall_verdict(root) {
-        out.push_str(&format!("{}{}\n", pad("overall verdict"), verdict.to_uppercase()));
+        out.push_str(&format!(
+            "{}{}\n",
+            pad("overall verdict"),
+            verdict.to_uppercase()
+        ));
         out.push_str(&format!("{}{}/100\n", pad("overall risk score"), score));
         for line in verdict_source_lines(root) {
             out.push_str(&format!("  {line}\n"));
@@ -327,13 +382,17 @@ pub fn summary_text(root: &Value) -> String {
         // so two different verdict lines cannot be read as a contradiction.
         let (score_label, verdict_label) = part_labels(root);
         out.push_str(&format!("{}{}/100\n", pad(score_label), score));
-        out.push_str(&format!("{}{}\n", pad(verdict_label), s(r.get("verdict")).to_uppercase()));
+        out.push_str(&format!(
+            "{}{}\n",
+            pad(verdict_label),
+            s(r.get("verdict")).to_uppercase()
+        ));
 
         let rules = r.get("rules");
         if let Some(by) = rules.and_then(|x| x.get("by_severity")) {
             let parts: Vec<String> = ["critical", "high", "medium", "low", "info"]
                 .iter()
-                .map(|k| format!("{} {}", n(by.get(*k)), k))
+                .map(|k| format!("{} {}", n(by.get(k)), k))
                 .collect();
             out.push_str(&format!("{}{}\n", pad("findings"), parts.join(" · ")));
         }
@@ -376,16 +435,29 @@ pub fn summary_text(root: &Value) -> String {
         }
     }
 
-    for (title, key) in [("Installer findings", "installer_report"), ("Dropped-file findings", "drops_report")] {
-        let Some(part) = root.get(key).filter(|p| p.get("file_count").is_some()) else { continue };
-        let Some(rules) = part.get("rules") else { continue };
+    for (title, key) in [
+        ("Installer findings", "installer_report"),
+        ("Dropped-file findings", "drops_report"),
+    ] {
+        let Some(part) = root.get(key).filter(|p| p.get("file_count").is_some()) else {
+            continue;
+        };
+        let Some(rules) = part.get("rules") else {
+            continue;
+        };
         let findings: Vec<&Value> = sorted_findings(rules)
             .into_iter()
             .filter(|f| s(f.get("severity")) != "info")
             .take(8)
             .collect();
-        if findings.is_empty() { continue; }
-        out.push_str(&format!("\n{title} ({}/100 {})\n", n(part.get("risk_score")), s(part.get("verdict"))));
+        if findings.is_empty() {
+            continue;
+        }
+        out.push_str(&format!(
+            "\n{title} ({}/100 {})\n",
+            n(part.get("risk_score")),
+            s(part.get("verdict"))
+        ));
         for f in findings {
             out.push_str(&format!(
                 "  {:<8} {}  {}  ({})\n",
@@ -397,14 +469,22 @@ pub fn summary_text(root: &Value) -> String {
         }
     }
     if let Some(error) = root.get("installer_error") {
-        out.push_str(&format!("\n{}{}\n", pad("installer analysis"), s(Some(error))));
+        out.push_str(&format!(
+            "\n{}{}\n",
+            pad("installer analysis"),
+            s(Some(error))
+        ));
     }
 
     if let Some(exec) = root.get("execution") {
         out.push_str("\nExecution\n");
         out.push_str(&format!("{}{}\n", pad("command"), s(exec.get("command"))));
         out.push_str(&format!("{}{}\n", pad("exit code"), exit_code_text(exec)));
-        out.push_str(&format!("{}{} ms\n", pad("duration"), n(exec.get("duration_ms"))));
+        out.push_str(&format!(
+            "{}{} ms\n",
+            pad("duration"),
+            n(exec.get("duration_ms"))
+        ));
         let tail = s(exec.get("stdout_tail"));
         if !tail.trim().is_empty() {
             out.push_str(&format!("{}last stdout lines\n", pad("")));
@@ -461,10 +541,18 @@ pub fn summary_text(root: &Value) -> String {
         out.push_str(&format!(
             "{}{}\n",
             pad("zero residue"),
-            if flag(purge.get("verified_zero_residue")) { "verified" } else { "NOT verified" }
+            if flag(purge.get("verified_zero_residue")) {
+                "verified"
+            } else {
+                "NOT verified"
+            }
         ));
     } else if flag(root.get("sandbox_kept")) {
-        out.push_str(&format!("\n{}{}\n", pad("sandbox kept"), s(root.get("sandbox_path"))));
+        out.push_str(&format!(
+            "\n{}{}\n",
+            pad("sandbox kept"),
+            s(root.get("sandbox_path"))
+        ));
     }
     if let Some(err) = root.get("purge_error") {
         out.push_str(&format!("{}{}\n", pad("purge error"), s(Some(err))));
@@ -493,7 +581,14 @@ pub fn summary_markdown(root: &Value) -> String {
     let mut out = String::new();
     let mode = s(root.get("mode"));
     out.push_str("# rea-offline inspection report\n\n");
-    out.push_str(&format!("**Mode:** `{}`  \n", if mode.is_empty() { "report" } else { mode.as_str() }));
+    out.push_str(&format!(
+        "**Mode:** `{}`  \n",
+        if mode.is_empty() {
+            "report"
+        } else {
+            mode.as_str()
+        }
+    ));
     if let Some(ts) = root.get("generated_unix") {
         out.push_str(&format!("**Generated (unix):** `{}`  \n", n(Some(ts))));
     }
@@ -507,21 +602,31 @@ pub fn summary_markdown(root: &Value) -> String {
         let verdict = s(r.get("verdict")).to_uppercase();
         out.push_str("## Verdict\n\n| field | value |\n|---|---|\n");
         if let Some((overall, overall_score)) = overall_verdict(root) {
-            out.push_str(&format!("| overall verdict | **{}** |\n", overall.to_uppercase()));
-            out.push_str(&format!("| overall risk score | **{overall_score}/100** |\n"));
+            out.push_str(&format!(
+                "| overall verdict | **{}** |\n",
+                overall.to_uppercase()
+            ));
+            out.push_str(&format!(
+                "| overall risk score | **{overall_score}/100** |\n"
+            ));
         }
         let (score_label, verdict_label) = part_labels(root);
         out.push_str(&format!("| {score_label} | **{score}/100** |\n"));
         out.push_str(&format!("| {verdict_label} | **{verdict}** |\n"));
         out.push_str(&format!("| target | `{}` |\n", s(r.get("target"))));
         out.push_str(&format!("| engine | `{}` |\n", s(r.get("engine"))));
-        out.push_str(&format!("| files analyzed | {} |\n", n(r.get("file_count"))));
+        out.push_str(&format!(
+            "| files analyzed | {} |\n",
+            n(r.get("file_count"))
+        ));
         let total = human_bytes(n(r.get("summary").and_then(|x| x.get("total_bytes"))));
         out.push_str(&format!("| total size | {total} |\n\n"));
 
         let sources = verdict_source_lines(root);
         if !sources.is_empty() {
-            out.push_str("\nThe overall verdict is the worst of the analyzed parts, not their sum:\n\n");
+            out.push_str(
+                "\nThe overall verdict is the worst of the analyzed parts, not their sum:\n\n",
+            );
             for line in sources {
                 out.push_str(&format!("- {line}\n"));
             }
@@ -536,29 +641,49 @@ pub fn summary_markdown(root: &Value) -> String {
                 let mut table = Table::new(["area", "path", "stage", "message"]);
                 for issue in issues.iter().take(MAX_ROWS) {
                     table.row([
-                        s(issue.get("area")), s(issue.get("path")),
-                        s(issue.get("stage")), s(issue.get("message")),
+                        s(issue.get("area")),
+                        s(issue.get("path")),
+                        s(issue.get("stage")),
+                        s(issue.get("message")),
                     ]);
                 }
                 coverage.push_str(&table.render());
                 if issues.len() > MAX_ROWS {
-                    coverage.push_str(&format!("\n_{} further coverage issues omitted._\n", issues.len() - MAX_ROWS));
+                    coverage.push_str(&format!(
+                        "\n_{} further coverage issues omitted._\n",
+                        issues.len() - MAX_ROWS
+                    ));
                 }
                 coverage.push('\n');
             }
         }
-        for (label, key) in [("Install tree", "report"), ("Installer", "installer_report"), ("Dropped files", "drops_report")] {
-            if aggregated.is_some() { break; }
+        for (label, key) in [
+            ("Install tree", "report"),
+            ("Installer", "installer_report"),
+            ("Dropped files", "drops_report"),
+        ] {
+            if aggregated.is_some() {
+                break;
+            }
             let issues = array(root.get(key).and_then(|r| r.get("scan_issues")));
-            if issues.is_empty() { continue; }
+            if issues.is_empty() {
+                continue;
+            }
             coverage.push_str(&format!("### {label}\n\n"));
             let mut table = Table::new(["path", "stage", "message"]);
             for issue in issues.iter().take(MAX_ROWS) {
-                table.row([s(issue.get("path")), s(issue.get("stage")), s(issue.get("message"))]);
+                table.row([
+                    s(issue.get("path")),
+                    s(issue.get("stage")),
+                    s(issue.get("message")),
+                ]);
             }
             coverage.push_str(&table.render());
             if issues.len() > MAX_ROWS {
-                coverage.push_str(&format!("\n_{} further coverage issues omitted._\n", issues.len() - MAX_ROWS));
+                coverage.push_str(&format!(
+                    "\n_{} further coverage issues omitted._\n",
+                    issues.len() - MAX_ROWS
+                ));
             }
             coverage.push('\n');
         }
@@ -579,8 +704,13 @@ pub fn summary_markdown(root: &Value) -> String {
 
     // The installer binary and the files dropped outside the install tree
     // are separate evidence sets; each gets its own findings and hashes.
-    for (title, key) in [("Installer findings", "installer_report"), ("Dropped-file analysis", "drops_report")] {
-        let Some(part) = root.get(key).filter(|p| p.get("file_count").is_some()) else { continue };
+    for (title, key) in [
+        ("Installer findings", "installer_report"),
+        ("Dropped-file analysis", "drops_report"),
+    ] {
+        let Some(part) = root.get(key).filter(|p| p.get("file_count").is_some()) else {
+            continue;
+        };
         out.push_str(&format!("## {title}\n\n"));
         out.push_str(&format!(
             "{} file(s) · risk score **{}/100** · verdict **{}**\n\n",
@@ -596,7 +726,10 @@ pub fn summary_markdown(root: &Value) -> String {
         }
     }
     if let Some(error) = root.get("installer_error") {
-        out.push_str(&format!("## Installer analysis\n\n- could not analyze the installer: {}\n\n", s(Some(error))));
+        out.push_str(&format!(
+            "## Installer analysis\n\n- could not analyze the installer: {}\n\n",
+            s(Some(error))
+        ));
     }
 
     if let Some(exec) = root.get("execution") {
@@ -650,7 +783,11 @@ pub fn summary_markdown(root: &Value) -> String {
             || !array(delta.get("deleted")).is_empty()
         {
             let mut table = Table::new(["change", "path", "size", "sha256"]);
-            for (mark, list) in [("added", "added"), ("modified", "modified"), ("deleted", "deleted")] {
+            for (mark, list) in [
+                ("added", "added"),
+                ("modified", "modified"),
+                ("deleted", "deleted"),
+            ] {
                 for item in array(delta.get(list)).iter().take(MAX_ROWS) {
                     table.row([
                         mark.to_string(),
@@ -668,14 +805,21 @@ pub fn summary_markdown(root: &Value) -> String {
     out.push_str("## Containment & cleanup\n\n");
     let mut anything = false;
     if flag(root.get("sandbox_kept")) {
-        out.push_str(&format!("- sandbox **kept** at `{}`\n", s(root.get("sandbox_path"))));
+        out.push_str(&format!(
+            "- sandbox **kept** at `{}`\n",
+            s(root.get("sandbox_path"))
+        ));
         anything = true;
     }
     if let Some(purge) = root.get("purge").filter(|p| p.get("path").is_some()) {
         out.push_str(&format!("- purged `{}`\n", s(purge.get("path"))));
         out.push_str(&format!(
             "- zero residue: **{}**\n",
-            if flag(purge.get("verified_zero_residue")) { "verified" } else { "NOT verified" }
+            if flag(purge.get("verified_zero_residue")) {
+                "verified"
+            } else {
+                "NOT verified"
+            }
         ));
         anything = true;
     }
@@ -719,8 +863,14 @@ pub fn doctor_markdown(root: &Value) -> String {
             }
         }
     }
-    table.row(["platform", &format!("{} / {}", s(root.get("os")), s(root.get("arch")))]);
-    table.row(["Win32 Job Objects", ok(flag(root.get("windows_job_objects")))]);
+    table.row([
+        "platform",
+        &format!("{} / {}", s(root.get("os")), s(root.get("arch"))),
+    ]);
+    table.row([
+        "Win32 Job Objects",
+        ok(flag(root.get("windows_job_objects"))),
+    ]);
     if root.get("elevated").is_some() {
         // The manual says "run from a standard account"; doctor says whether
         // this session actually is one, since an elevated run can write past
@@ -736,8 +886,14 @@ pub fn doctor_markdown(root: &Value) -> String {
     }
     table.row(["registry hive mount", &s(root.get("registry_hive_mount"))]);
     table.row(["temp dir", &s(root.get("temp_dir"))]);
-    table.row(["sandbox rehearsal", ok(flag(root.get("sandbox_rehearsal_ok")))]);
-    if let Some(err) = root.get("sandbox_rehearsal_error").filter(|v| !matches!(v, Value::Null)) {
+    table.row([
+        "sandbox rehearsal",
+        ok(flag(root.get("sandbox_rehearsal_ok"))),
+    ]);
+    if let Some(err) = root
+        .get("sandbox_rehearsal_error")
+        .filter(|v| !matches!(v, Value::Null))
+    {
         table.row(["rehearsal error", &s(Some(err))]);
     }
     if let Some(rea) = root.get("rea") {
@@ -765,62 +921,107 @@ mod tests {
             ("mode", Value::str("sandbox-installer")),
             ("generated_unix", Value::num(1_700_000_000)),
             ("installer", Value::str("setup.exe")),
-            ("report", Value::obj(vec![
-                ("target", Value::str("C:/tmp/install")),
-                ("engine", Value::str("rea-offline-native")),
-                ("file_count", Value::num(2)),
-                ("risk_score", Value::num(52)),
-                ("verdict", Value::str("high")),
-                ("summary", Value::obj(vec![
-                    ("total_bytes", Value::num(2048)),
-                    ("pe_files", Value::num(2)),
-                    ("writable_executable_sections", Value::num(1)),
-                    ("unsigned_pe_files", Value::num(1)),
-                ])),
-                ("rules", Value::obj(vec![
-                    ("score", Value::num(52)),
+            (
+                "report",
+                Value::obj(vec![
+                    ("target", Value::str("C:/tmp/install")),
+                    ("engine", Value::str("rea-offline-native")),
+                    ("file_count", Value::num(2)),
+                    ("risk_score", Value::num(52)),
                     ("verdict", Value::str("high")),
-                    ("by_severity", Value::obj(vec![
-                        ("critical", Value::num(0)), ("high", Value::num(1)),
-                        ("medium", Value::num(1)), ("low", Value::num(0)), ("info", Value::num(1)),
-                    ])),
-                    ("findings", Value::Array(vec![
-                        Value::obj(vec![("rule", Value::str("PE100")), ("title", Value::str("W+X")),
-                            ("severity", Value::str("high")), ("file", Value::str("a.exe")),
-                            ("evidence", Value::str("code|write"))]),
-                        Value::obj(vec![("rule", Value::str("PE110")), ("title", Value::str("entropy")),
-                            ("severity", Value::str("medium")), ("file", Value::str("a.exe")),
-                            ("evidence", Value::str("7.6"))]),
-                    ])),
-                ])),
-                ("files", Value::Array(vec![Value::obj(vec![
-                    ("path", Value::str("a.exe")), ("size", Value::num(1024)),
-                    ("format", Value::str("PE")), ("sha256", Value::str("ab")),
-                    ("md5", Value::str("cd")), ("imphash", Value::str("ef")),
-                ])])),
-            ])),
-            ("execution", Value::obj(vec![
-                ("command", Value::str("setup.exe /S")),
-                ("exit_code", Value::num(0)),
-                ("timed_out", Value::Bool(false)),
-                ("duration_ms", Value::num(1500)),
-                ("stdout_bytes", Value::num(11)),
-                ("stdout_tail", Value::str("installing\n")),
-                ("stderr_tail", Value::str("")),
-            ])),
-            ("delta", Value::obj(vec![
-                ("added", Value::Array(vec![Value::obj(vec![
-                    ("path", Value::str("a.exe")), ("size", Value::num(1024)),
-                    ("sha256", Value::str("ab")),
-                ])])),
-                ("modified", Value::Array(vec![])),
-                ("deleted", Value::Array(vec![])),
-            ])),
-            ("purge", Value::obj(vec![
-                ("path", Value::str("/tmp/rea_sandbox_x")),
-                ("removed", Value::Bool(true)),
-                ("verified_zero_residue", Value::Bool(true)),
-            ])),
+                    (
+                        "summary",
+                        Value::obj(vec![
+                            ("total_bytes", Value::num(2048)),
+                            ("pe_files", Value::num(2)),
+                            ("writable_executable_sections", Value::num(1)),
+                            ("unsigned_pe_files", Value::num(1)),
+                        ]),
+                    ),
+                    (
+                        "rules",
+                        Value::obj(vec![
+                            ("score", Value::num(52)),
+                            ("verdict", Value::str("high")),
+                            (
+                                "by_severity",
+                                Value::obj(vec![
+                                    ("critical", Value::num(0)),
+                                    ("high", Value::num(1)),
+                                    ("medium", Value::num(1)),
+                                    ("low", Value::num(0)),
+                                    ("info", Value::num(1)),
+                                ]),
+                            ),
+                            (
+                                "findings",
+                                Value::Array(vec![
+                                    Value::obj(vec![
+                                        ("rule", Value::str("PE100")),
+                                        ("title", Value::str("W+X")),
+                                        ("severity", Value::str("high")),
+                                        ("file", Value::str("a.exe")),
+                                        ("evidence", Value::str("code|write")),
+                                    ]),
+                                    Value::obj(vec![
+                                        ("rule", Value::str("PE110")),
+                                        ("title", Value::str("entropy")),
+                                        ("severity", Value::str("medium")),
+                                        ("file", Value::str("a.exe")),
+                                        ("evidence", Value::str("7.6")),
+                                    ]),
+                                ]),
+                            ),
+                        ]),
+                    ),
+                    (
+                        "files",
+                        Value::Array(vec![Value::obj(vec![
+                            ("path", Value::str("a.exe")),
+                            ("size", Value::num(1024)),
+                            ("format", Value::str("PE")),
+                            ("sha256", Value::str("ab")),
+                            ("md5", Value::str("cd")),
+                            ("imphash", Value::str("ef")),
+                        ])]),
+                    ),
+                ]),
+            ),
+            (
+                "execution",
+                Value::obj(vec![
+                    ("command", Value::str("setup.exe /S")),
+                    ("exit_code", Value::num(0)),
+                    ("timed_out", Value::Bool(false)),
+                    ("duration_ms", Value::num(1500)),
+                    ("stdout_bytes", Value::num(11)),
+                    ("stdout_tail", Value::str("installing\n")),
+                    ("stderr_tail", Value::str("")),
+                ]),
+            ),
+            (
+                "delta",
+                Value::obj(vec![
+                    (
+                        "added",
+                        Value::Array(vec![Value::obj(vec![
+                            ("path", Value::str("a.exe")),
+                            ("size", Value::num(1024)),
+                            ("sha256", Value::str("ab")),
+                        ])]),
+                    ),
+                    ("modified", Value::Array(vec![])),
+                    ("deleted", Value::Array(vec![])),
+                ]),
+            ),
+            (
+                "purge",
+                Value::obj(vec![
+                    ("path", Value::str("/tmp/rea_sandbox_x")),
+                    ("removed", Value::Bool(true)),
+                    ("verified_zero_residue", Value::Bool(true)),
+                ]),
+            ),
         ])
     }
 
@@ -840,7 +1041,10 @@ mod tests {
     fn markdown_escapes_pipes_and_stays_rectangular() {
         let md = to_markdown(&sample_report());
         assert!(md.starts_with("# rea-offline"));
-        assert!(md.contains("code\\|write"), "pipe inside a cell must be escaped:\n{md}");
+        assert!(
+            md.contains("code\\|write"),
+            "pipe inside a cell must be escaped:\n{md}"
+        );
         assert!(md.contains("## Execution"));
         assert!(md.contains("zero residue: **verified**"));
         // Every table row must carry the same number of columns as its header.
@@ -888,12 +1092,15 @@ mod tests {
     fn timed_out_execution_is_labelled() {
         let mut root = sample_report();
         if let Value::Object(map) = &mut root {
-            map.insert("execution".into(), Value::obj(vec![
-                ("command", Value::str("setup.exe")),
-                ("exit_code", Value::Null),
-                ("timed_out", Value::Bool(true)),
-                ("duration_ms", Value::num(300_000)),
-            ]));
+            map.insert(
+                "execution".into(),
+                Value::obj(vec![
+                    ("command", Value::str("setup.exe")),
+                    ("exit_code", Value::Null),
+                    ("timed_out", Value::Bool(true)),
+                    ("duration_ms", Value::num(300_000)),
+                ]),
+            );
         }
         let text = summary_text(&root);
         assert!(text.contains("killed (timeout)"), "{text}");
@@ -906,12 +1113,15 @@ mod tests {
         // know that 3 means "this installer did not finish".
         let mut root = sample_report();
         if let Value::Object(map) = &mut root {
-            map.insert("execution".into(), Value::obj(vec![
-                ("command", Value::str("setup.exe")),
-                ("exit_code", Value::num(3)),
-                ("timed_out", Value::Bool(false)),
-                ("duration_ms", Value::num(1200)),
-            ]));
+            map.insert(
+                "execution".into(),
+                Value::obj(vec![
+                    ("command", Value::str("setup.exe")),
+                    ("exit_code", Value::num(3)),
+                    ("timed_out", Value::Bool(false)),
+                    ("duration_ms", Value::num(1200)),
+                ]),
+            );
         }
         let text = summary_text(&root);
         assert!(text.contains("3 (did not report success)"), "{text}");
@@ -925,9 +1135,8 @@ mod tests {
     fn coverage_report(aggregated: bool) -> Value {
         let body = r#"{"file_count":0,"risk_score":0,"verdict":"low","files":[],
             "scan_issues":[{"path":"big.bin","stage":"analysis","message":"over the content limit"}]}"#;
-        let mut json = format!(
-            r#"{{"schema_version":3,"mode":"local-scan","verdict":"low","report":{body}"#
-        );
+        let mut json =
+            format!(r#"{{"schema_version":3,"mode":"local-scan","verdict":"low","report":{body}"#);
         if aggregated {
             json.push_str(
                 r#","coverage":{"complete":false,"issue_count":2,"unverified_count":1,"issues":[
@@ -944,7 +1153,10 @@ mod tests {
         let report = coverage_report(true);
         let text = summary_text(&report);
         assert!(text.contains("coverage: INCOMPLETE (2 issue(s))"), "{text}");
-        assert!(text.contains("sandbox snapshot (after) — AppData/hidden [traverse]"), "{text}");
+        assert!(
+            text.contains("sandbox snapshot (after) — AppData/hidden [traverse]"),
+            "{text}"
+        );
         assert!(text.contains("[compare]"), "{text}");
 
         let md = summary_markdown(&report);
@@ -983,45 +1195,104 @@ mod tests {
         if let Value::Object(map) = &mut root {
             map.insert("verdict".into(), Value::str("critical"));
             map.insert("risk_score".into(), Value::num(94));
-            map.insert("verdict_sources".into(), Value::obj(vec![
-                ("installer", Value::obj(vec![("risk_score", Value::num(6)), ("verdict", Value::str("low"))])),
-                ("install_tree", Value::obj(vec![("risk_score", Value::num(52)), ("verdict", Value::str("high"))])),
-                ("drops", Value::obj(vec![("risk_score", Value::num(94)), ("verdict", Value::str("critical"))])),
-            ]));
-            map.insert("drops_report".into(), Value::obj(vec![
-                ("file_count", Value::num(1)),
-                ("risk_score", Value::num(94)),
-                ("verdict", Value::str("critical")),
-                ("rules", Value::obj(vec![("findings", Value::Array(vec![Value::obj(vec![
-                    ("rule", Value::str("PE140")), ("title", Value::str("Injection API set")),
-                    ("severity", Value::str("high")), ("file", Value::str("AppData/payload.exe")),
-                    ("evidence", Value::str("VirtualAllocEx + WriteProcessMemory")),
-                ])]))])),
-                ("files", Value::Array(vec![Value::obj(vec![
-                    ("path", Value::str("AppData/payload.exe")), ("size", Value::num(4096)),
-                    ("format", Value::str("PE")), ("sha256", Value::str("ab")),
-                ])])),
-                ("scan_issues", Value::Array(vec![Value::obj(vec![
-                    ("path", Value::str("AppData/locked.bin")), ("stage", Value::str("analysis")),
-                    ("message", Value::str("access denied")),
-                ])])),
-            ]));
+            map.insert(
+                "verdict_sources".into(),
+                Value::obj(vec![
+                    (
+                        "installer",
+                        Value::obj(vec![
+                            ("risk_score", Value::num(6)),
+                            ("verdict", Value::str("low")),
+                        ]),
+                    ),
+                    (
+                        "install_tree",
+                        Value::obj(vec![
+                            ("risk_score", Value::num(52)),
+                            ("verdict", Value::str("high")),
+                        ]),
+                    ),
+                    (
+                        "drops",
+                        Value::obj(vec![
+                            ("risk_score", Value::num(94)),
+                            ("verdict", Value::str("critical")),
+                        ]),
+                    ),
+                ]),
+            );
+            map.insert(
+                "drops_report".into(),
+                Value::obj(vec![
+                    ("file_count", Value::num(1)),
+                    ("risk_score", Value::num(94)),
+                    ("verdict", Value::str("critical")),
+                    (
+                        "rules",
+                        Value::obj(vec![(
+                            "findings",
+                            Value::Array(vec![Value::obj(vec![
+                                ("rule", Value::str("PE140")),
+                                ("title", Value::str("Injection API set")),
+                                ("severity", Value::str("high")),
+                                ("file", Value::str("AppData/payload.exe")),
+                                (
+                                    "evidence",
+                                    Value::str("VirtualAllocEx + WriteProcessMemory"),
+                                ),
+                            ])]),
+                        )]),
+                    ),
+                    (
+                        "files",
+                        Value::Array(vec![Value::obj(vec![
+                            ("path", Value::str("AppData/payload.exe")),
+                            ("size", Value::num(4096)),
+                            ("format", Value::str("PE")),
+                            ("sha256", Value::str("ab")),
+                        ])]),
+                    ),
+                    (
+                        "scan_issues",
+                        Value::Array(vec![Value::obj(vec![
+                            ("path", Value::str("AppData/locked.bin")),
+                            ("stage", Value::str("analysis")),
+                            ("message", Value::str("access denied")),
+                        ])]),
+                    ),
+                ]),
+            );
         }
         let text = summary_text(&root);
-        assert!(text.contains("overall verdict           : CRITICAL"), "{text}");
-        assert!(text.contains("overall risk score        : 94/100"), "{text}");
+        assert!(
+            text.contains("overall verdict           : CRITICAL"),
+            "{text}"
+        );
+        assert!(
+            text.contains("overall risk score        : 94/100"),
+            "{text}"
+        );
         assert!(text.contains("drops: 94/100 critical"), "{text}");
         // The body's own decision is labelled so it cannot read as a conflict.
         assert!(text.contains("install-tree verdict"), "{text}");
-        assert!(text.contains("Dropped-file findings (94/100 critical)"), "{text}");
-        assert!(text.contains("dropped files coverage: INCOMPLETE"), "{text}");
+        assert!(
+            text.contains("Dropped-file findings (94/100 critical)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("dropped files coverage: INCOMPLETE"),
+            "{text}"
+        );
 
         let md = to_markdown(&root);
         assert!(md.contains("| overall verdict | **CRITICAL** |"), "{md}");
         assert!(md.contains("| install-tree verdict | **HIGH** |"), "{md}");
         assert!(md.contains("## Dropped-file analysis"), "{md}");
         assert!(md.contains("AppData/payload.exe"), "{md}");
-        assert!(md.contains("### Dropped files"), "coverage is attributed: {md}");
+        assert!(
+            md.contains("### Dropped files"),
+            "coverage is attributed: {md}"
+        );
     }
 
     #[test]

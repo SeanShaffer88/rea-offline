@@ -47,8 +47,8 @@ pub struct PeBuilder {
 impl Default for PeBuilder {
     fn default() -> Self {
         PeBuilder {
-            machine: 0x8664,   // x86-64
-            subsystem: 3,      // windows-console
+            machine: 0x8664,             // x86-64
+            subsystem: 3,                // windows-console
             dll_characteristics: 0x4160, // high_entropy_va | dynamic_base | nx_compat | guard_cf
             timestamp: 0x6500_0000,
             entry_point: 0x1000,
@@ -62,16 +62,39 @@ impl Default for PeBuilder {
 }
 
 impl PeBuilder {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
-    pub fn machine(mut self, machine: u16) -> Self { self.machine = machine; self }
-    pub fn subsystem(mut self, subsystem: u16) -> Self { self.subsystem = subsystem; self }
-    pub fn dll_characteristics(mut self, value: u16) -> Self { self.dll_characteristics = value; self }
-    pub fn timestamp(mut self, value: u32) -> Self { self.timestamp = value; self }
-    pub fn entry_point(mut self, value: u32) -> Self { self.entry_point = value; self }
-    pub fn overlay(mut self, bytes: usize) -> Self { self.overlay = vec![0x41; bytes]; self }
+    pub fn machine(mut self, machine: u16) -> Self {
+        self.machine = machine;
+        self
+    }
+    pub fn subsystem(mut self, subsystem: u16) -> Self {
+        self.subsystem = subsystem;
+        self
+    }
+    pub fn dll_characteristics(mut self, value: u16) -> Self {
+        self.dll_characteristics = value;
+        self
+    }
+    pub fn timestamp(mut self, value: u32) -> Self {
+        self.timestamp = value;
+        self
+    }
+    pub fn entry_point(mut self, value: u32) -> Self {
+        self.entry_point = value;
+        self
+    }
+    pub fn overlay(mut self, bytes: usize) -> Self {
+        self.overlay = vec![0x41; bytes];
+        self
+    }
     /// Presence-only Authenticode: sets the certificate data-directory entry.
-    pub fn signed(mut self, on: bool) -> Self { self.signed = on; self }
+    pub fn signed(mut self, on: bool) -> Self {
+        self.signed = on;
+        self
+    }
 
     /// Replace the section table (first entry must stay at RVA 0x1000 so the
     /// import scaffolding below remains valid).
@@ -113,8 +136,8 @@ impl PeBuilder {
         let raw = |rva: u32| (0x200 + (rva - 0x1000)) as usize;
         let mut desc_off = raw(import_dir_rva);
         let mut thunk_rva = 0x1300u32; // lookup tables
-        let mut hint_rva = 0x1500u32;  // hint/name entries
-        let mut dll_rva = 0x1700u32;   // DLL name strings
+        let mut hint_rva = 0x1500u32; // hint/name entries
+        let mut dll_rva = 0x1700u32; // DLL name strings
         let mut descriptors: Vec<(u32, u32)> = Vec::new();
 
         for (dll, funcs) in &self.imports {
@@ -127,7 +150,8 @@ impl PeBuilder {
                     Import::Named(name) => {
                         let hn_off = raw(hint_rva);
                         d[hn_off + 2..hn_off + 2 + name.len()].copy_from_slice(name.as_bytes());
-                        d[thunk_off..thunk_off + 8].copy_from_slice(&(hint_rva as u64).to_le_bytes());
+                        d[thunk_off..thunk_off + 8]
+                            .copy_from_slice(&(hint_rva as u64).to_le_bytes());
                         hint_rva += 0x40;
                     }
                     Import::Ordinal(ord) => {
@@ -138,7 +162,7 @@ impl PeBuilder {
                 thunk_off += 8;
             }
             descriptors.push((thunk_rva, dll_rva));
-            thunk_rva = thunk_rva + 0x40;
+            thunk_rva += 0x40;
             dll_rva += 0x40;
         }
 
@@ -204,8 +228,17 @@ impl PeBuilder {
 /// used by tests and the CI smoke run.
 pub fn demo_installer_bytes() -> Vec<u8> {
     let mut pe = PeBuilder::new()
-        .imports("KERNEL32.dll", vec![Import::Named("Sleep"), Import::Named("CreateFileW")])
-        .imports("WININET.dll", vec![Import::Named("InternetOpenW"), Import::Named("InternetReadFile")])
+        .imports(
+            "KERNEL32.dll",
+            vec![Import::Named("Sleep"), Import::Named("CreateFileW")],
+        )
+        .imports(
+            "WININET.dll",
+            vec![
+                Import::Named("InternetOpenW"),
+                Import::Named("InternetReadFile"),
+            ],
+        )
         .build();
     pe.extend_from_slice(
         b"demo-payload\x00https://example.invalid/update\x00WinHttp\x00powershell\x00",
@@ -226,7 +259,9 @@ mod tests {
         let info = crate::rea_bridge::parse_pe_bytes(&bytes).expect("must parse");
         assert_eq!(info.machine, "x86-64");
         assert_eq!(info.imports, vec!["KERNEL32.dll".to_string()]);
-        assert!(info.imported_functions.contains(&"KERNEL32.dll!CreateRemoteThread".to_string()));
+        assert!(info
+            .imported_functions
+            .contains(&"KERNEL32.dll!CreateRemoteThread".to_string()));
     }
 
     #[test]
@@ -234,6 +269,9 @@ mod tests {
         let bytes = PeBuilder::new().overlay(100).signed(true).build();
         let info = crate::rea_bridge::parse_pe_bytes(&bytes).unwrap();
         assert!(info.signed);
-        assert_eq!(info.overlay_size, 0, "certificate table lives in the overlay");
+        assert_eq!(
+            info.overlay_size, 0,
+            "certificate table lives in the overlay"
+        );
     }
 }

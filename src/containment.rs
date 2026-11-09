@@ -48,7 +48,10 @@ pub fn to_json(elevated: Option<bool>, registry: &RegistryStatus) -> Value {
         },
     );
     let mut registry_json = std::collections::BTreeMap::new();
-    registry_json.insert("mounted".to_string(), Value::Bool(matches!(registry, RegistryStatus::Mounted)));
+    registry_json.insert(
+        "mounted".to_string(),
+        Value::Bool(matches!(registry, RegistryStatus::Mounted)),
+    );
     registry_json.insert("status".to_string(), Value::str(registry.label()));
     if let RegistryStatus::Unavailable(reason) = registry {
         registry_json.insert("message".to_string(), Value::str(reason.clone()));
@@ -258,7 +261,11 @@ mod tests {
         let issues = issues(&block("false", Some("unavailable")));
         assert_eq!(issues.len(), 1, "{issues:?}");
         assert_eq!(issues[0].0, "registry");
-        assert!(issues[0].1.contains("neither redirected"), "{}", issues[0].1);
+        assert!(
+            issues[0].1.contains("neither redirected"),
+            "{}",
+            issues[0].1
+        );
     }
 
     #[test]
@@ -270,27 +277,42 @@ mod tests {
         assert!(message.contains("could not be determined"), "{message}");
         // So is an archive that predates the block: silence is not an answer.
         assert!(issues(&Value::Null).is_empty());
-        assert!(issues(&Value::obj(vec![])).iter().any(|(stage, _)| stage == "elevation-unknown"));
+        assert!(issues(&Value::obj(vec![]))
+            .iter()
+            .any(|(stage, _)| stage == "elevation-unknown"));
     }
 
     #[test]
     fn the_block_records_the_facts_every_surface_reads() {
-        let json = to_json(Some(true), &RegistryStatus::Unavailable("access denied".into()));
+        let json = to_json(
+            Some(true),
+            &RegistryStatus::Unavailable("access denied".into()),
+        );
         assert_eq!(json.get("elevated"), Some(&Value::Bool(true)));
         assert_eq!(
-            json.get("registry").and_then(|r| r.get("status")).and_then(Value::as_str),
+            json.get("registry")
+                .and_then(|r| r.get("status"))
+                .and_then(Value::as_str),
             Some("unavailable")
         );
         assert_eq!(
-            json.get("registry").and_then(|r| r.get("message")).and_then(Value::as_str),
+            json.get("registry")
+                .and_then(|r| r.get("message"))
+                .and_then(Value::as_str),
             Some("access denied")
         );
-        assert!(!array(&json, "limits").is_empty(), "the method's standing limits travel with the report");
+        assert!(
+            !array(&json, "limits").is_empty(),
+            "the method's standing limits travel with the report"
+        );
         // An unprivileged run on a machine with no registry is the quiet case.
         let plain = to_json(Some(false), &RegistryStatus::NotApplicable);
         assert_eq!(plain.get("elevated"), Some(&Value::Bool(false)));
         assert_eq!(
-            plain.get("registry").and_then(|r| r.get("status")).and_then(Value::as_str),
+            plain
+                .get("registry")
+                .and_then(|r| r.get("status"))
+                .and_then(Value::as_str),
             Some("not-applicable")
         );
         // Re-reading either block reproduces the same verdict.

@@ -131,10 +131,7 @@ const INJECTION_SETS: &[(&[&str], &str)] = &[
         &["NtUnmapViewOfSection", "SetThreadContext", "ResumeThread"],
         "process hollowing",
     ),
-    (
-        &["VirtualAllocEx", "QueueUserAPC"],
-        "APC injection",
-    ),
+    (&["VirtualAllocEx", "QueueUserAPC"], "APC injection"),
     (
         &["CreateProcess", "WriteProcessMemory", "SetThreadContext"],
         "process replacement",
@@ -206,8 +203,8 @@ fn add(
 const EXECUTABLE_EXTENSIONS: &[&str] = &["exe", "dll", "sys", "ocx", "scr", "cpl", "com"];
 /// Extensions that promise a document, image or other passive data.
 const DATA_EXTENSIONS: &[&str] = &[
-    "txt", "log", "csv", "json", "xml", "pdf", "rtf", "png", "jpg", "jpeg", "gif", "bmp",
-    "mp3", "mp4", "avi", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
+    "txt", "log", "csv", "json", "xml", "pdf", "rtf", "png", "jpg", "jpeg", "gif", "bmp", "mp3",
+    "mp4", "avi", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
 ];
 
 /// FMT002 — the name promises one kind of content and the bytes are another.
@@ -216,9 +213,15 @@ const DATA_EXTENSIONS: &[&str] = &[
 /// it" (including files above the content-analysis limit), and turning our
 /// own blind spot into a masquerade finding would be dishonest.
 fn format_mismatch(file: &FileAnalysis) -> Option<String> {
-    let extension = std::path::Path::new(&file.path).extension()?.to_string_lossy().to_ascii_lowercase();
+    let extension = std::path::Path::new(&file.path)
+        .extension()?
+        .to_string_lossy()
+        .to_ascii_lowercase();
     if EXECUTABLE_EXTENSIONS.contains(&extension.as_str())
-        && matches!(file.format.as_str(), "script" | "text" | "ZIP" | "OLE/MSI" | "ELF")
+        && matches!(
+            file.format.as_str(),
+            "script" | "text" | "ZIP" | "OLE/MSI" | "ELF"
+        )
     {
         return Some(format!(
             "'.{extension}' promises a Windows executable, but the content is {}",
@@ -243,7 +246,9 @@ pub fn evaluate_file(file: &FileAnalysis, t: &Thresholds) -> Vec<Finding> {
         // several arguments cannot reliably infer the late-bound lifetime of
         // a `&'static str` rule id.
         if !pe.signed {
-            add(&mut out, file,
+            add(
+                &mut out,
+                file,
                 "PE001",
                 "Executable is not Authenticode-signed".into(),
                 Severity::Low,
@@ -252,7 +257,9 @@ pub fn evaluate_file(file: &FileAnalysis, t: &Thresholds) -> Vec<Finding> {
                 "no certificate table (signature validity still needs WinVerifyTrust/REA)".into(),
             );
         } else {
-            add(&mut out, file,
+            add(
+                &mut out,
+                file,
                 "PE000",
                 "Authenticode certificate table present".into(),
                 Severity::Info,
@@ -262,7 +269,9 @@ pub fn evaluate_file(file: &FileAnalysis, t: &Thresholds) -> Vec<Finding> {
             );
         }
         if !pe.mitigations.aslr_dynamic_base {
-            add(&mut out, file,
+            add(
+                &mut out,
+                file,
                 "PE002",
                 "No ASLR (DYNAMIC_BASE unset)".into(),
                 Severity::Medium,
@@ -272,7 +281,9 @@ pub fn evaluate_file(file: &FileAnalysis, t: &Thresholds) -> Vec<Finding> {
             );
         }
         if !pe.mitigations.nx_compat {
-            add(&mut out, file,
+            add(
+                &mut out,
+                file,
                 "PE003",
                 "No NX/DEP compatibility (NX_COMPAT unset)".into(),
                 Severity::Medium,
@@ -282,7 +293,9 @@ pub fn evaluate_file(file: &FileAnalysis, t: &Thresholds) -> Vec<Finding> {
             );
         }
         if pe.mitigations.no_seh {
-            add(&mut out, file,
+            add(
+                &mut out,
+                file,
                 "PE004",
                 "SEH disabled (NO_SEH)".into(),
                 Severity::Low,
@@ -295,29 +308,41 @@ pub fn evaluate_file(file: &FileAnalysis, t: &Thresholds) -> Vec<Finding> {
         // --- Sections ------------------------------------------------------
         for s in &pe.section_details {
             if s.executable && s.writable {
-                add(&mut out, file,
+                add(
+                    &mut out,
+                    file,
                     "PE100",
                     format!("Writable + executable section '{}'", s.name),
                     Severity::High,
                     "memory",
                     20,
-                    format!("section characteristics include code|write ({} bytes)", s.raw_size),
+                    format!(
+                        "section characteristics include code|write ({} bytes)",
+                        s.raw_size
+                    ),
                 );
             }
             if s.raw_size >= t.min_section_bytes && s.entropy > t.packed_entropy {
-                add(&mut out, file,
+                add(
+                    &mut out,
+                    file,
                     "PE110",
                     format!("High-entropy section '{}'", s.name),
                     Severity::Medium,
                     "packing",
                     12,
-                    format!("entropy {:.2} over {} raw bytes (packed or encrypted)", s.entropy, s.raw_size),
+                    format!(
+                        "entropy {:.2} over {} raw bytes (packed or encrypted)",
+                        s.entropy, s.raw_size
+                    ),
                 );
             }
         }
         for (name, packer) in PACKER_SECTIONS {
             if pe.sections.iter().any(|s| s.eq_ignore_ascii_case(name)) {
-                add(&mut out, file,
+                add(
+                    &mut out,
+                    file,
                     "PE130",
                     format!("Packer section layout ({packer})"),
                     Severity::High,
@@ -329,7 +354,9 @@ pub fn evaluate_file(file: &FileAnalysis, t: &Thresholds) -> Vec<Finding> {
         }
         // An executable section with no code is a classic unpacking stub.
         if pe.executable_sections.is_empty() && !pe.sections.is_empty() {
-            add(&mut out, file,
+            add(
+                &mut out,
+                file,
                 "PE131",
                 "No executable sections".into(),
                 Severity::Medium,
@@ -341,19 +368,26 @@ pub fn evaluate_file(file: &FileAnalysis, t: &Thresholds) -> Vec<Finding> {
 
         // --- Overlay / appended data ---------------------------------------
         if pe.overlay_size >= t.overlay_bytes {
-            add(&mut out, file,
+            add(
+                &mut out,
+                file,
                 "PE120",
                 "Data appended after the last section".into(),
                 Severity::Medium,
                 "packing",
                 10,
-                format!("{} overlay bytes (dropper / second stage / installer payload)", pe.overlay_size),
+                format!(
+                    "{} overlay bytes (dropper / second stage / installer payload)",
+                    pe.overlay_size
+                ),
             );
         }
 
         // --- Imports -------------------------------------------------------
         if pe.imported_functions.is_empty() {
-            add(&mut out, file,
+            add(
+                &mut out,
+                file,
                 "PE170",
                 "No imported functions".into(),
                 Severity::Medium,
@@ -364,7 +398,9 @@ pub fn evaluate_file(file: &FileAnalysis, t: &Thresholds) -> Vec<Finding> {
         } else {
             for (apis, label) in INJECTION_SETS {
                 if apis.iter().all(|a| has_import(pe, a)) {
-                    add(&mut out, file,
+                    add(
+                        &mut out,
+                        file,
                         "PE140",
                         format!("Injection API set present ({label})"),
                         Severity::High,
@@ -374,9 +410,15 @@ pub fn evaluate_file(file: &FileAnalysis, t: &Thresholds) -> Vec<Finding> {
                     );
                 }
             }
-            let anti: Vec<&str> = ANTI_DEBUG_APIS.iter().copied().filter(|a| has_import(pe, a)).collect();
+            let anti: Vec<&str> = ANTI_DEBUG_APIS
+                .iter()
+                .copied()
+                .filter(|a| has_import(pe, a))
+                .collect();
             if !anti.is_empty() {
-                add(&mut out, file,
+                add(
+                    &mut out,
+                    file,
                     "PE141",
                     "Anti-debugging API present".into(),
                     Severity::Medium,
@@ -385,9 +427,15 @@ pub fn evaluate_file(file: &FileAnalysis, t: &Thresholds) -> Vec<Finding> {
                     anti.join(", "),
                 );
             }
-            let ordinals = pe.imported_functions.iter().filter(|f| bare_function(f).starts_with('#')).count();
+            let ordinals = pe
+                .imported_functions
+                .iter()
+                .filter(|f| bare_function(f).starts_with('#'))
+                .count();
             if ordinals > 0 && ordinals == pe.imported_functions.len() {
-                add(&mut out, file,
+                add(
+                    &mut out,
+                    file,
                     "PE150",
                     "All imports resolved by ordinal".into(),
                     Severity::Medium,
@@ -400,18 +448,27 @@ pub fn evaluate_file(file: &FileAnalysis, t: &Thresholds) -> Vec<Finding> {
 
         // --- Metadata sanity ----------------------------------------------
         const EPOCH_1990: u32 = 631_152_000;
-        if pe.timestamp != 0 && !(EPOCH_1990..=crate::util::unix_secs() as u32 + 86_400).contains(&pe.timestamp) {
-            add(&mut out, file,
+        if pe.timestamp != 0
+            && !(EPOCH_1990..=crate::util::unix_secs() as u32 + 86_400).contains(&pe.timestamp)
+        {
+            add(
+                &mut out,
+                file,
                 "PE160",
                 "Implausible compile timestamp".into(),
                 Severity::Low,
                 "metadata",
                 5,
-                format!("TimeDateStamp {} is before 1990 or in the future", pe.timestamp),
+                format!(
+                    "TimeDateStamp {} is before 1990 or in the future",
+                    pe.timestamp
+                ),
             );
         }
         if pe.timestamp == 0 {
-            add(&mut out, file,
+            add(
+                &mut out,
+                file,
                 "PE161",
                 "Zeroed compile timestamp".into(),
                 Severity::Low,
@@ -424,7 +481,9 @@ pub fn evaluate_file(file: &FileAnalysis, t: &Thresholds) -> Vec<Finding> {
 
     // --- Whole-file heuristics ---------------------------------------------
     if file.size >= t.min_packed_bytes && file.entropy > 7.5 {
-        add(&mut out, file,
+        add(
+            &mut out,
+            file,
             "ENT001",
             "Whole file is high entropy".into(),
             Severity::Medium,
@@ -448,7 +507,9 @@ pub fn evaluate_file(file: &FileAnalysis, t: &Thresholds) -> Vec<Finding> {
         );
     }
     if let Some(evidence) = format_mismatch(file) {
-        add(&mut out, file,
+        add(
+            &mut out,
+            file,
             "FMT002",
             "Extension/format mismatch".into(),
             Severity::Medium,
@@ -461,16 +522,25 @@ pub fn evaluate_file(file: &FileAnalysis, t: &Thresholds) -> Vec<Finding> {
     // --- Capability strings (from the native string scan) ------------------
     let mut by_category: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for ind in &file.indicators {
-        by_category.entry(ind.category.as_str()).or_default().push(ind.matched.as_str());
+        by_category
+            .entry(ind.category.as_str())
+            .or_default()
+            .push(ind.matched.as_str());
     }
     for (category, matches) in by_category {
         let category: &'static str = static_category(category);
         if category == "obfuscation" || category == "crypto" {
             continue; // noisy and low-signal on their own
         }
-        let sev = if matches.len() >= 3 { Severity::Medium } else { Severity::Low };
+        let sev = if matches.len() >= 3 {
+            Severity::Medium
+        } else {
+            Severity::Low
+        };
         let score = if matches.len() >= 3 { 8 } else { 4 };
-        add(&mut out, file,
+        add(
+            &mut out,
+            file,
             "STR001",
             format!("Capability strings: {category}"),
             sev,
@@ -480,7 +550,12 @@ pub fn evaluate_file(file: &FileAnalysis, t: &Thresholds) -> Vec<Finding> {
         );
     }
 
-    out.sort_by(|a, b| b.severity.rank().cmp(&a.severity.rank()).then(a.rule.cmp(b.rule)));
+    out.sort_by(|a, b| {
+        b.severity
+            .rank()
+            .cmp(&a.severity.rank())
+            .then(a.rule.cmp(b.rule))
+    });
     out
 }
 
@@ -508,7 +583,11 @@ pub fn evaluate(report: &crate::rea_bridge::ReaReport) -> Vec<Finding> {
 /// by a hundred boring files.
 pub fn risk(findings: &[Finding]) -> (u64, &'static str) {
     let raw: u64 = findings.iter().map(|f| f.score).sum();
-    let highest = findings.iter().map(|f| f.severity).max().unwrap_or(Severity::Info);
+    let highest = findings
+        .iter()
+        .map(|f| f.severity)
+        .max()
+        .unwrap_or(Severity::Info);
     let mut score = raw.min(100);
     if highest == Severity::Critical {
         score = score.max(70);
@@ -534,31 +613,42 @@ pub fn to_json(findings: &[Finding]) -> Value {
     let (score, verdict) = risk(findings);
     let mut counts = BTreeMap::new();
     for sev in ["critical", "high", "medium", "low", "info"] {
-        let n = findings.iter().filter(|f| f.severity.as_str() == sev).count() as u64;
+        let n = findings
+            .iter()
+            .filter(|f| f.severity.as_str() == sev)
+            .count() as u64;
         counts.insert(sev.to_string(), Value::num(n));
     }
     // One entry per rule that fired, with how many files it hit.
     let mut rules: BTreeMap<String, (u64, &'static str, String)> = BTreeMap::new();
     for f in findings {
-        let entry = rules.entry(f.rule.to_string())
-            .or_insert((0, f.severity.as_str(), f.title.clone()));
+        let entry =
+            rules
+                .entry(f.rule.to_string())
+                .or_insert((0, f.severity.as_str(), f.title.clone()));
         entry.0 += 1;
     }
-    let fired: Vec<Value> = rules.into_iter().map(|(rule, (count, severity, title))| {
-        Value::obj(vec![
-            ("rule", Value::str(rule)),
-            ("title", Value::str(title)),
-            ("severity", Value::str(severity)),
-            ("files", Value::num(count)),
-        ])
-    }).collect();
+    let fired: Vec<Value> = rules
+        .into_iter()
+        .map(|(rule, (count, severity, title))| {
+            Value::obj(vec![
+                ("rule", Value::str(rule)),
+                ("title", Value::str(title)),
+                ("severity", Value::str(severity)),
+                ("files", Value::num(count)),
+            ])
+        })
+        .collect();
     Value::obj(vec![
         ("score", Value::num(score)),
         ("verdict", Value::str(verdict)),
         ("finding_count", Value::num(findings.len() as u64)),
         ("by_severity", Value::Object(counts)),
         ("rules_fired", Value::Array(fired)),
-        ("findings", Value::Array(findings.iter().map(Finding::to_json).collect())),
+        (
+            "findings",
+            Value::Array(findings.iter().map(Finding::to_json).collect()),
+        ),
     ])
 }
 
@@ -574,10 +664,22 @@ mod tests {
             subsystem: "windows-console".into(),
             sections: vec![".text".into(), ".rdata".into()],
             section_details: vec![
-                PeSection { name: ".text".into(), virtual_size: 0x1000, raw_size: 0x1000,
-                            entropy: 6.1, executable: true, writable: false },
-                PeSection { name: ".rdata".into(), virtual_size: 0x1000, raw_size: 0x1000,
-                            entropy: 4.0, executable: false, writable: false },
+                PeSection {
+                    name: ".text".into(),
+                    virtual_size: 0x1000,
+                    raw_size: 0x1000,
+                    entropy: 6.1,
+                    executable: true,
+                    writable: false,
+                },
+                PeSection {
+                    name: ".rdata".into(),
+                    virtual_size: 0x1000,
+                    raw_size: 0x1000,
+                    entropy: 4.0,
+                    executable: false,
+                    writable: false,
+                },
             ],
             imports: vec!["KERNEL32.dll".into()],
             imported_functions: vec!["KERNEL32.dll!Sleep".into()],
@@ -585,8 +687,13 @@ mod tests {
             timestamp: 1_700_000_000,
             entry_point_rva: 0x1000,
             dll_characteristics: vec!["dynamic_base".into(), "nx_compat".into(), "guard_cf".into()],
-            mitigations: Mitigations { aslr_dynamic_base: true, nx_compat: true, guard_cf: true,
-                                       no_seh: false, high_entropy_va: true },
+            mitigations: Mitigations {
+                aslr_dynamic_base: true,
+                nx_compat: true,
+                guard_cf: true,
+                no_seh: false,
+                high_entropy_va: true,
+            },
             signed: true,
             overlay_size: 0,
         }
@@ -609,7 +716,11 @@ mod tests {
     #[test]
     fn clean_signed_pe_scores_zero() {
         let findings = evaluate_file(&file_with(Some(clean_pe())), &Thresholds::default());
-        assert_eq!(findings.len(), 1, "only the info-level signature finding: {findings:?}");
+        assert_eq!(
+            findings.len(),
+            1,
+            "only the info-level signature finding: {findings:?}"
+        );
         assert_eq!(findings[0].severity, Severity::Info);
         let (score, verdict) = risk(&findings);
         assert_eq!(score, 0);
@@ -622,8 +733,12 @@ mod tests {
         pe.signed = false;
         pe.sections = vec!["UPX0".into(), "UPX1".into()];
         pe.section_details = vec![PeSection {
-            name: "UPX1".into(), virtual_size: 0x4000, raw_size: 0x4000,
-            entropy: 7.8, executable: true, writable: true,
+            name: "UPX1".into(),
+            virtual_size: 0x4000,
+            raw_size: 0x4000,
+            entropy: 7.8,
+            executable: true,
+            writable: true,
         }];
         pe.executable_sections = vec!["UPX1".into()];
         pe.overlay_size = 20_000;
@@ -650,7 +765,10 @@ mod tests {
         pe.dll_characteristics.clear();
         let findings = evaluate_file(&file_with(Some(pe)), &Thresholds::default());
         let ids: Vec<&str> = findings.iter().map(|f| f.rule).collect();
-        assert!(ids.contains(&"PE002") && ids.contains(&"PE003") && ids.contains(&"PE150"), "{ids:?}");
+        assert!(
+            ids.contains(&"PE002") && ids.contains(&"PE003") && ids.contains(&"PE150"),
+            "{ids:?}"
+        );
     }
 
     #[test]
@@ -658,18 +776,44 @@ mod tests {
         let mut f = file_with(None);
         f.format = "script".into();
         f.indicators = vec![
-            Indicator { category: "network".into(), matched: "http://".into(), severity: "medium".into() },
-            Indicator { category: "network".into(), matched: "WinHttp".into(), severity: "medium".into() },
-            Indicator { category: "network".into(), matched: "InternetOpen".into(), severity: "medium".into() },
-            Indicator { category: "persistence".into(), matched: "schtasks".into(), severity: "medium".into() },
-            Indicator { category: "crypto".into(), matched: "CryptEncrypt".into(), severity: "low".into() },
+            Indicator {
+                category: "network".into(),
+                matched: "http://".into(),
+                severity: "medium".into(),
+            },
+            Indicator {
+                category: "network".into(),
+                matched: "WinHttp".into(),
+                severity: "medium".into(),
+            },
+            Indicator {
+                category: "network".into(),
+                matched: "InternetOpen".into(),
+                severity: "medium".into(),
+            },
+            Indicator {
+                category: "persistence".into(),
+                matched: "schtasks".into(),
+                severity: "medium".into(),
+            },
+            Indicator {
+                category: "crypto".into(),
+                matched: "CryptEncrypt".into(),
+                severity: "low".into(),
+            },
         ];
         let findings = evaluate_file(&f, &Thresholds::default());
-        let network: Vec<&Finding> = findings.iter().filter(|x| x.rule == "STR001" && x.category == "network").collect();
+        let network: Vec<&Finding> = findings
+            .iter()
+            .filter(|x| x.rule == "STR001" && x.category == "network")
+            .collect();
         assert_eq!(network.len(), 1);
         assert_eq!(network[0].severity, Severity::Medium);
         assert!(network[0].evidence.contains("WinHttp"));
-        assert!(!findings.iter().any(|x| x.category == "crypto"), "crypto is intentionally skipped");
+        assert!(
+            !findings.iter().any(|x| x.category == "crypto"),
+            "crypto is intentionally skipped"
+        );
     }
 
     #[test]
@@ -680,7 +824,12 @@ mod tests {
         f.path = "usr/bin/tool".into();
         f.format = "ELF".into();
         let findings = evaluate_file(&f, &Thresholds::default());
-        assert!(!findings.iter().any(|x| x.rule == "FMT001" || x.rule == "FMT002"), "{findings:?}");
+        assert!(
+            !findings
+                .iter()
+                .any(|x| x.rule == "FMT001" || x.rule == "FMT002"),
+            "{findings:?}"
+        );
     }
 
     #[test]
@@ -699,7 +848,9 @@ mod tests {
         f.path = "photos/picture.jpg".into();
         f.format = "PE".into();
         // A PE named .jpg is a masquerade; the broken header is a separate fact.
-        assert!(evaluate_file(&f, &Thresholds::default()).iter().any(|x| x.rule == "FMT002"));
+        assert!(evaluate_file(&f, &Thresholds::default())
+            .iter()
+            .any(|x| x.rule == "FMT002"));
 
         f.path = "setup.exe".into();
         f.format = "script".into();
@@ -712,7 +863,12 @@ mod tests {
         // file (e.g. one above the content limit) is not evidence of disguise.
         for format in ["unknown", "binary"] {
             f.format = format.into();
-            assert!(!evaluate_file(&f, &Thresholds::default()).iter().any(|x| x.rule == "FMT002"), "{format}");
+            assert!(
+                !evaluate_file(&f, &Thresholds::default())
+                    .iter()
+                    .any(|x| x.rule == "FMT002"),
+                "{format}"
+            );
         }
 
         // Matching name and content stay quiet.
@@ -742,10 +898,16 @@ mod tests {
 
     #[test]
     fn json_shape_is_stable() {
-        let json = to_json(&evaluate_file(&file_with(Some(clean_pe())), &Thresholds::default()));
+        let json = to_json(&evaluate_file(
+            &file_with(Some(clean_pe())),
+            &Thresholds::default(),
+        ));
         assert!(json.get("score").is_some());
         assert_eq!(json.get("verdict").and_then(Value::as_str), Some("low"));
-        assert_eq!(json.get("findings").map(|f| matches!(f, Value::Array(_))), Some(true));
+        assert_eq!(
+            json.get("findings").map(|f| matches!(f, Value::Array(_))),
+            Some(true)
+        );
         let text = json.to_string_pretty();
         assert!(crate::json::parse(&text).is_ok());
     }

@@ -31,7 +31,13 @@ pub struct SandboxConfig {
 
 impl Default for SandboxConfig {
     fn default() -> Self {
-        SandboxConfig { root: None, memory_limit_mb: 1024, max_processes: 32, timeout: Duration::from_secs(300), keep: false }
+        SandboxConfig {
+            root: None,
+            memory_limit_mb: 1024,
+            max_processes: 32,
+            timeout: Duration::from_secs(300),
+            keep: false,
+        }
     }
 }
 
@@ -68,7 +74,7 @@ pub fn exit_code_completed(code: u32) -> bool {
 /// evidence of a *partial* install however calm the delta looks: the
 /// installer was still working when it stopped.
 pub fn run_completed(timed_out: bool, exit_code: Option<u32>) -> bool {
-    !timed_out && exit_code.map_or(false, exit_code_completed)
+    !timed_out && exit_code.is_some_and(exit_code_completed)
 }
 
 /// The coverage issue a run leaves behind when it did not finish normally:
@@ -98,10 +104,15 @@ pub fn run_issue(timed_out: bool, exit_code: Option<u32>) -> Option<(&'static st
 /// Read up to the last 8 KiB of a captured log; returns (tail, total_bytes).
 pub fn read_log_tail(path: &Path) -> (String, u64) {
     use std::io::{Read, Seek, SeekFrom};
-    let mut file = match std::fs::File::open(path) { Ok(f) => f, Err(_) => return (String::new(), 0) };
+    let mut file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return (String::new(), 0),
+    };
     let total = file.metadata().map(|m| m.len()).unwrap_or(0);
     let window = total.min(8192);
-    if total > window { let _ = file.seek(SeekFrom::End(-(window as i64))); }
+    if total > window {
+        let _ = file.seek(SeekFrom::End(-(window as i64)));
+    }
     let mut buf = Vec::with_capacity(window as usize);
     let _ = file.read_to_end(&mut buf);
     (String::from_utf8_lossy(&buf).to_string(), total)
@@ -119,14 +130,24 @@ pub struct Sandbox {
 impl Sandbox {
     pub fn prepare(config: SandboxConfig) -> Result<Sandbox> {
         let id = new_id();
-        let root = config.root.clone().unwrap_or_else(|| temp_root().join(format!("rea_sandbox_{id}")));
+        let root = config
+            .root
+            .clone()
+            .unwrap_or_else(|| temp_root().join(format!("rea_sandbox_{id}")));
         let install_dir = root.join("install");
         let work_dir = root.join("work");
         let tmp_dir = root.join("tmp");
         for dir in [&root, &install_dir, &work_dir, &tmp_dir] {
             std::fs::create_dir_all(dir)?;
         }
-        Ok(Sandbox { id, root, install_dir, work_dir, tmp_dir, config })
+        Ok(Sandbox {
+            id,
+            root,
+            install_dir,
+            work_dir,
+            tmp_dir,
+            config,
+        })
     }
 
     /// Environment that keeps the child's scratch/profile writes inside
@@ -141,8 +162,14 @@ impl Sandbox {
             ("REASANDBOX_INSTALL".into(), s(&self.install_dir)),
             // Per-user profile redirection (best effort; apps that honor it
             // never touch the real profile).
-            ("APPDATA".into(), s(&self.root.join("AppData").join("Roaming"))),
-            ("LOCALAPPDATA".into(), s(&self.root.join("AppData").join("Local"))),
+            (
+                "APPDATA".into(),
+                s(&self.root.join("AppData").join("Roaming")),
+            ),
+            (
+                "LOCALAPPDATA".into(),
+                s(&self.root.join("AppData").join("Local")),
+            ),
             ("USERPROFILE".into(), s(&self.root)),
             ("HOME".into(), s(&self.root)),
         ]
@@ -150,22 +177,27 @@ impl Sandbox {
 
     /// Validate + build the (program, args) pair for the platform.
     fn launch_spec(&self, installer: &Path, args: &[String]) -> Result<(PathBuf, Vec<String>)> {
-        if !installer.exists() { return Err(Error::NotFound(installer.to_path_buf())); }
+        if !installer.exists() {
+            return Err(Error::NotFound(installer.to_path_buf()));
+        }
         #[cfg(windows)]
         {
             match crate::util::extension_lower(installer).as_str() {
-                "exe" => return Ok((installer.to_path_buf(), args.to_vec())),
+                "exe" => Ok((installer.to_path_buf(), args.to_vec())),
                 "msi" => {
                     let mut a = vec![
-                        "/i".to_string(), installer.to_string_lossy().to_string(),
-                        "/qn".to_string(), "/norestart".to_string(),
+                        "/i".to_string(),
+                        installer.to_string_lossy().to_string(),
+                        "/qn".to_string(),
+                        "/norestart".to_string(),
                         format!("TARGETDIR={}", self.install_dir.to_string_lossy()),
                     ];
                     a.extend(args.iter().cloned());
-                    return Ok((PathBuf::from("msiexec.exe"), a));
+                    Ok((PathBuf::from("msiexec.exe"), a))
                 }
-                other => return Err(Error::InvalidInput(format!(
-                    "unsupported installer type '.{other}' (expected .exe or .msi)"))),
+                other => Err(Error::InvalidInput(format!(
+                    "unsupported installer type '.{other}' (expected .exe or .msi)"
+                ))),
             }
         }
         #[cfg(not(windows))]
@@ -175,7 +207,8 @@ impl Sandbox {
             // working directory, so a relative installer that plainly exists
             // would fail to spawn. Resolve it first (Windows already searches
             // the current directory), and record the absolute path as evidence.
-            let program = std::fs::canonicalize(installer).unwrap_or_else(|_| installer.to_path_buf());
+            let program =
+                std::fs::canonicalize(installer).unwrap_or_else(|_| installer.to_path_buf());
             Ok((program, args.to_vec()))
         }
     }
@@ -186,12 +219,25 @@ impl Sandbox {
         let stdout_log = self.work_dir.join("installer.stdout.log");
         let stderr_log = self.work_dir.join("installer.stderr.log");
         #[cfg(windows)]
-        let mut outcome = win::run(&program, &argv, &self.work_dir, &self.isolated_env(),
-                               self.config.memory_limit_mb, self.config.max_processes,
-                               self.config.timeout, &stdout_log, &stderr_log)?;
+        let mut outcome = win::run(
+            &program,
+            &argv,
+            &self.work_dir,
+            &self.isolated_env(),
+            &self.config,
+            &stdout_log,
+            &stderr_log,
+        )?;
         #[cfg(not(windows))]
-        let mut outcome = portable::run(&program, &argv, &self.work_dir, &self.isolated_env(),
-                                        self.config.timeout, &stdout_log, &stderr_log)?;
+        let mut outcome = portable::run(
+            &program,
+            &argv,
+            &self.work_dir,
+            &self.isolated_env(),
+            self.config.timeout,
+            &stdout_log,
+            &stderr_log,
+        )?;
         let (stdout_tail, stdout_bytes) = read_log_tail(&stdout_log);
         let (stderr_tail, stderr_bytes) = read_log_tail(&stderr_log);
         outcome.stdout_tail = stdout_tail;
@@ -200,8 +246,14 @@ impl Sandbox {
         outcome.stderr_bytes = stderr_bytes;
         Ok(RunOutcome {
             duration_ms: started.elapsed().as_millis() as u64,
-            command: format!("{} {}", program.display(),
-                             argv.iter().map(|a| format!("\"{a}\"")).collect::<Vec<_>>().join(" ")),
+            command: format!(
+                "{} {}",
+                program.display(),
+                argv.iter()
+                    .map(|a| format!("\"{a}\""))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
             ..outcome
         })
     }
@@ -210,33 +262,58 @@ impl Sandbox {
 #[cfg(not(windows))]
 mod portable {
     use super::*;
-    pub fn run(program: &Path, argv: &[String], cwd: &Path,
-               env: &[(String, String)], timeout: Duration,
-               stdout_log: &Path, stderr_log: &Path) -> Result<RunOutcome> {
+    pub fn run(
+        program: &Path,
+        argv: &[String],
+        cwd: &Path,
+        env: &[(String, String)],
+        timeout: Duration,
+        stdout_log: &Path,
+        stderr_log: &Path,
+    ) -> Result<RunOutcome> {
         let stdout_file = std::fs::File::create(stdout_log)?;
         let stderr_file = std::fs::File::create(stderr_log)?;
         let mut cmd = std::process::Command::new(program);
-        cmd.args(argv).current_dir(cwd)
+        cmd.args(argv)
+            .current_dir(cwd)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::from(stdout_file))
             .stderr(std::process::Stdio::from(stderr_file));
-        for (k, v) in env { cmd.env(k, v); }
-        let mut child = cmd.spawn().map_err(|e| Error::Process(format!("spawn {}: {e}", program.display())))?;
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| Error::Process(format!("spawn {}: {e}", program.display())))?;
         let deadline = Instant::now() + timeout;
         loop {
             match child.try_wait()? {
-                Some(status) => return Ok(RunOutcome {
-                    exit_code: status.code().map(|c| c as u32),
-                    timed_out: false, duration_ms: 0, command: String::new(),
-                    stdout_tail: String::new(), stderr_tail: String::new(),
-                    stdout_bytes: 0, stderr_bytes: 0,
-                }),
+                Some(status) => {
+                    return Ok(RunOutcome {
+                        exit_code: status.code().map(|c| c as u32),
+                        timed_out: false,
+                        duration_ms: 0,
+                        command: String::new(),
+                        stdout_tail: String::new(),
+                        stderr_tail: String::new(),
+                        stdout_bytes: 0,
+                        stderr_bytes: 0,
+                    })
+                }
                 None => {
                     if Instant::now() >= deadline {
                         let _ = child.kill();
                         let _ = child.wait();
-                        return Ok(RunOutcome { exit_code: None, timed_out: true, duration_ms: 0, command: String::new(),
-                            stdout_tail: String::new(), stderr_tail: String::new(), stdout_bytes: 0, stderr_bytes: 0 });
+                        return Ok(RunOutcome {
+                            exit_code: None,
+                            timed_out: true,
+                            duration_ms: 0,
+                            command: String::new(),
+                            stdout_tail: String::new(),
+                            stderr_tail: String::new(),
+                            stdout_bytes: 0,
+                            stderr_bytes: 0,
+                        });
                     }
                     std::thread::sleep(Duration::from_millis(50));
                 }
@@ -280,8 +357,12 @@ mod win {
     #[repr(C)]
     #[derive(Default)]
     struct IoCounters {
-        read_operation_count: u64, write_operation_count: u64, other_operation_count: u64,
-        read_transfer_count: u64, write_transfer_count: u64, other_transfer_count: u64,
+        read_operation_count: u64,
+        write_operation_count: u64,
+        other_operation_count: u64,
+        read_transfer_count: u64,
+        write_transfer_count: u64,
+        other_transfer_count: u64,
     }
     #[repr(C)]
     #[derive(Default)]
@@ -303,30 +384,66 @@ mod win {
     #[repr(C)]
     #[derive(Default)]
     struct StartupInfoW {
-        cb: u32, reserved: *mut u16, desktop: *mut u16, title: *mut u16,
-        x: u32, y: u32, x_size: u32, y_size: u32, x_count_chars: u32, y_count_chars: u32,
-        fill_attribute: u32, flags: u32, show_window: u16, cb_reserved2: u16,
-        lp_reserved2: *mut u8, std_input: Handle, std_output: Handle, std_error: Handle,
+        cb: u32,
+        reserved: *mut u16,
+        desktop: *mut u16,
+        title: *mut u16,
+        x: u32,
+        y: u32,
+        x_size: u32,
+        y_size: u32,
+        x_count_chars: u32,
+        y_count_chars: u32,
+        fill_attribute: u32,
+        flags: u32,
+        show_window: u16,
+        cb_reserved2: u16,
+        lp_reserved2: *mut u8,
+        std_input: Handle,
+        std_output: Handle,
+        std_error: Handle,
     }
     #[repr(C)]
     #[derive(Default)]
     struct ProcessInformation {
-        process: Handle, thread: Handle, process_id: u32, thread_id: u32,
+        process: Handle,
+        thread: Handle,
+        process_id: u32,
+        thread_id: u32,
     }
 
     #[link(name = "kernel32")]
     extern "system" {
         fn CreateJobObjectW(attrs: *mut core::ffi::c_void, name: *const u16) -> Handle;
-        fn SetInformationJobObject(job: Handle, class: i32, info: *const core::ffi::c_void, len: u32) -> i32;
+        fn SetInformationJobObject(
+            job: Handle,
+            class: i32,
+            info: *const core::ffi::c_void,
+            len: u32,
+        ) -> i32;
         fn AssignProcessToJobObject(job: Handle, process: Handle) -> i32;
         fn TerminateJobObject(job: Handle, exit_code: u32) -> i32;
-        fn CreateFileW(name: *const u16, access: u32, share: u32,
-                       attrs: *const SecurityAttributes, disposition: u32,
-                       flags: u32, template: Handle) -> Handle;
-        fn CreateProcessW(app: *const u16, cmdline: *mut u16, proc_attrs: *mut core::ffi::c_void,
-                          thread_attrs: *mut core::ffi::c_void, inherit: i32, flags: u32,
-                          env: *const core::ffi::c_void, cwd: *const u16,
-                          startup: *const StartupInfoW, info: *mut ProcessInformation) -> i32;
+        fn CreateFileW(
+            name: *const u16,
+            access: u32,
+            share: u32,
+            attrs: *const SecurityAttributes,
+            disposition: u32,
+            flags: u32,
+            template: Handle,
+        ) -> Handle;
+        fn CreateProcessW(
+            app: *const u16,
+            cmdline: *mut u16,
+            proc_attrs: *mut core::ffi::c_void,
+            thread_attrs: *mut core::ffi::c_void,
+            inherit: i32,
+            flags: u32,
+            env: *const core::ffi::c_void,
+            cwd: *const u16,
+            startup: *const StartupInfoW,
+            info: *mut ProcessInformation,
+        ) -> i32;
         fn ResumeThread(thread: Handle) -> u32;
         fn WaitForSingleObject(handle: Handle, millis: u32) -> u32;
         fn GetExitCodeProcess(process: Handle, code: *mut u32) -> i32;
@@ -334,39 +451,66 @@ mod win {
         fn GetLastError() -> u32;
     }
 
-    fn wide(s: &std::ffi::OsStr) -> Vec<u16> { s.encode_wide().chain(std::iter::once(0)).collect() }
+    fn wide(s: &std::ffi::OsStr) -> Vec<u16> {
+        s.encode_wide().chain(std::iter::once(0)).collect()
+    }
     fn quote(arg: &str) -> String {
-        if arg.chars().any(|c| c.is_whitespace() || c == '"') { format!("\"{}\"", arg.replace('"', "\\\"")) }
-        else { arg.to_string() }
+        if arg.chars().any(|c| c.is_whitespace() || c == '"') {
+            format!("\"{}\"", arg.replace('"', "\\\""))
+        } else {
+            arg.to_string()
+        }
     }
     fn last_err(api: &'static str) -> Error {
-        Error::WindowsApi { api, code: unsafe { GetLastError() } }
+        Error::WindowsApi {
+            api,
+            code: unsafe { GetLastError() },
+        }
     }
 
     /// RAII handle so the job (and KILL_ON_JOB_CLOSE) fires on every path.
     struct HandleGuard(Handle);
     impl Drop for HandleGuard {
-        fn drop(&mut self) { if self.0 != NULL_HANDLE { unsafe { CloseHandle(self.0); } } }
+        fn drop(&mut self) {
+            if self.0 != NULL_HANDLE {
+                unsafe {
+                    CloseHandle(self.0);
+                }
+            }
+        }
     }
 
-    pub fn run(program: &Path, argv: &[String], cwd: &Path, env: &[(String, String)],
-               memory_limit_mb: u64, max_processes: u32, timeout: Duration,
-               stdout_log: &Path, stderr_log: &Path) -> Result<RunOutcome> {
+    pub fn run(
+        program: &Path,
+        argv: &[String],
+        cwd: &Path,
+        env: &[(String, String)],
+        config: &SandboxConfig,
+        stdout_log: &Path,
+        stderr_log: &Path,
+    ) -> Result<RunOutcome> {
         unsafe {
             // 1) Job Object with kill-on-close + memory ceiling.
             let job = HandleGuard(CreateJobObjectW(std::ptr::null_mut(), std::ptr::null()));
-            if job.0 == NULL_HANDLE { return Err(last_err("CreateJobObjectW")); }
+            if job.0 == NULL_HANDLE {
+                return Err(last_err("CreateJobObjectW"));
+            }
             let mut limits = JobObjectExtendedLimitInformation::default();
             limits.basic_limit_information.limit_flags =
                 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_PROCESS_MEMORY;
-            if max_processes > 0 {
+            if config.max_processes > 0 {
                 limits.basic_limit_information.limit_flags |= JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
-                limits.basic_limit_information.active_process_limit = max_processes;
+                limits.basic_limit_information.active_process_limit = config.max_processes;
             }
-            limits.process_memory_limit = (memory_limit_mb as usize).saturating_mul(1024 * 1024);
-            if SetInformationJobObject(job.0, JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
-                    &limits as *const _ as *const core::ffi::c_void,
-                    std::mem::size_of::<JobObjectExtendedLimitInformation>() as u32) == 0 {
+            limits.process_memory_limit =
+                (config.memory_limit_mb as usize).saturating_mul(1024 * 1024);
+            if SetInformationJobObject(
+                job.0,
+                JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+                &limits as *const _ as *const core::ffi::c_void,
+                std::mem::size_of::<JobObjectExtendedLimitInformation>() as u32,
+            ) == 0
+            {
                 return Err(last_err("SetInformationJobObject"));
             }
 
@@ -385,12 +529,17 @@ mod win {
 
             // 3) Create suspended → assign to job → resume.
             let mut cmdline_str = quote(&program.to_string_lossy());
-            for a in argv { cmdline_str.push(' '); cmdline_str.push_str(&quote(a)); }
+            for a in argv {
+                cmdline_str.push(' ');
+                cmdline_str.push_str(&quote(a));
+            }
             let mut cmdline = wide(std::ffi::OsStr::new(&cmdline_str));
             let app = wide(program.as_os_str());
             let cwd_w = wide(cwd.as_os_str());
-            let mut startup = StartupInfoW::default();
-            startup.cb = std::mem::size_of::<StartupInfoW>() as u32;
+            let mut startup = StartupInfoW {
+                cb: std::mem::size_of::<StartupInfoW>() as u32,
+                ..StartupInfoW::default()
+            };
             // Capture installer stdout/stderr to log files via inheritable
             // handles (STARTF_USESTDHANDLES); stdin stays null.
             const GENERIC_WRITE: u32 = 0x4000_0000;
@@ -399,20 +548,45 @@ mod win {
                 security_descriptor: std::ptr::null_mut(),
                 inherit_handle: 1,
             };
-            let stdout_h = HandleGuard(CreateFileW(wide(stdout_log.as_os_str()).as_ptr(),
-                GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, CREATE_ALWAYS, 0, NULL_HANDLE));
-            let stderr_h = HandleGuard(CreateFileW(wide(stderr_log.as_os_str()).as_ptr(),
-                GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, CREATE_ALWAYS, 0, NULL_HANDLE));
-            if stdout_h.0 == -1 || stderr_h.0 == -1 { return Err(last_err("CreateFileW")); }
+            let stdout_h = HandleGuard(CreateFileW(
+                wide(stdout_log.as_os_str()).as_ptr(),
+                GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                &sa,
+                CREATE_ALWAYS,
+                0,
+                NULL_HANDLE,
+            ));
+            let stderr_h = HandleGuard(CreateFileW(
+                wide(stderr_log.as_os_str()).as_ptr(),
+                GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                &sa,
+                CREATE_ALWAYS,
+                0,
+                NULL_HANDLE,
+            ));
+            if stdout_h.0 == -1 || stderr_h.0 == -1 {
+                return Err(last_err("CreateFileW"));
+            }
             startup.flags = STARTF_USE_STDHANDLES;
             startup.std_output = stdout_h.0;
             startup.std_error = stderr_h.0;
             let mut proc_info = ProcessInformation::default();
             const CREATE_UNICODE_ENVIRONMENT: u32 = 0x0000_0400;
-            if CreateProcessW(app.as_ptr(), cmdline.as_mut_ptr(), std::ptr::null_mut(),
-                    std::ptr::null_mut(), 1, CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
-                    env_block.as_ptr() as *const core::ffi::c_void, cwd_w.as_ptr(),
-                    &startup, &mut proc_info) == 0 {
+            if CreateProcessW(
+                app.as_ptr(),
+                cmdline.as_mut_ptr(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                1,
+                CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
+                env_block.as_ptr() as *const core::ffi::c_void,
+                cwd_w.as_ptr(),
+                &startup,
+                &mut proc_info,
+            ) == 0
+            {
                 return Err(last_err("CreateProcessW"));
             }
             let process = HandleGuard(proc_info.process);
@@ -420,13 +594,23 @@ mod win {
             if AssignProcessToJobObject(job.0, process.0) == 0 {
                 return Err(last_err("AssignProcessToJobObject"));
             }
-            if ResumeThread(thread.0) == u32::MAX { return Err(last_err("ResumeThread")); }
+            if ResumeThread(thread.0) == u32::MAX {
+                return Err(last_err("ResumeThread"));
+            }
 
             // 4) Wait with timeout; on timeout kill the whole job tree.
-            let millis = timeout.as_millis().min(u32::MAX as u128) as u32;
+            let millis = config.timeout.as_millis().min(u32::MAX as u128) as u32;
             let wait = WaitForSingleObject(process.0, millis);
-            let mut outcome = RunOutcome { exit_code: None, timed_out: false, duration_ms: 0, command: String::new(),
-                stdout_tail: String::new(), stderr_tail: String::new(), stdout_bytes: 0, stderr_bytes: 0 };
+            let mut outcome = RunOutcome {
+                exit_code: None,
+                timed_out: false,
+                duration_ms: 0,
+                command: String::new(),
+                stdout_tail: String::new(),
+                stderr_tail: String::new(),
+                stdout_bytes: 0,
+                stderr_bytes: 0,
+            };
             if wait == WAIT_TIMEOUT {
                 outcome.timed_out = true;
                 TerminateJobObject(job.0, 1);
@@ -435,7 +619,9 @@ mod win {
                 return Err(last_err("WaitForSingleObject"));
             }
             let mut code: u32 = 0;
-            if GetExitCodeProcess(process.0, &mut code) != 0 { outcome.exit_code = Some(code); }
+            if GetExitCodeProcess(process.0, &mut code) != 0 {
+                outcome.exit_code = Some(code);
+            }
             Ok(outcome)
             // Guards close here: closing the job handle kills any stragglers.
         }
@@ -448,8 +634,14 @@ mod tests {
 
     #[test]
     fn a_finished_run_leaves_no_coverage_issue() {
-        assert!(run_completed(false, Some(0)), "exit 0 is a completed install");
-        assert!(run_issue(false, Some(0)).is_none(), "a clean run is not a coverage issue");
+        assert!(
+            run_completed(false, Some(0)),
+            "exit 0 is a completed install"
+        );
+        assert!(
+            run_issue(false, Some(0)).is_none(),
+            "a clean run is not a coverage issue"
+        );
     }
 
     #[test]
@@ -459,15 +651,20 @@ mod tests {
         let (stage, message) = run_issue(true, Some(1)).expect("a timeout must be reported");
         assert_eq!(stage, "timeout");
         assert!(message.contains("partial install"), "{message}");
-        assert!(!run_completed(true, Some(0)), "a killed run never completed");
+        assert!(
+            !run_completed(true, Some(0)),
+            "a killed run never completed"
+        );
 
-        let (stage, message) = run_issue(false, Some(3)).expect("a failing exit code must be reported");
+        let (stage, message) =
+            run_issue(false, Some(3)).expect("a failing exit code must be reported");
         assert_eq!(stage, "exit");
         assert!(message.contains('3'), "the code is the evidence: {message}");
         assert!(!run_completed(false, Some(3)));
 
         // POSIX: killed by a signal; Windows: GetExitCodeProcess failed.
-        let (stage, message) = run_issue(false, None).expect("an unknown exit code must be reported");
+        let (stage, message) =
+            run_issue(false, None).expect("an unknown exit code must be reported");
         assert_eq!(stage, "exit");
         assert!(message.contains("unavailable"), "{message}");
         assert!(!run_completed(false, None));
@@ -479,7 +676,10 @@ mod tests {
         assert_eq!(exit_code_completed(1641), cfg!(windows));
         assert_eq!(exit_code_completed(3010), cfg!(windows));
         assert!(exit_code_completed(0));
-        assert!(!exit_code_completed(1603), "ERROR_INSTALL_FAILURE is a failure everywhere");
+        assert!(
+            !exit_code_completed(1603),
+            "ERROR_INSTALL_FAILURE is a failure everywhere"
+        );
     }
 
     #[test]

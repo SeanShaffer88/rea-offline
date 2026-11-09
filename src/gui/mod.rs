@@ -53,14 +53,22 @@ impl Page {
             None => report
                 .get("report")
                 .filter(|r| r.get("files").is_some())
-                .or_else(|| report.get("installer_report").filter(|r| r.get("files").is_some()))
+                .or_else(|| {
+                    report
+                        .get("installer_report")
+                        .filter(|r| r.get("files").is_some())
+                })
                 .unwrap_or(&report),
         };
         let mut node = tree::from_report(body);
         if node.name.is_empty() {
             node.name = root_name.to_string();
         }
-        Page { report, root_name: root_name.to_string(), tree: node }
+        Page {
+            report,
+            root_name: root_name.to_string(),
+            tree: node,
+        }
     }
 
     pub fn verdict(&self) -> String {
@@ -140,12 +148,21 @@ fn sandbox_view_body(report: &Value) -> Option<Value> {
     let mut findings: Vec<Value> = Vec::new();
     let mut target = String::new();
     for (prefix, part) in parts {
-        let Some(part) = part.filter(|p| !matches!(p, Value::Null)) else { continue };
+        let Some(part) = part.filter(|p| !matches!(p, Value::Null)) else {
+            continue;
+        };
         if prefix.is_empty() {
-            target = part.get("target").and_then(Value::as_str).unwrap_or("").to_string();
+            target = part
+                .get("target")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
         }
         for file in array(part.get("files")) {
-            let path = sandbox_view_path(prefix, file.get("path").and_then(Value::as_str).unwrap_or(""));
+            let path = sandbox_view_path(
+                prefix,
+                file.get("path").and_then(Value::as_str).unwrap_or(""),
+            );
             if path.is_empty() {
                 continue;
             }
@@ -157,7 +174,10 @@ fn sandbox_view_body(report: &Value) -> Option<Value> {
         // Findings are matched to files by path, so they must be rewritten
         // exactly the same way or every tint/detail lookup would miss.
         for finding in array(part.get("rules").and_then(|r| r.get("findings"))) {
-            let file = sandbox_view_path(prefix, finding.get("file").and_then(Value::as_str).unwrap_or(""));
+            let file = sandbox_view_path(
+                prefix,
+                finding.get("file").and_then(Value::as_str).unwrap_or(""),
+            );
             if let Value::Object(mut map) = finding.clone() {
                 map.insert("file".into(), Value::str(file));
                 findings.push(Value::Object(map));
@@ -167,7 +187,10 @@ fn sandbox_view_body(report: &Value) -> Option<Value> {
     Some(Value::obj(vec![
         ("target", Value::str(target)),
         ("files", Value::Array(files)),
-        ("rules", Value::obj(vec![("findings", Value::Array(findings))])),
+        (
+            "rules",
+            Value::obj(vec![("findings", Value::Array(findings))]),
+        ),
     ]))
 }
 
@@ -176,7 +199,9 @@ fn encode(text: &str) -> String {
     let mut out = String::new();
     for byte in text.bytes() {
         match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(byte as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            }
             _ => out.push_str(&format!("%{byte:02X}")),
         }
     }
@@ -249,7 +274,11 @@ fn view_from(query: &[(String, String)]) -> View {
             }
             "dir" => view.descending = value != "asc",
             "scope" => {
-                view.scope = if value == "files" { TreemapScope::Files } else { TreemapScope::TopLevel }
+                view.scope = if value == "files" {
+                    TreemapScope::Files
+                } else {
+                    TreemapScope::TopLevel
+                }
             }
             "select" => view.selected = Some(value.clone()),
             _ => {}
@@ -301,7 +330,10 @@ fn state_params(view: &View) -> Vec<String> {
 }
 
 fn array(value: Option<&Value>) -> &[Value] {
-    match value { Some(Value::Array(items)) => items, _ => &[] }
+    match value {
+        Some(Value::Array(items)) => items,
+        _ => &[],
+    }
 }
 
 fn human_bytes(bytes: u64) -> String {
@@ -358,9 +390,7 @@ pub fn page_html(page: &Page, query: &str) -> String {
     let mut open_paths: Vec<String> = view
         .expanded
         .iter()
-        .filter(|p| {
-            p.as_str() == tree::ROOT_KEY || visible_dirs.iter().any(|v| v == *p)
-        })
+        .filter(|p| p.as_str() == tree::ROOT_KEY || visible_dirs.iter().any(|v| v == *p))
         .cloned()
         .collect();
     // A search opens the way to its matches even if the visitor never
@@ -369,7 +399,10 @@ pub fn page_html(page: &Page, query: &str) -> String {
     if !view.filter.is_empty() {
         for row in rows.iter().filter(|r| r.is_dir) {
             let prefix = format!("{}/", row.path);
-            if rows.iter().any(|other| other.depth == row.depth + 1 && other.path.starts_with(&prefix)) {
+            if rows
+                .iter()
+                .any(|other| other.depth == row.depth + 1 && other.path.starts_with(&prefix))
+            {
                 open_paths.push(row.path.clone());
             }
         }
@@ -393,7 +426,10 @@ pub fn page_html(page: &Page, query: &str) -> String {
     // Toolbar: the WizTree drive selector becomes "which target", and the
     // primary actions are scan/purge because this is an inspection tool.
     body.push_str("<header><div class=\"title\"><span class=\"logo\">rea-offline</span>");
-    body.push_str(&format!("<span class=\"path\">{}</span></div>", html_escape(&page.root_name)));
+    body.push_str(&format!(
+        "<span class=\"path\">{}</span></div>",
+        html_escape(&page.root_name)
+    ));
     body.push_str("<div class=\"chips\">");
     body.push_str(&format!(
         "<span class=\"chip verdict-{}\">{} — {}/100</span>",
@@ -403,7 +439,8 @@ pub fn page_html(page: &Page, query: &str) -> String {
     ));
     let issue_count: usize = match page.report.get("coverage").and_then(|c| c.get("issues")) {
         Some(issues) => array(Some(issues)).len(),
-        None => ["report", "installer_report", "drops_report"].iter()
+        None => ["report", "installer_report", "drops_report"]
+            .iter()
             .map(|key| array(page.report.get(key).and_then(|r| r.get("scan_issues"))).len())
             .sum(),
     };
@@ -468,31 +505,51 @@ pub fn page_html(page: &Page, query: &str) -> String {
     body.push_str(&toggle(
         "hide clean",
         view.hide_clean,
-        if view.hide_clean { base("") } else { base("hide_clean=1") },
+        if view.hide_clean {
+            base("")
+        } else {
+            base("hide_clean=1")
+        },
     ));
     body.push_str(&toggle(
         "risk ≥ 12",
         view.min_risk >= 12,
-        if view.min_risk >= 12 { base("") } else { base("min_risk=12") },
+        if view.min_risk >= 12 {
+            base("")
+        } else {
+            base("min_risk=12")
+        },
     ));
     body.push_str(&toggle(
         "all files in map",
         view.scope == TreemapScope::Files,
-        if view.scope == TreemapScope::Files { base("") } else { base("scope=files") },
+        if view.scope == TreemapScope::Files {
+            base("")
+        } else {
+            base("scope=files")
+        },
     ));
-    body.push_str(&format!(
+    body.push_str(
         "<span class=\"spacer\"></span><a class=\"toggle\" href=\"/json\">JSON</a>\
          <a class=\"toggle\" href=\"/markdown\">Markdown</a>\
-         <a class=\"toggle\" href=\"/text\">Text</a>"
-    ));
+         <a class=\"toggle\" href=\"/text\">Text</a>",
+    );
     body.push_str("</div>");
 
     // Main split: grid on the left, treemap on the right (WizTree layout).
     body.push_str("<main><section class=\"grid\"><table><thead><tr>");
     let sort_link = |label: &str, column: SortColumn| -> String {
-        let descending = if view.sort == column { !view.descending } else { true };
+        let descending = if view.sort == column {
+            !view.descending
+        } else {
+            true
+        };
         let marker = if view.sort == column {
-            if view.descending { " ▾" } else { " ▴" }
+            if view.descending {
+                " ▾"
+            } else {
+                " ▴"
+            }
         } else {
             ""
         };
@@ -536,7 +593,11 @@ pub fn page_html(page: &Page, query: &str) -> String {
         } else {
             base(&format!("select={}", encode(&row.path)))
         };
-        let selected_class = if !selected.is_empty() && selected == row.path { " selected" } else { "" };
+        let selected_class = if !selected.is_empty() && selected == row.path {
+            " selected"
+        } else {
+            ""
+        };
         body.push_str(&format!(
             "<tr class=\"tint-{}{}\" style=\"--indent:{indent}px\">\
              <td class=\"name\"><span class=\"pad\"></span>{expander}<a href=\"{href}\">{}</a></td>\
@@ -603,17 +664,27 @@ fn compact_summary(page: &Page) -> String {
     // Never let the compact view turn an incomplete scan into a clean-looking
     // summary: coverage warnings are appended even when the cutoff hit first.
     let mut lines: Vec<String> = text.lines().take(18).map(str::to_string).collect();
-    if text.lines().count() > lines.len() { lines.push("…".into()); }
+    if text.lines().count() > lines.len() {
+        lines.push("…".into());
+    }
     if let Some(issues) = page.report.get("coverage").and_then(|c| c.get("issues")) {
         let count = array(Some(issues)).len();
         if count > 0 {
             let heading = format!("coverage: INCOMPLETE ({count} issue(s))");
-            if !lines.contains(&heading) { lines.push(heading); }
+            if !lines.contains(&heading) {
+                lines.push(heading);
+            }
         }
     } else {
-        for (label, key) in [("", "report"), ("installer ", "installer_report"), ("dropped files ", "drops_report")] {
+        for (label, key) in [
+            ("", "report"),
+            ("installer ", "installer_report"),
+            ("dropped files ", "drops_report"),
+        ] {
             let issues = array(page.report.get(key).and_then(|r| r.get("scan_issues")));
-            if issues.is_empty() { continue; }
+            if issues.is_empty() {
+                continue;
+            }
             let heading = format!("{label}coverage: INCOMPLETE ({} issue(s))", issues.len());
             if !lines.contains(&heading) {
                 lines.push(heading);
@@ -627,9 +698,13 @@ fn compact_summary(page: &Page) -> String {
             // Continuation lines (the method's standing limits) are already
             // in the text half when it fits; only the labelled facts are
             // worth re-stating, and never twice.
-            if label.is_empty() { continue; }
+            if label.is_empty() {
+                continue;
+            }
             let already = lines.iter().any(|existing| existing.starts_with(&label));
-            if !already { lines.push(format!("{label}: {value}")); }
+            if !already {
+                lines.push(format!("{label}: {value}"));
+            }
         }
     }
     lines.join("\n")
@@ -737,12 +812,22 @@ fn handle(mut stream: TcpStream, page: &Page) -> std::io::Result<()> {
     };
     // Refuse anything but GET on loopback: no uploads, no state changes.
     if method != "GET" {
-        return respond(&mut stream, "405 Method Not Allowed", "text/plain", b"GET only\n");
+        return respond(
+            &mut stream,
+            "405 Method Not Allowed",
+            "text/plain",
+            b"GET only\n",
+        );
     }
     match path {
         "/" | "/view" | "/index.html" => {
             let html = page_html(page, query);
-            respond(&mut stream, "200 OK", "text/html; charset=utf-8", html.as_bytes())
+            respond(
+                &mut stream,
+                "200 OK",
+                "text/html; charset=utf-8",
+                html.as_bytes(),
+            )
         }
         "/json" => {
             let body = format!("{}\n", page.report.to_string_pretty());
@@ -750,18 +835,33 @@ fn handle(mut stream: TcpStream, page: &Page) -> std::io::Result<()> {
         }
         "/text" => {
             let body = page.summary_text();
-            respond(&mut stream, "200 OK", "text/plain; charset=utf-8", body.as_bytes())
+            respond(
+                &mut stream,
+                "200 OK",
+                "text/plain; charset=utf-8",
+                body.as_bytes(),
+            )
         }
         "/markdown" => {
             let body = crate::render::to_markdown(&page.report);
-            respond(&mut stream, "200 OK", "text/markdown; charset=utf-8", body.as_bytes())
+            respond(
+                &mut stream,
+                "200 OK",
+                "text/markdown; charset=utf-8",
+                body.as_bytes(),
+            )
         }
         "/healthz" => respond(&mut stream, "200 OK", "text/plain", b"ok\n"),
         _ => respond(&mut stream, "404 Not Found", "text/plain", b"not found\n"),
     }
 }
 
-fn respond(stream: &mut TcpStream, status: &str, content_type: &str, body: &[u8]) -> std::io::Result<()> {
+fn respond(
+    stream: &mut TcpStream,
+    status: &str,
+    content_type: &str,
+    body: &[u8],
+) -> std::io::Result<()> {
     let header = format!(
         "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n\
          Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n\
@@ -783,12 +883,20 @@ pub fn page_from_report_file(path: &Path) -> crate::Result<Page> {
     // A merged sandbox tree is rooted at the sandbox, so the header must name
     // the sandbox too — not the install subdirectory the tree no longer sits in.
     let sandbox_root = if report.get("mode").and_then(Value::as_str) == Some("sandbox-installer") {
-        report.get("drops_report").and_then(|r| r.get("target")).and_then(Value::as_str)
+        report
+            .get("drops_report")
+            .and_then(|r| r.get("target"))
+            .and_then(Value::as_str)
     } else {
         None
     };
     let name = sandbox_root
-        .or_else(|| report.get("report").and_then(|r| r.get("target")).and_then(Value::as_str))
+        .or_else(|| {
+            report
+                .get("report")
+                .and_then(|r| r.get("target"))
+                .and_then(Value::as_str)
+        })
         .unwrap_or(&fallback)
         .to_string();
     Ok(Page::new(report, &name))
@@ -846,10 +954,22 @@ mod tests {
 
     #[test]
     fn sandbox_view_paths_never_grow_a_drive_letter_folder() {
-        assert_eq!(sandbox_view_path("_installer", "C:\\Downloads\\setup.exe"), "_installer/Downloads/setup.exe");
-        assert_eq!(sandbox_view_path("_installer", "/tmp/x/setup.exe"), "_installer/tmp/x/setup.exe");
-        assert_eq!(sandbox_view_path("install", "bin/app.exe"), "install/bin/app.exe");
-        assert_eq!(sandbox_view_path("", "AppData/Roaming/payload.exe"), "AppData/Roaming/payload.exe");
+        assert_eq!(
+            sandbox_view_path("_installer", "C:\\Downloads\\setup.exe"),
+            "_installer/Downloads/setup.exe"
+        );
+        assert_eq!(
+            sandbox_view_path("_installer", "/tmp/x/setup.exe"),
+            "_installer/tmp/x/setup.exe"
+        );
+        assert_eq!(
+            sandbox_view_path("install", "bin/app.exe"),
+            "install/bin/app.exe"
+        );
+        assert_eq!(
+            sandbox_view_path("", "AppData/Roaming/payload.exe"),
+            "AppData/Roaming/payload.exe"
+        );
     }
 
     #[test]
@@ -860,11 +980,15 @@ mod tests {
                     {"area":"sandbox snapshot (after)","path":"AppData/hidden",
                      "stage":"traverse","message":"Permission denied"}]},
                 "report":{"target":"C:/sandbox/install","file_count":0,"risk_score":0,
-                          "verdict":"low","files":[],"scan_issues":[]}}"#
-        ).unwrap();
+                          "verdict":"low","files":[],"scan_issues":[]}}"#,
+        )
+        .unwrap();
         let page = Page::new(report, "sandbox");
         let html = page_html(&page, "");
-        assert!(html.contains("coverage-incomplete"), "the chip must warn: {html}");
+        assert!(
+            html.contains("coverage-incomplete"),
+            "the chip must warn: {html}"
+        );
         assert!(html.contains("incomplete coverage — 1 issue(s)"), "{html}");
         // The compact summary is what a glance reads; it cannot look clean.
         assert!(compact_summary(&page).contains("coverage: INCOMPLETE (1 issue(s))"));
@@ -913,11 +1037,64 @@ mod tests {
     }
 
     #[test]
+    fn large_report_html_has_a_measured_size_and_render_baseline() {
+        const FILE_COUNT: usize = 5_000;
+        let files = (0..FILE_COUNT)
+            .map(|index| {
+                Value::obj(vec![
+                    (
+                        "path",
+                        Value::str(format!("bin/group-{}/file-{index}.exe", index % 100)),
+                    ),
+                    ("size", Value::num(4096)),
+                    ("format", Value::str("PE")),
+                    ("sha256", Value::str("a".repeat(64))),
+                    ("md5", Value::str("b".repeat(32))),
+                ])
+            })
+            .collect();
+        let report = Value::obj(vec![
+            ("mode", Value::str("local-scan")),
+            ("verdict", Value::str("low")),
+            (
+                "report",
+                Value::obj(vec![
+                    ("target", Value::str("large synthetic report")),
+                    ("file_count", Value::num(FILE_COUNT as u64)),
+                    ("risk_score", Value::num(0)),
+                    ("verdict", Value::str("low")),
+                    ("files", Value::Array(files)),
+                ]),
+            ),
+        ]);
+        let started = std::time::Instant::now();
+        let page = Page::new(report, "large synthetic report");
+        let html = page_html(&page, "scope=files");
+        let elapsed = started.elapsed();
+
+        assert_eq!(page.tree.file_count, FILE_COUNT as u64);
+        assert!(html.contains("file-4999.exe"));
+        assert!(
+            html.len() < 8 * 1024 * 1024,
+            "5,000-file report rendered to {} bytes",
+            html.len()
+        );
+        eprintln!(
+            "5,000-file GUI baseline: {} ms, {} HTML bytes",
+            elapsed.as_millis(),
+            html.len()
+        );
+    }
+
+    #[test]
     fn query_state_is_honoured_and_round_trips() {
         let page = sample();
         let expanded = page_html(&page, "expand=bin&expand=docs&hide_clean=1");
         assert!(expanded.contains("bin/a.exe"));
-        assert!(!expanded.contains("readme.txt"), "hide_clean must drop the clean file");
+        assert!(
+            !expanded.contains("readme.txt"),
+            "hide_clean must drop the clean file"
+        );
 
         let filtered = page_html(&page, "filter=readme");
         let grid = {
@@ -925,10 +1102,16 @@ mod tests {
             body.split("</tbody>").next().unwrap_or("").to_string()
         };
         assert!(grid.contains("readme.txt"), "{grid}");
-        assert!(!grid.contains("a.exe"), "the grid honours the search: {grid}");
+        assert!(
+            !grid.contains("a.exe"),
+            "the grid honours the search: {grid}"
+        );
 
         let selected = page_html(&page, "select=bin%2Fa.exe");
-        assert!(selected.contains("SHA-256: aa"), "details pane shows hashes");
+        assert!(
+            selected.contains("SHA-256: aa"),
+            "details pane shows hashes"
+        );
         assert!(selected.contains("PE100"));
     }
 
@@ -941,7 +1124,10 @@ mod tests {
         .unwrap();
         let page = Page::new(report, "x");
         let html = page_html(&page, "");
-        assert!(!html.contains("<script>alert(1)</script>"), "injection must be escaped");
+        assert!(
+            !html.contains("<script>alert(1)</script>"),
+            "injection must be escaped"
+        );
         assert!(html.contains("&lt;script&gt;"));
     }
 

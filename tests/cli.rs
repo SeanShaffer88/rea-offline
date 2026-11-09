@@ -61,7 +61,10 @@ fn scan_sample_reports_hashes_and_verdict() {
     let scan = run(&dir, &["scan", "sample.exe"]);
     assert_eq!(scan.code, 0, "stderr: {}", scan.stderr);
     let json = rea_offline::json::parse(&scan.stdout).expect("stdout must be JSON");
-    assert_eq!(json.get("mode").and_then(|m| m.as_str()), Some("local-scan"));
+    assert_eq!(
+        json.get("mode").and_then(|m| m.as_str()),
+        Some("local-scan")
+    );
     assert_eq!(
         json.get("schema_version").and_then(|v| match v {
             rea_offline::json::Value::Number(n) => Some(*n as u64),
@@ -88,12 +91,23 @@ fn formats_render_the_same_decision() {
     let md = run(&dir, &["scan", "sample.exe", "--format", "markdown"]);
     assert_eq!(text.code, 0, "{}", text.stderr);
     assert!(text.stdout.contains("risk score"), "{}", text.stdout);
-    assert!(md.stdout.starts_with("# rea-offline inspection report"), "{}", md.stdout);
+    assert!(
+        md.stdout.starts_with("# rea-offline inspection report"),
+        "{}",
+        md.stdout
+    );
 
     // Every format must agree on the verdict.
     let parsed = rea_offline::json::parse(&json.stdout).unwrap();
-    let verdict = parsed.get("verdict").and_then(|v| v.as_str()).unwrap().to_uppercase();
-    assert!(text.stdout.contains(&verdict), "text output lost the verdict");
+    let verdict = parsed
+        .get("verdict")
+        .and_then(|v| v.as_str())
+        .unwrap()
+        .to_uppercase();
+    assert!(
+        text.stdout.contains(&verdict),
+        "text output lost the verdict"
+    );
     assert!(md.stdout.to_lowercase().contains(&verdict.to_lowercase()));
 
     assert!(run(&dir, &["scan", "sample.exe", "--format", "yaml"]).code != 0);
@@ -108,15 +122,33 @@ fn output_flag_writes_file_and_keeps_stdout_clean() {
     let out = dir.join("report.json");
     let result = run(
         &dir,
-        &["scan", "sample.exe", "--output", "report.json", "--format", "markdown"],
+        &[
+            "scan",
+            "sample.exe",
+            "--output",
+            "report.json",
+            "--format",
+            "markdown",
+        ],
     );
     assert_eq!(result.code, 0, "{}", result.stderr);
-    assert!(result.stdout.is_empty(), "stdout should be empty: {}", result.stdout);
+    assert!(
+        result.stdout.is_empty(),
+        "stdout should be empty: {}",
+        result.stdout
+    );
     let written = std::fs::read_to_string(&out).unwrap();
     assert!(written.starts_with("# rea-offline inspection report"));
 
-    let quiet = run(&dir, &["scan", "sample.exe", "--output", "r2.json", "--quiet"]);
-    assert!(quiet.stderr.is_empty(), "--quiet must silence the notice: {}", quiet.stderr);
+    let quiet = run(
+        &dir,
+        &["scan", "sample.exe", "--output", "r2.json", "--quiet"],
+    );
+    assert!(
+        quiet.stderr.is_empty(),
+        "--quiet must silence the notice: {}",
+        quiet.stderr
+    );
     assert!(dir.join("r2.json").exists());
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -129,8 +161,15 @@ fn fail_on_gates_the_exit_code() {
 
     // The demo sample has network capability strings but no injection set,
     // so its verdict is at most "medium".
-    let strict = run(&dir, &["scan", "sample.exe", "--fail-on", "critical", "--quiet"]);
-    assert_eq!(strict.code, 0, "critic threshold must not fire: {}", strict.stderr);
+    let strict = run(
+        &dir,
+        &["scan", "sample.exe", "--fail-on", "critical", "--quiet"],
+    );
+    assert_eq!(
+        strict.code, 0,
+        "critic threshold must not fire: {}",
+        strict.stderr
+    );
     let loose = run(&dir, &["scan", "sample.exe", "--fail-on", "low", "--quiet"]);
     assert_eq!(loose.code, 2, "low threshold must fire: {}", loose.stderr);
     std::fs::remove_dir_all(&dir).unwrap();
@@ -145,8 +184,11 @@ fn sample_kinds_and_errors() {
     // The text report spells severity in words rather than printing rule
     // titles verbatim, so assert on the decision, not on one phrasing.
     assert!(script.stdout.contains("risk score"), "{}", script.stdout);
-    assert!(script.stdout.contains("STR001") || script.stdout.contains("Capability"),
-            "capability findings must reach the text report: {}", script.stdout);
+    assert!(
+        script.stdout.contains("STR001") || script.stdout.contains("Capability"),
+        "capability findings must reach the text report: {}",
+        script.stdout
+    );
     assert_ne!(run(&dir, &["sample", "x.exe", "--kind", "elf"]).code, 0);
 
     let missing = run(&dir, &["scan", "definitely-not-here.exe"]);
@@ -181,7 +223,14 @@ fn gui_renders_a_window_and_can_reopen_a_report() {
     assert_eq!(scan.code, 0, "{}", scan.stderr);
     let reopened = run(
         &dir,
-        &["gui", "archived.json", "--from-report", "--output", "reopened.html", "--no-open"],
+        &[
+            "gui",
+            "archived.json",
+            "--from-report",
+            "--output",
+            "reopened.html",
+            "--no-open",
+        ],
     );
     assert_eq!(reopened.code, 0, "{}", reopened.stderr);
     let again = std::fs::read_to_string(dir.join("reopened.html")).unwrap();
@@ -191,7 +240,10 @@ fn gui_renders_a_window_and_can_reopen_a_report() {
     // A filter in the URL survives into the rendered page.
     let page = rea_offline::gui::page_from_report_file(&dir.join("archived.json")).unwrap();
     let filtered = rea_offline::gui::page_html(&page, "filter=sample&hide_clean=1");
-    assert!(filtered.contains("filter=sample"), "state round-trips into links");
+    assert!(
+        filtered.contains("filter=sample"),
+        "state round-trips into links"
+    );
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -223,8 +275,16 @@ fn doctor_reports_a_working_build() {
     );
 
     let md = run(&dir, &["doctor", "--format", "markdown"]);
-    assert!(md.stdout.starts_with("# rea-offline doctor"), "{}", md.stdout);
-    assert!(md.stdout.contains("| imphash self-test (pefile) | yes |"), "{}", md.stdout);
+    assert!(
+        md.stdout.starts_with("# rea-offline doctor"),
+        "{}",
+        md.stdout
+    );
+    assert!(
+        md.stdout.contains("| imphash self-test (pefile) | yes |"),
+        "{}",
+        md.stdout
+    );
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -235,12 +295,20 @@ fn snapshot_and_diff_round_trip() {
     std::fs::create_dir_all(&target).unwrap();
     std::fs::write(target.join("a.txt"), b"one").unwrap();
     assert_eq!(
-        run(&dir, &["snapshot", "tree", "--output", "before.json", "--quiet"]).code,
+        run(
+            &dir,
+            &["snapshot", "tree", "--output", "before.json", "--quiet"]
+        )
+        .code,
         0
     );
     std::fs::write(target.join("b.txt"), b"two").unwrap();
     assert_eq!(
-        run(&dir, &["snapshot", "tree", "--output", "after.json", "--quiet"]).code,
+        run(
+            &dir,
+            &["snapshot", "tree", "--output", "after.json", "--quiet"]
+        )
+        .code,
         0
     );
     let diff = run(&dir, &["diff", "before.json", "after.json"]);
@@ -266,7 +334,10 @@ fn purge_refuses_arbitrary_directories() {
     let purged = run(&dir, &["purge", sandbox.to_str().unwrap()]);
     assert_eq!(purged.code, 0, "{}", purged.stderr);
     let json = rea_offline::json::parse(&purged.stdout).unwrap();
-    assert_eq!(json.get("verified_zero_residue"), Some(&rea_offline::json::Value::Bool(true)));
+    assert_eq!(
+        json.get("verified_zero_residue"),
+        Some(&rea_offline::json::Value::Bool(true))
+    );
     assert!(!sandbox.exists());
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -277,7 +348,14 @@ fn report_command_reopens_archives_without_rescanning_and_gates_them() {
     let sample = dir.join("sample.exe");
     assert_eq!(run(&dir, &["sample", sample.to_str().unwrap()]).code, 0);
     let archived = dir.join("archived.json");
-    assert_eq!(run(&dir, &["scan", "sample.exe", "--output", "archived.json", "--quiet"]).code, 0);
+    assert_eq!(
+        run(
+            &dir,
+            &["scan", "sample.exe", "--output", "archived.json", "--quiet"]
+        )
+        .code,
+        0
+    );
     let before = std::fs::read_to_string(&archived).unwrap();
     let original = rea_offline::json::parse(&before).unwrap();
     std::fs::remove_file(&sample).unwrap();
@@ -288,19 +366,74 @@ fn report_command_reopens_archives_without_rescanning_and_gates_them() {
     let text = run(&dir, &["report", "archived.json", "--format", "text"]);
     assert_eq!(text.code, 0, "{}", text.stderr);
     assert!(text.stdout.contains("risk score"), "{}", text.stdout);
-    let md = run(&dir, &["report", "archived.json", "--format", "markdown", "--output", "report.md", "--quiet"]);
+    let md = run(
+        &dir,
+        &[
+            "report",
+            "archived.json",
+            "--format",
+            "markdown",
+            "--output",
+            "report.md",
+            "--quiet",
+        ],
+    );
     assert_eq!(md.code, 0, "{}", md.stderr);
-    assert!(std::fs::read_to_string(dir.join("report.md")).unwrap().starts_with("# rea-offline inspection report"));
-    assert_eq!(run(&dir, &["report", "archived.json", "--fail-on", "low", "--quiet"]).code, 2);
-    assert_eq!(run(&dir, &["report", "archived.json", "--fail-on", "critical", "--quiet"]).code, 0);
-    assert_eq!(std::fs::read_to_string(&archived).unwrap(), before, "archive must not be rewritten");
+    assert!(std::fs::read_to_string(dir.join("report.md"))
+        .unwrap()
+        .starts_with("# rea-offline inspection report"));
+    assert_eq!(
+        run(
+            &dir,
+            &["report", "archived.json", "--fail-on", "low", "--quiet"]
+        )
+        .code,
+        2
+    );
+    assert_eq!(
+        run(
+            &dir,
+            &[
+                "report",
+                "archived.json",
+                "--fail-on",
+                "critical",
+                "--quiet"
+            ]
+        )
+        .code,
+        0
+    );
+    assert_eq!(
+        std::fs::read_to_string(&archived).unwrap(),
+        before,
+        "archive must not be rewritten"
+    );
 
     let invalid = dir.join("invalid.json");
     std::fs::write(&invalid, r#"{"verdict":"low"}"#).unwrap();
     let rejected = run(&dir, &["report", "invalid.json", "--fail-on", "low"]);
-    assert_eq!(rejected.code, 1, "invalid evidence must not pass a gate: {}", rejected.stderr);
-    assert!(rejected.stderr.contains("invalid report"), "{}", rejected.stderr);
-    let gui = run(&dir, &["gui", "invalid.json", "--from-report", "--output", "bad.html", "--no-open"]);
+    assert_eq!(
+        rejected.code, 1,
+        "invalid evidence must not pass a gate: {}",
+        rejected.stderr
+    );
+    assert!(
+        rejected.stderr.contains("invalid report"),
+        "{}",
+        rejected.stderr
+    );
+    let gui = run(
+        &dir,
+        &[
+            "gui",
+            "invalid.json",
+            "--from-report",
+            "--output",
+            "bad.html",
+            "--no-open",
+        ],
+    );
     assert_ne!(gui.code, 0);
     assert!(!dir.join("bad.html").exists());
     std::fs::remove_dir_all(&dir).unwrap();
@@ -317,7 +450,14 @@ fn cli_rejects_mistyped_and_misplaced_options_before_doing_work() {
         vec!["scan", "sample.exe", "--output", "--quiet"],
         vec!["scan", "sample.exe", "--quiet=false"],
         vec!["scan", "sample.exe", "--port", "9000"],
-        vec!["scan", "sample.exe", "--output", "a.json", "--output", "b.json"],
+        vec![
+            "scan",
+            "sample.exe",
+            "--output",
+            "a.json",
+            "--output",
+            "b.json",
+        ],
         vec!["scan", "sample.exe", "extra.exe"],
         vec!["doctor", "extra"],
         vec!["diff", "only-one.json"],
@@ -352,19 +492,38 @@ fn unreadable_files_are_visible_as_coverage_issues_in_every_format() {
     let report = json.get("report").unwrap();
     let issues = format!("{:?}", report.get("scan_issues"));
     assert!(issues.contains("locked.bin"), "{issues}");
-    assert_eq!(report.get("file_count"), Some(&rea_offline::json::Value::num(1)));
-    assert_eq!(report.get("summary").and_then(|s| s.get("complete")), Some(&rea_offline::json::Value::Bool(false)));
+    assert_eq!(
+        report.get("file_count"),
+        Some(&rea_offline::json::Value::num(1))
+    );
+    assert_eq!(
+        report.get("summary").and_then(|s| s.get("complete")),
+        Some(&rea_offline::json::Value::Bool(false))
+    );
     let text = run(&dir, &["scan", "tree", "--format", "text"]);
-    assert!(text.stdout.contains("coverage: INCOMPLETE"), "{}", text.stdout);
+    assert!(
+        text.stdout.contains("coverage: INCOMPLETE"),
+        "{}",
+        text.stdout
+    );
     assert!(text.stdout.contains("locked.bin"), "{}", text.stdout);
     let md = run(&dir, &["scan", "tree", "--format", "markdown"]);
     assert!(md.stdout.contains("## Coverage warnings"), "{}", md.stdout);
     assert!(md.stdout.contains("locked.bin"), "{}", md.stdout);
-    let gui = run(&dir, &["gui", "tree", "--output", "window.html", "--no-open"]);
+    let gui = run(
+        &dir,
+        &["gui", "tree", "--output", "window.html", "--no-open"],
+    );
     assert_eq!(gui.code, 0, "{}", gui.stderr);
     let html = std::fs::read_to_string(dir.join("window.html")).unwrap();
-    assert!(html.contains("coverage: INCOMPLETE"), "GUI must disclose incomplete coverage");
-    assert!(html.contains("chip coverage-incomplete"), "coverage chip stays visible regardless of selection");
+    assert!(
+        html.contains("coverage: INCOMPLETE"),
+        "GUI must disclose incomplete coverage"
+    );
+    assert!(
+        html.contains("chip coverage-incomplete"),
+        "coverage chip stays visible regardless of selection"
+    );
 
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o600)).unwrap();
     std::fs::remove_dir_all(&dir).unwrap();
@@ -419,43 +578,104 @@ fn archived_sandbox_gates_on_the_combined_verdict_not_the_install_tree() {
     std::fs::write(&archive, SANDBOX_ARCHIVE).unwrap();
 
     // The install-tree body says "low"; the gate must still fire.
-    let gate = run(&dir, &["report", "sandbox.json", "--fail-on", "high", "--quiet"]);
+    let gate = run(
+        &dir,
+        &["report", "sandbox.json", "--fail-on", "high", "--quiet"],
+    );
     assert_eq!(gate.code, 2, "combined verdict must gate: {}", gate.stderr);
-    let calm = run(&dir, &["report", "sandbox.json", "--fail-on", "critical", "--quiet"]);
+    let calm = run(
+        &dir,
+        &["report", "sandbox.json", "--fail-on", "critical", "--quiet"],
+    );
     assert_eq!(calm.code, 2, "{}", calm.stderr);
 
     let text = run(&dir, &["report", "sandbox.json", "--format", "text"]);
     assert_eq!(text.code, 0, "{}", text.stderr);
     assert!(text.stdout.contains("overall verdict"), "{}", text.stdout);
     assert!(text.stdout.contains("CRITICAL"), "{}", text.stdout);
-    assert!(text.stdout.contains("Dropped-file findings"), "{}", text.stdout);
-    assert!(text.stdout.contains("install tree: 0/100 low"), "{}", text.stdout);
+    assert!(
+        text.stdout.contains("Dropped-file findings"),
+        "{}",
+        text.stdout
+    );
+    assert!(
+        text.stdout.contains("install tree: 0/100 low"),
+        "{}",
+        text.stdout
+    );
 
     let md = run(&dir, &["report", "sandbox.json", "--format", "markdown"]);
     assert_eq!(md.code, 0, "{}", md.stderr);
-    assert!(md.stdout.contains("| overall verdict | **CRITICAL** |"), "{}", md.stdout);
-    assert!(md.stdout.contains("## Dropped-file analysis"), "{}", md.stdout);
-    assert!(md.stdout.contains("AppData/Roaming/payload.exe"), "{}", md.stdout);
+    assert!(
+        md.stdout.contains("| overall verdict | **CRITICAL** |"),
+        "{}",
+        md.stdout
+    );
+    assert!(
+        md.stdout.contains("## Dropped-file analysis"),
+        "{}",
+        md.stdout
+    );
+    assert!(
+        md.stdout.contains("AppData/Roaming/payload.exe"),
+        "{}",
+        md.stdout
+    );
 
     // The window merges the three sets and shows the combined score.
-    let gui = run(&dir, &["gui", "sandbox.json", "--from-report", "--output", "sandbox.html", "--no-open"]);
+    let gui = run(
+        &dir,
+        &[
+            "gui",
+            "sandbox.json",
+            "--from-report",
+            "--output",
+            "sandbox.html",
+            "--no-open",
+        ],
+    );
     assert_eq!(gui.code, 0, "{}", gui.stderr);
     let html = std::fs::read_to_string(dir.join("sandbox.html")).unwrap();
-    assert!(html.contains("chip verdict-critical"), "combined verdict chip");
-    assert!(html.contains("94/100"), "combined score, not the install tree's 0");
+    assert!(
+        html.contains("chip verdict-critical"),
+        "combined verdict chip"
+    );
+    assert!(
+        html.contains("94/100"),
+        "combined score, not the install tree's 0"
+    );
     assert!(html.contains("payload.exe"), "the drop is in the grid");
-    assert!(html.contains("_installer"), "the installer is in the grid too");
+    assert!(
+        html.contains("_installer"),
+        "the installer is in the grid too"
+    );
     assert!(!html.contains("<script"), "still no JavaScript");
 
     // An archive rewritten to look calm while its own sources say otherwise
     // is rejected instead of passing a gate.
-    let tampered = SANDBOX_ARCHIVE
-        .replace("\"verdict\": \"critical\",\n  \"risk_score\": 94", "\"verdict\": \"low\",\n  \"risk_score\": 6");
-    assert_ne!(tampered, SANDBOX_ARCHIVE, "fixture must actually be rewritten");
+    let tampered = SANDBOX_ARCHIVE.replace(
+        "\"verdict\": \"critical\",\n  \"risk_score\": 94",
+        "\"verdict\": \"low\",\n  \"risk_score\": 6",
+    );
+    assert_ne!(
+        tampered, SANDBOX_ARCHIVE,
+        "fixture must actually be rewritten"
+    );
     std::fs::write(dir.join("tampered.json"), tampered).unwrap();
-    let rejected = run(&dir, &["report", "tampered.json", "--fail-on", "high", "--quiet"]);
-    assert_eq!(rejected.code, 1, "tampered archive must fail closed: {}", rejected.stdout);
-    assert!(rejected.stderr.contains("worst analyzed part"), "{}", rejected.stderr);
+    let rejected = run(
+        &dir,
+        &["report", "tampered.json", "--fail-on", "high", "--quiet"],
+    );
+    assert_eq!(
+        rejected.code, 1,
+        "tampered archive must fail closed: {}",
+        rejected.stdout
+    );
+    assert!(
+        rejected.stderr.contains("worst analyzed part"),
+        "{}",
+        rejected.stderr
+    );
 
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -494,17 +714,41 @@ fn sandbox_gate_fires_on_a_profile_drop() {
     .unwrap();
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-    let gated = run(&dir, &["sandbox", "dropper.sh", "--fail-on", "high", "--quiet", "--output", "run.json"]);
-    assert_eq!(gated.code, 2, "a critical profile drop must fail the gate: {}", gated.stderr);
-    let json = rea_offline::json::parse(&std::fs::read_to_string(dir.join("run.json")).unwrap()).unwrap();
-    assert_eq!(json.get("verdict").and_then(|v| v.as_str()), Some("critical"));
+    let gated = run(
+        &dir,
+        &[
+            "sandbox",
+            "dropper.sh",
+            "--fail-on",
+            "high",
+            "--quiet",
+            "--output",
+            "run.json",
+        ],
+    );
     assert_eq!(
-        json.get("report").and_then(|r| r.get("verdict")).and_then(|v| v.as_str()),
+        gated.code, 2,
+        "a critical profile drop must fail the gate: {}",
+        gated.stderr
+    );
+    let json =
+        rea_offline::json::parse(&std::fs::read_to_string(dir.join("run.json")).unwrap()).unwrap();
+    assert_eq!(
+        json.get("verdict").and_then(|v| v.as_str()),
+        Some("critical")
+    );
+    assert_eq!(
+        json.get("report")
+            .and_then(|r| r.get("verdict"))
+            .and_then(|v| v.as_str()),
         Some("low"),
         "the install tree stayed empty — the drop is what decided this"
     );
     // The recorded run gates the same way when reopened later.
-    let archived = run(&dir, &["report", "run.json", "--fail-on", "high", "--quiet"]);
+    let archived = run(
+        &dir,
+        &["report", "run.json", "--fail-on", "high", "--quiet"],
+    );
     assert_eq!(archived.code, 2, "{}", archived.stderr);
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -527,12 +771,26 @@ fn a_timed_out_sandbox_run_exits_three() {
 
     let gated = run(
         &dir,
-        &["sandbox", "stall.sh", "--timeout", "1", "--fail-on-incomplete", "--quiet", "--output", "run.json"],
+        &[
+            "sandbox",
+            "stall.sh",
+            "--timeout",
+            "1",
+            "--fail-on-incomplete",
+            "--quiet",
+            "--output",
+            "run.json",
+        ],
     );
-    assert_eq!(gated.code, 3, "a killed run is not complete evidence: {}", gated.stderr);
+    assert_eq!(
+        gated.code, 3,
+        "a killed run is not complete evidence: {}",
+        gated.stderr
+    );
 
     // The report is still written, and it says why the run is not complete.
-    let json = rea_offline::json::parse(&std::fs::read_to_string(dir.join("run.json")).unwrap()).unwrap();
+    let json =
+        rea_offline::json::parse(&std::fs::read_to_string(dir.join("run.json")).unwrap()).unwrap();
     assert_eq!(
         json.get("execution").and_then(|e| e.get("timed_out")),
         Some(&rea_offline::json::Value::Bool(true))
@@ -543,11 +801,25 @@ fn a_timed_out_sandbox_run_exits_three() {
     );
 
     // Without the flag the verdict is unchanged: coverage never adds risk.
-    let plain = run(&dir, &["sandbox", "stall.sh", "--timeout", "1", "--quiet", "--output", "plain.json"]);
+    let plain = run(
+        &dir,
+        &[
+            "sandbox",
+            "stall.sh",
+            "--timeout",
+            "1",
+            "--quiet",
+            "--output",
+            "plain.json",
+        ],
+    );
     assert_eq!(plain.code, 0, "{}", plain.stderr);
 
     // The recorded run gates the same way when reopened later.
-    let archived = run(&dir, &["report", "run.json", "--fail-on-incomplete", "--quiet"]);
+    let archived = run(
+        &dir,
+        &["report", "run.json", "--fail-on-incomplete", "--quiet"],
+    );
     assert_eq!(archived.code, 3, "{}", archived.stderr);
 
     std::fs::remove_dir_all(&dir).unwrap();
@@ -568,12 +840,23 @@ fn an_archive_cannot_claim_complete_coverage_for_a_run_that_was_killed() {
         "\"coverage\": {\"complete\": true, \"issue_count\": 0, \"unverified_count\": 0, \"issues\": []},\n  \
          \"execution\": {\"command\": \"setup.exe\", \"exit_code\": null, \"timed_out\": true, \"duration_ms\": 300000}",
     );
-    assert_ne!(killed, SANDBOX_ARCHIVE, "fixture must actually be rewritten");
+    assert_ne!(
+        killed, SANDBOX_ARCHIVE,
+        "fixture must actually be rewritten"
+    );
     std::fs::write(&path, killed).unwrap();
 
     let rejected = run(&dir, &["report", "killed.json", "--fail-on-incomplete"]);
-    assert_eq!(rejected.code, 1, "a contradictory archive must fail closed: {}", rejected.stdout);
-    assert!(rejected.stderr.contains("did not finish"), "{}", rejected.stderr);
+    assert_eq!(
+        rejected.code, 1,
+        "a contradictory archive must fail closed: {}",
+        rejected.stdout
+    );
+    assert!(
+        rejected.stderr.contains("did not finish"),
+        "{}",
+        rejected.stderr
+    );
     // It is refused rather than rendered, in every format.
     let rendered = run(&dir, &["report", "killed.json", "--format", "text"]);
     assert_eq!(rendered.code, 1, "{}", rendered.stdout);
@@ -597,8 +880,15 @@ fn a_run_that_was_not_contained_cannot_claim_complete_coverage() {
         "execution":{"command":"setup.exe","exit_code":0,"timed_out":false},
         "report":{"file_count":0,"risk_score":0,"verdict":"low","files":[],"scan_issues":[]}}"#;
     std::fs::write(dir.join("honest.json"), honest).unwrap();
-    let gated = run(&dir, &["report", "honest.json", "--fail-on-incomplete", "--quiet"]);
-    assert_eq!(gated.code, 3, "an uncontained run is incomplete evidence: {}", gated.stderr);
+    let gated = run(
+        &dir,
+        &["report", "honest.json", "--fail-on-incomplete", "--quiet"],
+    );
+    assert_eq!(
+        gated.code, 3,
+        "an uncontained run is incomplete evidence: {}",
+        gated.stderr
+    );
 
     // The same run with the coverage record quietly flipped: refused, not
     // rendered, and certainly not gated as clean.
@@ -611,8 +901,16 @@ fn a_run_that_was_not_contained_cannot_claim_complete_coverage() {
     assert_ne!(tampered, honest, "fixture must actually be rewritten");
     std::fs::write(dir.join("tampered.json"), tampered).unwrap();
     let rejected = run(&dir, &["report", "tampered.json", "--fail-on-incomplete"]);
-    assert_eq!(rejected.code, 1, "a contradictory archive must fail closed: {}", rejected.stdout);
-    assert!(rejected.stderr.contains("not contained"), "{}", rejected.stderr);
+    assert_eq!(
+        rejected.code, 1,
+        "a contradictory archive must fail closed: {}",
+        rejected.stdout
+    );
+    assert!(
+        rejected.stderr.contains("not contained"),
+        "{}",
+        rejected.stderr
+    );
 
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -631,14 +929,41 @@ fn snapshot_and_diff_gate_on_their_own_coverage() {
     std::fs::write(tree.join("visible.txt"), b"hi").unwrap();
 
     // Unlocked: both commands pass the gate.
-    let clean = run(&dir, &["snapshot", "tree", "--fail-on-incomplete", "--quiet",
-        "--output", "before.json"]);
+    let clean = run(
+        &dir,
+        &[
+            "snapshot",
+            "tree",
+            "--fail-on-incomplete",
+            "--quiet",
+            "--output",
+            "before.json",
+        ],
+    );
     assert_eq!(clean.code, 0, "{}", clean.stderr);
     std::fs::write(tree.join("dropped.exe"), b"MZ dropped").unwrap();
-    let after = run(&dir, &["snapshot", "tree", "--fail-on-incomplete", "--quiet",
-        "--output", "after.json"]);
+    let after = run(
+        &dir,
+        &[
+            "snapshot",
+            "tree",
+            "--fail-on-incomplete",
+            "--quiet",
+            "--output",
+            "after.json",
+        ],
+    );
     assert_eq!(after.code, 0, "{}", after.stderr);
-    let diff = run(&dir, &["diff", "before.json", "after.json", "--fail-on-incomplete", "--quiet"]);
+    let diff = run(
+        &dir,
+        &[
+            "diff",
+            "before.json",
+            "after.json",
+            "--fail-on-incomplete",
+            "--quiet",
+        ],
+    );
     assert_eq!(diff.code, 0, "{}", diff.stderr);
 
     // Locked: the snapshot cannot see it, so neither can the diff.
@@ -648,8 +973,17 @@ fn snapshot_and_diff_gate_on_their_own_coverage() {
         std::fs::remove_dir_all(&dir).unwrap();
         return; // privileged process: mode bits do not apply
     }
-    let blind_snap = run(&dir, &["snapshot", "tree", "--fail-on-incomplete", "--quiet",
-        "--output", "blind.json"]);
+    let blind_snap = run(
+        &dir,
+        &[
+            "snapshot",
+            "tree",
+            "--fail-on-incomplete",
+            "--quiet",
+            "--output",
+            "blind.json",
+        ],
+    );
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
     assert_eq!(blind_snap.code, 3, "{}", blind_snap.stderr);
     let json = rea_offline::json::parse(&std::fs::read_to_string(dir.join("blind.json")).unwrap())
@@ -659,7 +993,10 @@ fn snapshot_and_diff_gate_on_their_own_coverage() {
         Some(&rea_offline::json::Value::Bool(false))
     );
     // A diff of a blind manifest and a sighted one is still incomplete.
-    let blind_diff = run(&dir, &["diff", "before.json", "blind.json", "--fail-on-incomplete"]);
+    let blind_diff = run(
+        &dir,
+        &["diff", "before.json", "blind.json", "--fail-on-incomplete"],
+    );
     assert_eq!(blind_diff.code, 3, "{}", blind_diff.stderr);
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -679,8 +1016,16 @@ fn diff_refuses_a_document_that_is_not_a_manifest() {
     for name in ["report.json", "empty.json"] {
         let out = run(&dir, &["diff", name, name]);
         assert_eq!(out.code, 1, "{name} must be refused: {}", out.stderr);
-        assert!(out.stderr.contains("is not a snapshot manifest"), "{name}: {}", out.stderr);
-        assert!(out.stderr.contains(name), "{name}: the file is named: {}", out.stderr);
+        assert!(
+            out.stderr.contains("is not a snapshot manifest"),
+            "{name}: {}",
+            out.stderr
+        );
+        assert!(
+            out.stderr.contains(name),
+            "{name}: the file is named: {}",
+            out.stderr
+        );
     }
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -699,15 +1044,34 @@ fn a_diff_across_two_different_trees_is_incomplete() {
     // Each tree on its own is fully readable — and says so.
     let snapshot = |name: &str, tree: &Path| {
         let out = dir.join(name);
-        let result = run(&dir, &["snapshot", tree.to_str().unwrap(), "--output",
-            out.to_str().unwrap(), "--fail-on-incomplete", "--quiet"]);
+        let result = run(
+            &dir,
+            &[
+                "snapshot",
+                tree.to_str().unwrap(),
+                "--output",
+                out.to_str().unwrap(),
+                "--fail-on-incomplete",
+                "--quiet",
+            ],
+        );
         assert_eq!(result.code, 0, "{name}: {}", result.stderr);
     };
     snapshot("before.json", &a);
     snapshot("after.json", &b);
 
     // Without the gate the delta is still produced — and says it is partial.
-    let plain = run(&dir, &["diff", "before.json", "after.json", "--output", "delta.json", "--quiet"]);
+    let plain = run(
+        &dir,
+        &[
+            "diff",
+            "before.json",
+            "after.json",
+            "--output",
+            "delta.json",
+            "--quiet",
+        ],
+    );
     assert_eq!(plain.code, 0, "{}", plain.stderr);
     let delta = rea_offline::json::parse(&std::fs::read_to_string(dir.join("delta.json")).unwrap())
         .unwrap();
@@ -716,10 +1080,17 @@ fn a_diff_across_two_different_trees_is_incomplete() {
         Some(&Value::Bool(false)),
         "a cross-tree comparison is not complete: {delta:?}"
     );
-    assert_ne!(delta.get("before_root"), delta.get("after_root"), "{delta:?}");
+    assert_ne!(
+        delta.get("before_root"),
+        delta.get("after_root"),
+        "{delta:?}"
+    );
 
     // With the gate, exit 3 — the same signal a sandbox run gives.
-    let gated = run(&dir, &["diff", "before.json", "after.json", "--fail-on-incomplete"]);
+    let gated = run(
+        &dir,
+        &["diff", "before.json", "after.json", "--fail-on-incomplete"],
+    );
     assert_eq!(gated.code, 3, "{}", gated.stderr);
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -743,8 +1114,15 @@ fn an_installer_that_was_never_analyzed_cannot_claim_complete_coverage() {
         "report":{"file_count":0,"risk_score":0,"verdict":"low","files":[],"scan_issues":[]},
         "drops_report":{"file_count":0,"risk_score":0,"verdict":"low","files":[],"scan_issues":[]}}"#;
     std::fs::write(dir.join("honest.json"), honest).unwrap();
-    let gated = run(&dir, &["report", "honest.json", "--fail-on-incomplete", "--quiet"]);
-    assert_eq!(gated.code, 3, "a missing evidence set is incomplete: {}", gated.stderr);
+    let gated = run(
+        &dir,
+        &["report", "honest.json", "--fail-on-incomplete", "--quiet"],
+    );
+    assert_eq!(
+        gated.code, 3,
+        "a missing evidence set is incomplete: {}",
+        gated.stderr
+    );
 
     // The same archive with the coverage record quietly flipped: refused.
     let tampered = honest.replace(
@@ -756,8 +1134,16 @@ fn an_installer_that_was_never_analyzed_cannot_claim_complete_coverage() {
     assert_ne!(tampered, honest, "fixture must actually be rewritten");
     std::fs::write(dir.join("tampered.json"), tampered).unwrap();
     let rejected = run(&dir, &["report", "tampered.json", "--fail-on-incomplete"]);
-    assert_eq!(rejected.code, 1, "a contradictory archive must fail closed: {}", rejected.stdout);
-    assert!(rejected.stderr.contains("records a failure"), "{}", rejected.stderr);
+    assert_eq!(
+        rejected.code, 1,
+        "a contradictory archive must fail closed: {}",
+        rejected.stdout
+    );
+    assert!(
+        rejected.stderr.contains("records a failure"),
+        "{}",
+        rejected.stderr
+    );
 
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -771,8 +1157,10 @@ fn doctor_reports_whether_the_session_is_elevated() {
     assert_eq!(doctor.code, 0, "{}", doctor.stderr);
     let json = rea_offline::json::parse(&doctor.stdout).expect("doctor JSON");
     assert!(
-        matches!(json.get("elevated"), Some(rea_offline::json::Value::Bool(_))
-            | Some(rea_offline::json::Value::Null)),
+        matches!(
+            json.get("elevated"),
+            Some(rea_offline::json::Value::Bool(_)) | Some(rea_offline::json::Value::Null)
+        ),
         "doctor must state the session's privilege level: {json:?}"
     );
     let md = run(&dir, &["doctor", "--format", "markdown"]);
@@ -786,7 +1174,8 @@ fn coverage_archive(complete: bool) -> String {
         "[]".to_string()
     } else {
         r#"[{"area":"sandbox snapshot (after)","path":"AppData/hidden",
-             "stage":"traverse","message":"Permission denied (os error 13)"}]"#.to_string()
+             "stage":"traverse","message":"Permission denied (os error 13)"}]"#
+            .to_string()
     };
     format!(
         r#"{{"schema_version":3,"mode":"local-scan","generated_unix":1,"verdict":"low",
@@ -807,22 +1196,40 @@ fn fail_on_incomplete_refuses_a_calm_but_blind_archive() {
     std::fs::write(&blind, coverage_archive(false)).unwrap();
 
     // Same verdict, same score — only the coverage record differs.
-    let ok = run(&dir, &["report", "clean.json", "--fail-on-incomplete", "--quiet"]);
+    let ok = run(
+        &dir,
+        &["report", "clean.json", "--fail-on-incomplete", "--quiet"],
+    );
     assert_eq!(ok.code, 0, "{}", ok.stderr);
     let blocked = run(&dir, &["report", "blind.json", "--fail-on-incomplete"]);
     assert_eq!(blocked.code, 3, "{}", blocked.stderr);
-    assert!(blocked.stderr.contains("coverage is incomplete"), "{}", blocked.stderr);
+    assert!(
+        blocked.stderr.contains("coverage is incomplete"),
+        "{}",
+        blocked.stderr
+    );
 
     // Without the flag the verdict gate is unchanged, and the warning is
     // still rendered so a human is not misled either.
-    let plain = run(&dir, &["report", "blind.json", "--fail-on", "high", "--quiet"]);
+    let plain = run(
+        &dir,
+        &["report", "blind.json", "--fail-on", "high", "--quiet"],
+    );
     assert_eq!(plain.code, 0, "{}", plain.stderr);
     let text = run(&dir, &["report", "blind.json", "--format", "text"]);
-    assert!(text.stdout.contains("coverage: INCOMPLETE"), "{}", text.stdout);
+    assert!(
+        text.stdout.contains("coverage: INCOMPLETE"),
+        "{}",
+        text.stdout
+    );
     assert!(text.stdout.contains("AppData/hidden"), "{}", text.stdout);
     let md = run(&dir, &["report", "blind.json", "--format", "markdown"]);
     assert!(md.stdout.contains("## Coverage warnings"), "{}", md.stdout);
-    assert!(md.stdout.contains("sandbox snapshot (after)"), "{}", md.stdout);
+    assert!(
+        md.stdout.contains("sandbox snapshot (after)"),
+        "{}",
+        md.stdout
+    );
 
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -835,8 +1242,16 @@ fn an_archive_cannot_be_edited_into_looking_complete() {
     let tampered = coverage_archive(false).replace("\"complete\":false", "\"complete\":true");
     std::fs::write(&path, tampered).unwrap();
     let run = run(&dir, &["report", "tampered.json", "--fail-on-incomplete"]);
-    assert_eq!(run.code, 1, "a tampered archive must be rejected, not gated: {}", run.stdout);
-    assert!(run.stderr.contains("claims to be complete"), "{}", run.stderr);
+    assert_eq!(
+        run.code, 1,
+        "a tampered archive must be rejected, not gated: {}",
+        run.stdout
+    );
+    assert!(
+        run.stderr.contains("claims to be complete"),
+        "{}",
+        run.stderr
+    );
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -847,12 +1262,16 @@ fn coverage_gate_says_so_when_an_archive_never_recorded_coverage() {
     std::fs::write(
         &path,
         r#"{"schema_version":2,"mode":"local-scan","report":{"file_count":0,"files":[]}}"#,
-    ).unwrap();
+    )
+    .unwrap();
     let gated = run(&dir, &["report", "legacy.json", "--fail-on-incomplete"]);
     assert_eq!(gated.code, 1, "{}", gated.stdout);
     assert!(gated.stderr.contains("does not"), "{}", gated.stderr);
     // It still renders: refusing to gate is not refusing to read.
-    assert_eq!(run(&dir, &["report", "legacy.json", "--format", "text"]).code, 0);
+    assert_eq!(
+        run(&dir, &["report", "legacy.json", "--format", "text"]).code,
+        0
+    );
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -866,13 +1285,28 @@ fn snapshot_and_scan_publish_their_coverage_record() {
     let snap = run(&dir, &["snapshot", "tree"]);
     assert_eq!(snap.code, 0, "{}", snap.stderr);
     let json = rea_offline::json::parse(&snap.stdout).unwrap();
-    assert_eq!(json.get("complete"), Some(&rea_offline::json::Value::Bool(true)));
-    assert_eq!(json.get("issue_count"), Some(&rea_offline::json::Value::num(0)));
+    assert_eq!(
+        json.get("complete"),
+        Some(&rea_offline::json::Value::Bool(true))
+    );
+    assert_eq!(
+        json.get("issue_count"),
+        Some(&rea_offline::json::Value::num(0))
+    );
 
     let scan = run(&dir, &["scan", "tree", "--fail-on-incomplete", "--quiet"]);
     assert_eq!(scan.code, 0, "{}", scan.stderr);
     let report = dir.join("scan.json");
-    run(&dir, &["scan", "tree", "--output", report.to_str().unwrap(), "--quiet"]);
+    run(
+        &dir,
+        &[
+            "scan",
+            "tree",
+            "--output",
+            report.to_str().unwrap(),
+            "--quiet",
+        ],
+    );
     let json = rea_offline::json::parse(&std::fs::read_to_string(&report).unwrap()).unwrap();
     assert_eq!(
         json.get("coverage").and_then(|c| c.get("complete")),
@@ -906,13 +1340,19 @@ fn scanning_an_unreadable_tree_exits_three() {
 
     assert_eq!(gated.code, 3, "{}", gated.stderr);
     let json = rea_offline::json::parse(&snapshot.stdout).unwrap();
-    assert_eq!(json.get("complete"), Some(&rea_offline::json::Value::Bool(false)));
+    assert_eq!(
+        json.get("complete"),
+        Some(&rea_offline::json::Value::Bool(false))
+    );
     let issues = match json.get("issues") {
         Some(rea_offline::json::Value::Array(items)) => items.clone(),
         other => panic!("issues expected, got {other:?}"),
     };
-    assert!(issues.iter().any(|i| {
-        i.get("path").and_then(|v| v.as_str()) == Some("locked")
-            && i.get("stage").and_then(|v| v.as_str()) == Some("traverse")
-    }), "{issues:?}");
+    assert!(
+        issues.iter().any(|i| {
+            i.get("path").and_then(|v| v.as_str()) == Some("locked")
+                && i.get("stage").and_then(|v| v.as_str()) == Some("traverse")
+        }),
+        "{issues:?}"
+    );
 }

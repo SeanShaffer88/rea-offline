@@ -6,6 +6,12 @@ programs and untrusted `.exe` / `.msi` installers on *any* Windows edition
 and no network. Written in Rust with **zero external dependencies**, so it
 builds on a fully air-gapped machine.
 
+The Windows CI runner is pinned to Windows Server 2022. This continuously
+exercises the Job Object and registry paths on that OS; Windows desktop
+editions, including Home, remain the intended target but are not all covered
+by automated CI. The older Windows 7 SP1 compatibility statement is a design
+target, not a verified minimum.
+
 ## Modes
 
 **A. Local program inspection** — static/binary analysis of an installed
@@ -178,6 +184,10 @@ and the 32 MiB per-file content-analysis limit in `report.scan_issues` (also
 summarized by `summary.complete` and `summary.scan_issue_count`). Text, Markdown,
 and the window surface incomplete coverage; these operational issues do not
 inflate the risk score. Regular files are analyzed without following symlinks.
+
+Native deep parsing and PE-specific findings apply only to PE files. ELF, ZIP,
+OLE/MSI, script, text, and unknown/binary formats are labeled for reporting;
+ZIP and OLE/MSI contents are not extracted or recursively analyzed.
 
 `--fail-on <level>` turns the verdict into an exit code (`2` when the verdict
 reaches the level), so the same report can gate a CI job or a deployment
@@ -390,10 +400,38 @@ user profile are reported in `sandbox_delta`, not just `install\`.
 
 ## Development
 
+See [`docs/ROADMAP.md`](docs/ROADMAP.md) for prioritized follow-up work. The
+tagged Windows release workflow is ready to publish a downloadable executable
+and SHA-256 checksum when a matching version tag is pushed.
+
 ```bat
 cargo test --release      :: unit + integration + CLI tests, no network
 cargo build --release
 ```
+
+## Releases
+
+Version tags in the form `vMAJOR.MINOR.PATCH` publish a Windows x64 executable
+and its SHA-256 checksum on the [GitHub Releases page](https://github.com/SeanShaffer88/rea-offline/releases).
+The tag must match the package version in `Cargo.toml`. Source archives remain
+available from each GitHub release tag.
+See [`CHANGELOG.md`](CHANGELOG.md) for the changes in each release.
+
+To check a downloaded executable in PowerShell, run these commands in the
+directory containing both release files:
+
+```powershell
+$exe = "rea-offline-v0.13.0-windows-x86_64.exe"
+$expected = (Get-Content "$exe.sha256").Trim().Split()[0]
+$actual = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($actual -ne $expected) { throw "SHA-256 checksum mismatch" }
+```
+
+The checksum detects accidental corruption; it does not authenticate who
+published the executable. Releases are not currently code-signed, and the
+project does not provide an automatic updater. The release workflow refuses to
+overwrite an existing release for the same tag; publish corrections under a
+new version.
 
 CI (`.github/workflows/ci.yml`) runs the tests on Windows **and** Linux, then
 smoke-tests the binary end to end: `doctor`, a synthetic-PE scan in all three

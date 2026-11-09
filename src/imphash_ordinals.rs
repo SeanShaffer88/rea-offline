@@ -33,7 +33,6 @@ pub fn lookup(dll: &str, ordinal: u16) -> String {
     format!("ord{ordinal}")
 }
 
-
 pub const WS2_32: OrdinalTable = &[
     (1, "accept"),
     (2, "bind"),

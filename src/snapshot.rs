@@ -38,16 +38,29 @@ impl FileEntry {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EntryKind { File, Directory, Symlink, Other }
+pub enum EntryKind {
+    File,
+    Directory,
+    Symlink,
+    Other,
+}
 
 impl EntryKind {
     pub fn as_str(&self) -> &'static str {
-        match self { EntryKind::File => "file", EntryKind::Directory => "directory",
-                     EntryKind::Symlink => "symlink", EntryKind::Other => "other" }
+        match self {
+            EntryKind::File => "file",
+            EntryKind::Directory => "directory",
+            EntryKind::Symlink => "symlink",
+            EntryKind::Other => "other",
+        }
     }
     fn from_str(s: &str) -> EntryKind {
-        match s { "directory" => EntryKind::Directory, "symlink" => EntryKind::Symlink,
-                  "file" => EntryKind::File, _ => EntryKind::Other }
+        match s {
+            "directory" => EntryKind::Directory,
+            "symlink" => EntryKind::Symlink,
+            "file" => EntryKind::File,
+            _ => EntryKind::Other,
+        }
     }
 }
 
@@ -91,7 +104,9 @@ impl Snapshot {
     /// than none — but each one is recorded in `issues` so the caller can
     /// tell a clean tree from a tree it was not allowed to read.
     pub fn capture(root: &Path) -> Result<Snapshot> {
-        if !root.exists() { return Err(Error::NotFound(root.to_path_buf())); }
+        if !root.exists() {
+            return Err(Error::NotFound(root.to_path_buf()));
+        }
         let mut entries = BTreeMap::new();
         let mut issues: Vec<ScanIssue> = Vec::new();
         // Label failures with a root-relative path so a manifest stays
@@ -127,12 +142,16 @@ impl Snapshot {
                     Ok(r) => path_to_slash_string(r),
                     Err(_) => {
                         issues.push(ScanIssue::new(
-                            path_to_slash_string(&path), "path", "escapes the snapshot root",
+                            path_to_slash_string(&path),
+                            "path",
+                            "escapes the snapshot root",
                         ));
                         continue;
                     }
                 };
-                if rel.is_empty() { continue; }
+                if rel.is_empty() {
+                    continue;
+                }
                 let meta = match std::fs::symlink_metadata(&path) {
                     Ok(m) => m,
                     Err(e) => {
@@ -161,11 +180,24 @@ impl Snapshot {
                 } else {
                     (EntryKind::Other, 0, String::new())
                 };
-                entries.insert(rel.clone(), FileEntry { path: rel, size, sha256: sha, kind });
+                entries.insert(
+                    rel.clone(),
+                    FileEntry {
+                        path: rel,
+                        size,
+                        sha256: sha,
+                        kind,
+                    },
+                );
             }
         }
         issues.sort_by(|a, b| a.path.cmp(&b.path).then(a.stage.cmp(&b.stage)));
-        Ok(Snapshot { root: root.to_path_buf(), created_unix: crate::util::unix_secs(), entries, issues })
+        Ok(Snapshot {
+            root: root.to_path_buf(),
+            created_unix: crate::util::unix_secs(),
+            entries,
+            issues,
+        })
     }
 
     pub fn diff(&self, after: &Snapshot) -> Delta {
@@ -188,7 +220,9 @@ impl Snapshot {
             }
         }
         for (path, old) in &self.entries {
-            if !after.entries.contains_key(path) { delta.deleted.push(old.clone()); }
+            if !after.entries.contains_key(path) {
+                delta.deleted.push(old.clone());
+            }
         }
         delta
     }
@@ -206,8 +240,14 @@ impl Snapshot {
         Value::obj(vec![
             ("root", Value::str(path_to_slash_string(&self.root))),
             ("created_unix", Value::num(self.created_unix)),
-            ("entries", Value::Array(self.entries.values().map(Self::entry_json).collect())),
-            ("issues", Value::Array(self.issues.iter().map(ScanIssue::to_json).collect())),
+            (
+                "entries",
+                Value::Array(self.entries.values().map(Self::entry_json).collect()),
+            ),
+            (
+                "issues",
+                Value::Array(self.issues.iter().map(ScanIssue::to_json).collect()),
+            ),
             ("issue_count", Value::num(self.issues.len() as u64)),
             ("complete", Value::Bool(self.is_complete())),
         ])
@@ -226,7 +266,10 @@ impl Snapshot {
         // an empty object — used to load as "a snapshot of nothing", and a
         // diff against it reported every real file as added or deleted while
         // claiming full coverage of a comparison that never happened.
-        let root = value.get("root").and_then(Value::as_str).unwrap_or_default();
+        let root = value
+            .get("root")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         if root.is_empty() {
             return Err(Error::InvalidInput(format!(
                 "{} is not a snapshot manifest (no root); expected a file \
@@ -236,24 +279,44 @@ impl Snapshot {
         }
         let items = match value.get("entries") {
             Some(Value::Array(items)) => items,
-            _ => return Err(Error::InvalidInput(format!(
-                "{} is not a snapshot manifest (no entries list); expected a \
+            _ => {
+                return Err(Error::InvalidInput(format!(
+                    "{} is not a snapshot manifest (no entries list); expected a \
                  file written by `rea-offline snapshot`",
-                path.display(),
-            ))),
+                    path.display(),
+                )))
+            }
         };
         let mut entries = BTreeMap::new();
         {
             for item in items {
-                let rel = item.get("path").and_then(Value::as_str).unwrap_or_default().to_string();
-                if rel.is_empty() { continue; }
-                let size = match item.get("size") { Some(Value::Number(n)) => *n as u64, _ => 0 };
-                entries.insert(rel.clone(), FileEntry {
-                    path: rel,
-                    size,
-                    sha256: item.get("sha256").and_then(Value::as_str).unwrap_or_default().to_string(),
-                    kind: EntryKind::from_str(item.get("kind").and_then(Value::as_str).unwrap_or("file")),
-                });
+                let rel = item
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                if rel.is_empty() {
+                    continue;
+                }
+                let size = match item.get("size") {
+                    Some(Value::Number(n)) => *n as u64,
+                    _ => 0,
+                };
+                entries.insert(
+                    rel.clone(),
+                    FileEntry {
+                        path: rel,
+                        size,
+                        sha256: item
+                            .get("sha256")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                        kind: EntryKind::from_str(
+                            item.get("kind").and_then(Value::as_str).unwrap_or("file"),
+                        ),
+                    },
+                );
             }
         }
         // Manifests written before coverage was recorded carry no issues
@@ -262,13 +325,25 @@ impl Snapshot {
         let mut issues = Vec::new();
         if let Some(Value::Array(items)) = value.get("issues") {
             for item in items {
-                let field = |k: &str| item.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
-                issues.push(ScanIssue::new(field("path"), field("stage"), field("message")));
+                let field = |k: &str| {
+                    item.get(k)
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string()
+                };
+                issues.push(ScanIssue::new(
+                    field("path"),
+                    field("stage"),
+                    field("message"),
+                ));
             }
         }
         Ok(Snapshot {
             root: PathBuf::from(root),
-            created_unix: match value.get("created_unix") { Some(Value::Number(n)) => *n as u64, _ => 0 },
+            created_unix: match value.get("created_unix") {
+                Some(Value::Number(n)) => *n as u64,
+                _ => 0,
+            },
             entries,
             issues,
         })
@@ -294,7 +369,7 @@ impl Snapshot {
             issues.push(ScanIssue::new(
                 after_root.clone(),
                 "root",
-                &format!(
+                format!(
                     "compared against a snapshot of a different directory: \
                      before is {before_root}, after is {after_root}",
                 ),
@@ -304,11 +379,12 @@ impl Snapshot {
         // either swapped arguments or a moved clock, and either way the
         // added and deleted columns are inverted. A capture time of zero is
         // a manifest that never recorded one, which says nothing either way.
-        if self.created_unix > 0 && after.created_unix > 0 && after.created_unix < self.created_unix {
+        if self.created_unix > 0 && after.created_unix > 0 && after.created_unix < self.created_unix
+        {
             issues.push(ScanIssue::new(
                 after_root,
                 "order",
-                &format!(
+                format!(
                     "the 'after' snapshot was taken {}s before the 'before' \
                      snapshot — the arguments may be swapped, which inverts \
                      added and deleted",
@@ -326,8 +402,11 @@ impl Delta {
     }
     /// Only files an installer actually dropped/changed — the REA input set.
     pub fn changed_files(&self) -> Vec<&FileEntry> {
-        self.added.iter().chain(self.modified.iter())
-            .filter(|e| e.kind == EntryKind::File).collect()
+        self.added
+            .iter()
+            .chain(self.modified.iter())
+            .filter(|e| e.kind == EntryKind::File)
+            .collect()
     }
     pub fn to_json(&self) -> Value {
         let list = |v: &[FileEntry]| Value::Array(v.iter().map(Snapshot::entry_json_pub).collect());
@@ -344,13 +423,30 @@ impl Delta {
 
 // Small indirection so Delta (same module) reuses entry serialization.
 impl Snapshot {
-    fn entry_json_pub(e: &FileEntry) -> Value { Self::entry_json(e) }
+    fn entry_json_pub(e: &FileEntry) -> Value {
+        Self::entry_json(e)
+    }
 }
 
 /// True for extensions REA should look at first.
 pub fn is_interesting(path: &Path) -> bool {
-    matches!(extension_lower(path).as_str(),
-        "exe"|"dll"|"sys"|"msi"|"bat"|"cmd"|"ps1"|"vbs"|"js"|"jar"|"com"|"scr"|"ocx"|"cpl")
+    matches!(
+        extension_lower(path).as_str(),
+        "exe"
+            | "dll"
+            | "sys"
+            | "msi"
+            | "bat"
+            | "cmd"
+            | "ps1"
+            | "vbs"
+            | "js"
+            | "jar"
+            | "com"
+            | "scr"
+            | "ocx"
+            | "cpl"
+    )
 }
 
 #[cfg(test)]
@@ -363,11 +459,20 @@ mod tests {
         Snapshot {
             root: PathBuf::from("/virtual"),
             created_unix: 0,
-            entries: entries.iter().map(|(path, size, sha, kind)| {
-                (path.to_string(), FileEntry {
-                    path: path.to_string(), size: *size, sha256: sha.to_string(), kind: *kind,
+            entries: entries
+                .iter()
+                .map(|(path, size, sha, kind)| {
+                    (
+                        path.to_string(),
+                        FileEntry {
+                            path: path.to_string(),
+                            size: *size,
+                            sha256: sha.to_string(),
+                            kind: *kind,
+                        },
+                    )
                 })
-            }).collect(),
+                .collect(),
             issues: Vec::new(),
         }
     }
@@ -379,9 +484,19 @@ mod tests {
         let before = manifest(&[("locked.bin", 4, "", EntryKind::File)]);
         let after = manifest(&[("locked.bin", 4, "", EntryKind::File)]);
         let delta = before.diff(&after);
-        assert!(delta.unchanged.is_empty(), "must not claim a file it never read is unchanged");
+        assert!(
+            delta.unchanged.is_empty(),
+            "must not claim a file it never read is unchanged"
+        );
         assert!(delta.modified.is_empty());
-        assert_eq!(delta.unverified.iter().map(|e| e.path.as_str()).collect::<Vec<_>>(), vec!["locked.bin"]);
+        assert_eq!(
+            delta
+                .unverified
+                .iter()
+                .map(|e| e.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["locked.bin"]
+        );
         let json = delta.to_json();
         assert_eq!(json.get("unverified_count"), Some(&Value::num(1)));
     }
@@ -400,29 +515,44 @@ mod tests {
         let before = manifest(&[("f.bin", 4, "", EntryKind::File)]);
         let bigger = manifest(&[("f.bin", 9, "", EntryKind::File)]);
         let delta = before.diff(&bigger);
-        assert_eq!(delta.modified.len(), 1, "size proves a change without a hash");
+        assert_eq!(
+            delta.modified.len(),
+            1,
+            "size proves a change without a hash"
+        );
         assert!(delta.unverified.is_empty());
 
         let replaced = manifest(&[("f.bin", 4, "", EntryKind::Symlink)]);
-        assert_eq!(before.diff(&replaced).modified.len(), 1, "kind proves a change too");
+        assert_eq!(
+            before.diff(&replaced).modified.len(),
+            1,
+            "kind proves a change too"
+        );
     }
 
     #[test]
     fn directories_and_symlinks_are_not_unverified() {
         // Empty hashes are normal for non-files; only regular files can be
         // "unverified", otherwise every directory would raise a warning.
-        let entries = [("d", 0, "", EntryKind::Directory), ("l", 0, "", EntryKind::Symlink)];
+        let entries = [
+            ("d", 0, "", EntryKind::Directory),
+            ("l", 0, "", EntryKind::Symlink),
+        ];
         let delta = manifest(&entries).diff(&manifest(&entries));
         assert!(delta.unverified.is_empty());
         assert_eq!(delta.unchanged.len(), 2);
-        assert!(manifest(&entries).entries.values().all(FileEntry::content_verified));
+        assert!(manifest(&entries)
+            .entries
+            .values()
+            .all(FileEntry::content_verified));
         assert!(!manifest(&[("f", 1, "", EntryKind::File)]).entries["f"].content_verified());
     }
 
     #[test]
     fn coverage_survives_a_save_load_round_trip() {
         let mut snap = manifest(&[("a.txt", 1, "aa", EntryKind::File)]);
-        snap.issues.push(ScanIssue::new("secret", "traverse", "Permission denied"));
+        snap.issues
+            .push(ScanIssue::new("secret", "traverse", "Permission denied"));
         let path = std::env::temp_dir().join(format!("rea_snap_{}.json", crate::util::new_id()));
         snap.save(&path).unwrap();
         let loaded = Snapshot::load(&path).unwrap();
@@ -443,8 +573,11 @@ mod tests {
         assert_eq!(json.get("issue_count"), Some(&Value::num(0)));
     }
 
-    fn manifest_at(root: &str, created_unix: u64,
-                   entries: &[(&str, u64, &str, EntryKind)]) -> Snapshot {
+    fn manifest_at(
+        root: &str,
+        created_unix: u64,
+        entries: &[(&str, u64, &str, EntryKind)],
+    ) -> Snapshot {
         let mut snap = manifest(entries);
         snap.root = PathBuf::from(root);
         snap.created_unix = created_unix;
@@ -460,14 +593,23 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         for (name, body) in [
             ("empty.json", "{}"),
-            ("report.json", r#"{"schema_version":3,"mode":"sandbox-installer","report":{"files":[]}}"#),
+            (
+                "report.json",
+                r#"{"schema_version":3,"mode":"sandbox-installer","report":{"files":[]}}"#,
+            ),
             ("noentries.json", r#"{"root":"/virtual"}"#),
         ] {
             let path = dir.join(name);
             std::fs::write(&path, body).unwrap();
             let error = Snapshot::load(&path).unwrap_err().to_string();
-            assert!(error.contains("is not a snapshot manifest"), "{name}: {error}");
-            assert!(error.contains(&path.display().to_string()), "{name}: {error}");
+            assert!(
+                error.contains("is not a snapshot manifest"),
+                "{name}: {error}"
+            );
+            assert!(
+                error.contains(&path.display().to_string()),
+                "{name}: {error}"
+            );
         }
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -498,13 +640,21 @@ mod tests {
     fn a_different_root_is_stated_by_the_delta_not_assumed_away() {
         // Roots are recorded relative and stay comparable after a tree is
         // moved, so this is a fact to report — not a reason to refuse.
-        let before = manifest_at("/virtual/install", 100, &[("a.txt", 1, "aa", EntryKind::File)]);
+        let before = manifest_at(
+            "/virtual/install",
+            100,
+            &[("a.txt", 1, "aa", EntryKind::File)],
+        );
         let after = manifest_at("/virtual", 200, &[("a.txt", 1, "aa", EntryKind::File)]);
         let issues = before.compare_issues(&after);
         assert_eq!(issues.len(), 1, "{issues:?}");
         assert_eq!(issues[0].stage, "root");
-        assert!(issues[0].message.contains("/virtual/install")
-            && issues[0].message.contains("/virtual"), "both sides are named: {}", issues[0].message);
+        assert!(
+            issues[0].message.contains("/virtual/install")
+                && issues[0].message.contains("/virtual"),
+            "both sides are named: {}",
+            issues[0].message
+        );
     }
 
     #[test]
@@ -531,7 +681,10 @@ mod tests {
         let snap = Snapshot::capture(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
         assert!(snap.entries.is_empty());
-        assert!(!snap.is_complete(), "an unreadable root must not look like an empty tree");
+        assert!(
+            !snap.is_complete(),
+            "an unreadable root must not look like an empty tree"
+        );
         assert_eq!(snap.issues[0].stage, "traverse");
         assert_eq!(snap.issues[0].path, ".");
     }
@@ -543,8 +696,7 @@ mod tests {
     fn make_unreadable(path: &Path) -> bool {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000)).unwrap();
-        let blocked = std::fs::read_dir(path).is_err()
-            || std::fs::File::open(path).is_err();
+        let blocked = std::fs::read_dir(path).is_err() || std::fs::File::open(path).is_err();
         if !blocked {
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
         }
@@ -569,9 +721,19 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
 
         assert!(!snap.entries.contains_key("locked/payload.exe"));
-        assert!(snap.entries.contains_key("visible.txt"), "the walk still covers what it can");
-        assert!(!snap.is_complete(), "absence from the manifest must not look like absence from disk");
-        let issue = snap.issues.iter().find(|i| i.path == "locked").expect("traversal issue");
+        assert!(
+            snap.entries.contains_key("visible.txt"),
+            "the walk still covers what it can"
+        );
+        assert!(
+            !snap.is_complete(),
+            "absence from the manifest must not look like absence from disk"
+        );
+        let issue = snap
+            .issues
+            .iter()
+            .find(|i| i.path == "locked")
+            .expect("traversal issue");
         assert_eq!(issue.stage, "traverse");
         assert!(!issue.message.is_empty());
     }
@@ -614,7 +776,14 @@ mod tests {
         std::fs::remove_file(dir.join("gone.txt")).unwrap();
         let after = Snapshot::capture(&dir).unwrap();
         let delta = before.diff(&after);
-        assert_eq!(delta.added.iter().map(|e| e.path.as_str()).collect::<Vec<_>>(), vec!["new.exe"]);
+        assert_eq!(
+            delta
+                .added
+                .iter()
+                .map(|e| e.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["new.exe"]
+        );
         assert_eq!(delta.modified.len(), 1);
         assert_eq!(delta.deleted.len(), 1);
         assert_eq!(delta.unchanged.len(), 1);

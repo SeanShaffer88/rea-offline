@@ -2,10 +2,16 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn unix_millis() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 pub fn unix_secs() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// Short unique id without external crates (time + pid + atomic counter,
@@ -31,11 +37,13 @@ pub fn path_to_slash_string(path: &Path) -> String {
 /// Parse a `SYSTEMTIME`-independent decimal integer flag value with a
 /// helpful message, e.g. `--timeout abc` → "must be a number of seconds".
 pub fn parse_number<T: std::str::FromStr>(text: &str, what: &str) -> crate::Result<T> {
-    text.trim().parse::<T>().map_err(|_| {
-        crate::Error::InvalidInput(format!("{what} must be a number, got '{text}'"))
-    })
+    text.trim()
+        .parse::<T>()
+        .map_err(|_| crate::Error::InvalidInput(format!("{what} must be a number, got '{text}'")))
 }
 
 pub fn extension_lower(path: &Path) -> String {
-    path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default()
+    path.extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default()
 }

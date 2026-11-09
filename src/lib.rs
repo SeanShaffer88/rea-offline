@@ -18,15 +18,15 @@ pub mod imphash_ordinals;
 pub mod json;
 pub mod md5;
 pub mod mdtable;
+pub mod rea_bridge;
+pub mod registry_sandbox;
 pub mod render;
 pub mod report;
-pub mod rea_bridge;
 pub mod rules;
-pub mod registry_sandbox;
 pub mod sha256;
 pub mod snapshot;
-pub mod universal_sandbox;
 pub mod testutil;
+pub mod universal_sandbox;
 pub mod util;
 
 #[cfg(test)]

@@ -52,7 +52,11 @@ impl Table {
     {
         let headers: Vec<String> = headers.into_iter().map(Into::into).collect();
         let align = vec![Align::Left; headers.len()];
-        Table { headers, align, rows: Vec::new() }
+        Table {
+            headers,
+            align,
+            rows: Vec::new(),
+        }
     }
 
     pub fn align(mut self, column: usize, align: Align) -> Table {
@@ -79,11 +83,17 @@ impl Table {
         self
     }
 
-    pub fn len(&self) -> usize { self.rows.len() }
-    pub fn is_empty(&self) -> bool { self.rows.is_empty() }
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
 
     pub fn render(&self) -> String {
-        if self.headers.is_empty() { return String::new(); }
+        if self.headers.is_empty() {
+            return String::new();
+        }
         let mut out = String::new();
         out.push('|');
         for h in &self.headers {
@@ -128,7 +138,11 @@ mod tests {
         assert_eq!(lines[2], "| a.exe | 1024 |");
         assert_eq!(lines[3], "| b\\|c.dll | 2048 |");
         for line in &lines {
-            assert_eq!(line.matches(" |").count(), 2, "column count drifted: {line}");
+            assert_eq!(
+                line.matches(" |").count(),
+                2,
+                "column count drifted: {line}"
+            );
         }
     }
 
@@ -155,7 +169,7 @@ mod tests {
     fn empty_table_renders_nothing() {
         assert_eq!(Table::default().render(), "");
         let mut t = Table::new(["only"]);
-        assert!(t.is_empty() && t.len() == 0);
+        assert!(t.is_empty() && t.is_empty());
         t.row(["v"]);
         assert_eq!(t.len(), 1);
     }

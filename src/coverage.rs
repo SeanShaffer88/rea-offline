@@ -76,7 +76,10 @@ fn integer(value: Option<&Value>) -> u64 {
 /// compared. Passed the typed issues because at this point the report has
 /// not been assembled yet; everything the envelope can say about itself is
 /// added later by [`record`].
-pub fn block(sources: Vec<(&str, Vec<ScanIssue>)>, deltas: Vec<(&str, &crate::snapshot::Delta)>) -> Value {
+pub fn block(
+    sources: Vec<(&str, Vec<ScanIssue>)>,
+    deltas: Vec<(&str, &crate::snapshot::Delta)>,
+) -> Value {
     let mut issues: Vec<Value> = Vec::new();
     let mut push = |area: &str, path: &str, stage: &str, message: &str| {
         issues.push(Issue::new(area, path, stage, message).to_json());
@@ -90,8 +93,12 @@ pub fn block(sources: Vec<(&str, Vec<ScanIssue>)>, deltas: Vec<(&str, &crate::sn
     for (area, delta) in &deltas {
         for entry in &delta.unverified {
             unverified_count += 1;
-            push(area, &entry.path, "compare",
-                 "contents could not be compared: unreadable in one or both snapshots");
+            push(
+                area,
+                &entry.path,
+                "compare",
+                "contents could not be compared: unreadable in one or both snapshots",
+            );
         }
     }
     assemble(issues, unverified_count)
@@ -157,8 +164,10 @@ pub fn recorded_failures(report: &Value) -> Vec<Issue> {
             "installer analysis",
             &installer_path(report),
             "analysis",
-            &format!("the installer could not be analyzed, so one of the three evidence \
-                      sets is missing from this report: {error}"),
+            &format!(
+                "the installer could not be analyzed, so one of the three evidence \
+                      sets is missing from this report: {error}"
+            ),
         ));
     }
     // A sandbox we could not clean is a machine still holding the installer's
@@ -171,7 +180,10 @@ pub fn recorded_failures(report: &Value) -> Vec<Issue> {
             &format!("the sandbox could not be cleaned up: {error}"),
         ));
     }
-    if let Some(purge) = report.get("purge").filter(|v| matches!(v, Value::Object(_))) {
+    if let Some(purge) = report
+        .get("purge")
+        .filter(|v| matches!(v, Value::Object(_)))
+    {
         if purge.get("verified_zero_residue") == Some(&Value::Bool(false)) {
             out.push(Issue::new(
                 "cleanup",
@@ -216,8 +228,10 @@ mod tests {
 
     #[test]
     fn a_report_with_no_recorded_failures_adds_nothing() {
-        let report = envelope(r#","purge":{"path":"/tmp/rea_sandbox_x","removed":true,
-            "verified_zero_residue":true}"#);
+        let report = envelope(
+            r#","purge":{"path":"/tmp/rea_sandbox_x","removed":true,
+            "verified_zero_residue":true}"#,
+        );
         assert!(recorded_failures(&report).is_empty());
         // A run that kept its sandbox on purpose did not fail to clean up.
         let kept = envelope(r#","sandbox_kept":true,"sandbox_path":"/tmp/rea_sandbox_x""#);
@@ -232,7 +246,11 @@ mod tests {
         assert_eq!(issues[0].area, "installer analysis");
         assert_eq!(issues[0].stage, "analysis");
         assert_eq!(issues[0].path, "setup.exe");
-        assert!(issues[0].message.contains("could not be analyzed"), "{}", issues[0].message);
+        assert!(
+            issues[0].message.contains("could not be analyzed"),
+            "{}",
+            issues[0].message
+        );
     }
 
     #[test]
@@ -242,11 +260,17 @@ mod tests {
         assert_eq!(issues.len(), 1, "{issues:?}");
         assert_eq!(issues[0].area, "cleanup");
         assert_eq!(issues[0].stage, "purge");
-        assert!(issues[0].message.contains("could not be cleaned up"), "{}", issues[0].message);
+        assert!(
+            issues[0].message.contains("could not be cleaned up"),
+            "{}",
+            issues[0].message
+        );
 
         // Deleted, but residue not confirmed: the run may still be on disk.
-        let unverified = envelope(r#","purge":{"path":"/tmp/rea_sandbox_x","removed":true,
-            "verified_zero_residue":false}"#);
+        let unverified = envelope(
+            r#","purge":{"path":"/tmp/rea_sandbox_x","removed":true,
+            "verified_zero_residue":false}"#,
+        );
         let issues = recorded_failures(&unverified);
         assert_eq!(issues.len(), 1, "{issues:?}");
         assert_eq!(issues[0].stage, "verify");
@@ -262,7 +286,7 @@ mod tests {
         let coverage = report.get("coverage").expect("coverage block");
         assert_eq!(coverage.get("complete"), Some(&Value::Bool(false)));
         assert_eq!(coverage.get("issue_count"), Some(&Value::num(1)));
-        assert_eq!(array(&coverage), 1);
+        assert_eq!(array(coverage), 1);
 
         // Recording the same failure again must not double-count: the block
         // is a summary of the envelope, not an append-only log, and the
@@ -270,8 +294,12 @@ mod tests {
         let again = recorded_failures(&report);
         record(&mut report, again);
         let coverage = report.get("coverage").expect("coverage block");
-        assert_eq!(coverage.get("issue_count"), Some(&Value::num(1)), "no duplicates: {coverage:?}");
-        assert_eq!(array(&coverage), 1);
+        assert_eq!(
+            coverage.get("issue_count"),
+            Some(&Value::num(1)),
+            "no duplicates: {coverage:?}"
+        );
+        assert_eq!(array(coverage), 1);
         assert_eq!(coverage.get("complete"), Some(&Value::Bool(false)));
 
         // An unblemished envelope has nothing to record, and recording
@@ -279,7 +307,10 @@ mod tests {
         let mut clean = envelope("");
         let failures = recorded_failures(&clean);
         record(&mut clean, failures);
-        assert!(clean.get("coverage").is_none(), "nothing recorded, nothing invented: {clean:?}");
+        assert!(
+            clean.get("coverage").is_none(),
+            "nothing recorded, nothing invented: {clean:?}"
+        );
         // An existing block is left exactly as it was.
         let mut complete = envelope("");
         if let Value::Object(map) = &mut complete {
@@ -301,7 +332,10 @@ mod tests {
         assert_eq!(empty.get("unverified_count"), Some(&Value::num(0)));
         assert_eq!(array(&empty), 0);
         let one = block(
-            vec![("drops analysis", vec![ScanIssue::new("a.exe", "hash", "unreadable")])],
+            vec![(
+                "drops analysis",
+                vec![ScanIssue::new("a.exe", "hash", "unreadable")],
+            )],
             vec![],
         );
         assert_eq!(one.get("complete"), Some(&Value::Bool(false)));

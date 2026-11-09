@@ -14,9 +14,9 @@
 //! Non-Windows builds keep the same lifecycle as a file-backed no-op so
 //! the workflow and tests run anywhere.
 
-use crate::Result;
 #[cfg(windows)]
 use crate::Error;
+use crate::Result;
 use std::path::{Path, PathBuf};
 
 /// How much of the registry a run could see.
@@ -67,13 +67,21 @@ impl RegistrySandbox {
         }
     }
 
-    pub fn hive_file(&self) -> &Path { &self.hive_file }
-    pub fn mount_name(&self) -> &str { &self.mount_name }
-    pub fn is_mounted(&self) -> bool { self.mounted }
+    pub fn hive_file(&self) -> &Path {
+        &self.hive_file
+    }
+    pub fn mount_name(&self) -> &str {
+        &self.mount_name
+    }
+    pub fn is_mounted(&self) -> bool {
+        self.mounted
+    }
 
     /// Create the hive backing file if absent, then mount it.
     pub fn mount(&mut self) -> Result<()> {
-        if self.mounted { return Ok(()); }
+        if self.mounted {
+            return Ok(());
+        }
         if !self.hive_file.exists() {
             // Placeholder: replaced by a real hive by tools that seed one
             // (e.g. `reg save`); RegLoadKeyW rejects non-hive files and
@@ -110,7 +118,9 @@ impl RegistrySandbox {
     }
 
     pub fn unmount(&mut self) -> Result<()> {
-        if !self.mounted { return Ok(()); }
+        if !self.mounted {
+            return Ok(());
+        }
         #[cfg(windows)]
         {
             win::unload(&self.mount_name)?;
@@ -148,14 +158,24 @@ mod win {
         let sub = wide(std::ffi::OsStr::new(mount_name));
         let file = wide(hive_file.as_os_str());
         let rc = unsafe { RegLoadKeyW(HKEY_USERS, sub.as_ptr(), file.as_ptr()) };
-        if rc != 0 { return Err(Error::Registry { api: "RegLoadKeyW", code: rc }); }
+        if rc != 0 {
+            return Err(Error::Registry {
+                api: "RegLoadKeyW",
+                code: rc,
+            });
+        }
         Ok(())
     }
 
     pub fn unload(mount_name: &str) -> Result<()> {
         let sub = wide(std::ffi::OsStr::new(mount_name));
         let rc = unsafe { RegUnLoadKeyW(HKEY_USERS, sub.as_ptr()) };
-        if rc != 0 { return Err(Error::Registry { api: "RegUnLoadKeyW", code: rc }); }
+        if rc != 0 {
+            return Err(Error::Registry {
+                api: "RegUnLoadKeyW",
+                code: rc,
+            });
+        }
         Ok(())
     }
 }
@@ -185,7 +205,10 @@ mod tests {
         }
         // A loaded hive holds its file open: unmount before cleanup, or
         // Windows refuses the delete (ERROR_SHARING_VIOLATION).
-        let _ = registry.unmount();
+        if registry.is_mounted() {
+            registry.unmount().unwrap();
+            assert!(!registry.is_mounted());
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -196,9 +219,16 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("rea_offline_reg_{}", crate::util::new_id()));
         std::fs::create_dir_all(&dir).unwrap();
         let mut registry = RegistrySandbox::new(&dir, "test");
-        if registry.mount().is_ok() && registry.is_mounted() {
-            registry.unmount().unwrap();
-            assert!(!registry.is_mounted());
+        match registry.mount() {
+            Ok(()) => {
+                assert!(registry.is_mounted());
+                registry.unmount().unwrap();
+                assert!(!registry.is_mounted());
+            }
+            Err(_) => match registry.status() {
+                RegistryStatus::Unavailable(reason) => assert!(!reason.is_empty()),
+                status => panic!("a failed mount must report unavailable, got {status:?}"),
+            },
         }
         std::fs::remove_dir_all(&dir).unwrap();
     }

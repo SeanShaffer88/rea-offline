@@ -135,17 +135,48 @@ struct CommandSpec {
 /// Options are command-specific: accepting (and then ignoring) a typo or an
 /// option belonging to another command makes a failed inspection look successful.
 fn command_spec(command: &str) -> Option<CommandSpec> {
-    let spec = |value_flags, bool_flags, positional, installer_args| Some(CommandSpec {
-        value_flags, bool_flags, positional, installer_args,
-    });
+    let spec = |value_flags, bool_flags, positional, installer_args| {
+        Some(CommandSpec {
+            value_flags,
+            bool_flags,
+            positional,
+            installer_args,
+        })
+    };
     match command {
-        "scan" => spec(&["output", "rea", "format", "fail-on"], &["quiet", "fail-on-incomplete"], 1, false),
-        "sandbox" => spec(
-            &["output", "rea", "format", "fail-on", "timeout", "memory-mb", "max-processes", "sandbox-root"],
-            &["quiet", "keep", "fail-on-incomplete"], 1, true,
+        "scan" => spec(
+            &["output", "rea", "format", "fail-on"],
+            &["quiet", "fail-on-incomplete"],
+            1,
+            false,
         ),
-        "report" => spec(&["output", "format", "fail-on"], &["quiet", "fail-on-incomplete"], 1, false),
-        "gui" => spec(&["output", "rea", "port"], &["quiet", "no-open", "from-report"], 1, false),
+        "sandbox" => spec(
+            &[
+                "output",
+                "rea",
+                "format",
+                "fail-on",
+                "timeout",
+                "memory-mb",
+                "max-processes",
+                "sandbox-root",
+            ],
+            &["quiet", "keep", "fail-on-incomplete"],
+            1,
+            true,
+        ),
+        "report" => spec(
+            &["output", "format", "fail-on"],
+            &["quiet", "fail-on-incomplete"],
+            1,
+            false,
+        ),
+        "gui" => spec(
+            &["output", "rea", "port"],
+            &["quiet", "no-open", "from-report"],
+            1,
+            false,
+        ),
         "snapshot" => spec(&["output"], &["quiet", "fail-on-incomplete"], 1, false),
         "diff" => spec(&["output"], &["quiet", "fail-on-incomplete"], 2, false),
         "purge" => spec(&["output"], &["quiet", "force"], 1, false),
@@ -156,10 +187,14 @@ fn command_spec(command: &str) -> Option<CommandSpec> {
 }
 
 fn parse(command: &str, args: &[String]) -> rea_offline::Result<Parsed> {
-    let spec = command_spec(command).ok_or_else(|| rea_offline::Error::InvalidInput(format!(
-        "unknown command '{command}' (see --help)"
-    )))?;
-    let mut p = Parsed { positional: Vec::new(), flags: Vec::new(), rest: Vec::new() };
+    let spec = command_spec(command).ok_or_else(|| {
+        rea_offline::Error::InvalidInput(format!("unknown command '{command}' (see --help)"))
+    })?;
+    let mut p = Parsed {
+        positional: Vec::new(),
+        flags: Vec::new(),
+        rest: Vec::new(),
+    };
     let mut i = 0;
     while i < args.len() {
         let a = &args[i];
@@ -190,9 +225,11 @@ fn parse(command: &str, args: &[String]) -> rea_offline::Result<Parsed> {
                     Some(value) => value.to_string(),
                     None => {
                         let next = args.get(i + 1).filter(|v| !v.starts_with("--"));
-                        let value = next.ok_or_else(|| rea_offline::Error::InvalidInput(format!(
+                        let value = next.ok_or_else(|| {
+                            rea_offline::Error::InvalidInput(format!(
                             "missing value for --{key} (use --{key}=<value> or --{key} <value>)"
-                        )))?;
+                        ))
+                        })?;
                         i += 1;
                         value.clone()
                     }
@@ -223,7 +260,8 @@ fn parse(command: &str, args: &[String]) -> rea_offline::Result<Parsed> {
     if p.positional.len() != spec.positional {
         return Err(rea_offline::Error::InvalidInput(format!(
             "{command} expects {} positional argument(s), got {} (see --help)",
-            spec.positional, p.positional.len()
+            spec.positional,
+            p.positional.len()
         )));
     }
     Ok(p)
@@ -231,7 +269,10 @@ fn parse(command: &str, args: &[String]) -> rea_offline::Result<Parsed> {
 
 impl Parsed {
     fn get(&self, name: &str) -> Option<&str> {
-        self.flags.iter().find(|(k, _)| k == name).and_then(|(_, v)| v.as_deref())
+        self.flags
+            .iter()
+            .find(|(k, _)| k == name)
+            .and_then(|(_, v)| v.as_deref())
     }
     fn has(&self, name: &str) -> bool {
         self.flags.iter().any(|(k, _)| k == name)
@@ -268,7 +309,9 @@ fn emit(json: &Value, p: &Parsed, format: Format) -> rea_offline::Result<()> {
 /// coverage record is still in the report either way.
 fn gate(json: &Value, p: &Parsed) -> rea_offline::Result<u8> {
     let verdict_code = gate_verdict(json, p)?;
-    if verdict_code != 0 { return Ok(verdict_code); }
+    if verdict_code != 0 {
+        return Ok(verdict_code);
+    }
     gate_coverage(json, p)
 }
 
@@ -280,7 +323,9 @@ fn coverage_incomplete(json: &Value) -> Option<bool> {
         // report is validated on load, but a snapshot or a diff document is
         // not, and a boolean that disagrees with its own evidence is not
         // evidence either way.
-        let Some(Value::Array(issues)) = coverage.get("issues") else { return None };
+        let Some(Value::Array(issues)) = coverage.get("issues") else {
+            return None;
+        };
         let incomplete = !issues.is_empty();
         return match coverage.get("complete").and_then(Value::as_bool) {
             // Claims it saw everything while listing what it never saw.
@@ -299,32 +344,42 @@ fn coverage_incomplete(json: &Value) -> Option<bool> {
     if !bodies.iter().any(|body| body.get("scan_issues").is_some()) {
         return None;
     }
-    Some(bodies.iter().any(|body| {
-        matches!(body.get("scan_issues"), Some(Value::Array(items)) if !items.is_empty())
-    }))
+    Some(bodies.iter().any(
+        |body| matches!(body.get("scan_issues"), Some(Value::Array(items)) if !items.is_empty()),
+    ))
 }
 
 /// Exit code for `--fail-on-incomplete`: 3 when the evidence is partial.
 fn gate_coverage(json: &Value, p: &Parsed) -> rea_offline::Result<u8> {
-    if !p.has("fail-on-incomplete") { return Ok(0); }
-    let incomplete = coverage_incomplete(json).ok_or_else(|| rea_offline::Error::InvalidInput(
-        if json.get("coverage").is_some() {
+    if !p.has("fail-on-incomplete") {
+        return Ok(0);
+    }
+    let incomplete = coverage_incomplete(json).ok_or_else(|| {
+        rea_offline::Error::InvalidInput(if json.get("coverage").is_some() {
             "--fail-on-incomplete requires a coverage record that agrees with the issues \
-             it lists; this one does not".into()
+             it lists; this one does not"
+                .into()
         } else {
-            "--fail-on-incomplete requires a report that records coverage; this archive does not".into()
-        }
-    ))?;
-    if !incomplete { return Ok(0); }
+            "--fail-on-incomplete requires a report that records coverage; this archive does not"
+                .into()
+        })
+    })?;
+    if !incomplete {
+        return Ok(0);
+    }
     if !p.has("quiet") {
-        eprintln!("[rea-offline] --fail-on-incomplete: inspection coverage is incomplete — exiting 3");
+        eprintln!(
+            "[rea-offline] --fail-on-incomplete: inspection coverage is incomplete — exiting 3"
+        );
     }
     Ok(3)
 }
 
 /// Exit code for `--fail-on`: 2 when the report's verdict reaches the level.
 fn gate_verdict(json: &Value, p: &Parsed) -> rea_offline::Result<u8> {
-    let Some(level) = p.get("fail-on") else { return Ok(0) };
+    let Some(level) = p.get("fail-on") else {
+        return Ok(0);
+    };
     let threshold = severity_parse(level)?;
     let verdict = json
         .get("verdict")
@@ -334,12 +389,12 @@ fn gate_verdict(json: &Value, p: &Parsed) -> rea_offline::Result<u8> {
                 .and_then(|r| r.get("verdict"))
                 .and_then(Value::as_str)
         })
-        .ok_or_else(|| rea_offline::Error::InvalidInput(
-            "--fail-on requires a report with a verdict".into()
-        ))?;
-    let reached = severity_parse(verdict).map_err(|_| rea_offline::Error::InvalidInput(format!(
-        "report has an invalid verdict '{verdict}'"
-    )))?;
+        .ok_or_else(|| {
+            rea_offline::Error::InvalidInput("--fail-on requires a report with a verdict".into())
+        })?;
+    let reached = severity_parse(verdict).map_err(|_| {
+        rea_offline::Error::InvalidInput(format!("report has an invalid verdict '{verdict}'"))
+    })?;
     if rank(reached) >= rank(threshold) {
         if !p.has("quiet") {
             eprintln!("[rea-offline] --fail-on {level}: verdict is {verdict} — exiting 2");
@@ -389,12 +444,15 @@ fn run(args: &[String]) -> rea_offline::Result<u8> {
         "sandbox" => {
             let mut config = SandboxConfig::default();
             if let Some(v) = p.get("timeout") {
-                config.timeout = Duration::from_secs(rea_offline::util::parse_number(v, "--timeout")?);
+                config.timeout =
+                    Duration::from_secs(rea_offline::util::parse_number(v, "--timeout")?);
             }
             if let Some(v) = p.get("memory-mb") {
                 config.memory_limit_mb = rea_offline::util::parse_number(v, "--memory-mb")?;
                 if config.memory_limit_mb == 0 {
-                    return Err(rea_offline::Error::InvalidInput("--memory-mb must be greater than zero".into()));
+                    return Err(rea_offline::Error::InvalidInput(
+                        "--memory-mb must be greater than zero".into(),
+                    ));
                 }
             }
             if let Some(v) = p.get("max-processes") {
@@ -452,7 +510,9 @@ fn run(args: &[String]) -> rea_offline::Result<u8> {
                 None => 8787u16,
             };
             if port == 0 {
-                return Err(rea_offline::Error::InvalidInput("--port must be between 1 and 65535".into()));
+                return Err(rea_offline::Error::InvalidInput(
+                    "--port must be between 1 and 65535".into(),
+                ));
             }
             if !p.has("no-open") {
                 open_browser(&format!("http://127.0.0.1:{port}/"));
@@ -503,7 +563,11 @@ mod tests {
 
     #[test]
     fn parses_positional_and_flags() {
-        let p = parse("scan", &args(&["a.exe", "--output", "r.json", "--format=text", "--quiet"])).unwrap();
+        let p = parse(
+            "scan",
+            &args(&["a.exe", "--output", "r.json", "--format=text", "--quiet"]),
+        )
+        .unwrap();
         assert_eq!(p.positional, vec!["a.exe".to_string()]);
         assert_eq!(p.get("output"), Some("r.json"));
         assert_eq!(p.get("format"), Some("text"));
@@ -513,7 +577,11 @@ mod tests {
 
     #[test]
     fn double_dash_passes_installer_args_untouched() {
-        let p = parse("sandbox", &args(&["setup.msi", "--timeout", "60", "--", "/quiet", "/norestart"])).unwrap();
+        let p = parse(
+            "sandbox",
+            &args(&["setup.msi", "--timeout", "60", "--", "/quiet", "/norestart"]),
+        )
+        .unwrap();
         assert_eq!(p.get("timeout"), Some("60"));
         assert_eq!(p.rest, vec!["/quiet".to_string(), "/norestart".to_string()]);
         assert!(p.positional.contains(&"setup.msi".to_string()));
@@ -538,7 +606,11 @@ mod tests {
                 {"area":"after snapshot","path":"locked","stage":"traverse","message":"denied"}]}}"#,
         )
         .unwrap();
-        assert_eq!(coverage_incomplete(&lying), None, "a contradiction is not a coverage record");
+        assert_eq!(
+            coverage_incomplete(&lying),
+            None,
+            "a contradiction is not a coverage record"
+        );
 
         // The same document, honestly labelled, gates as incomplete.
         let honest = rea_offline::json::parse(
@@ -555,15 +627,24 @@ mod tests {
     #[test]
     fn fail_on_incomplete_gates_on_coverage_not_on_risk() {
         let complete = rea_offline::json::parse(
-            r#"{"verdict":"low","coverage":{"complete":true,"issue_count":0,"issues":[]}}"#
-        ).unwrap();
+            r#"{"verdict":"low","coverage":{"complete":true,"issue_count":0,"issues":[]}}"#,
+        )
+        .unwrap();
         let blind = rea_offline::json::parse(
             r#"{"verdict":"low","coverage":{"complete":false,"issue_count":1,"issues":
                 [{"area":"sandbox snapshot (after)","path":"locked","stage":"traverse","message":"denied"}]}}"#
         ).unwrap();
         let p = parse("report", &args(&["r.json", "--fail-on-incomplete"])).unwrap();
-        assert_eq!(gate(&complete, &p).unwrap(), 0, "a calm, fully observed run passes");
-        assert_eq!(gate(&blind, &p).unwrap(), 3, "a calm but blind run must not pass");
+        assert_eq!(
+            gate(&complete, &p).unwrap(),
+            0,
+            "a calm, fully observed run passes"
+        );
+        assert_eq!(
+            gate(&blind, &p).unwrap(),
+            3,
+            "a calm but blind run must not pass"
+        );
 
         // Without the flag, coverage never changes the exit code.
         let plain = parse("report", &args(&["r.json"])).unwrap();
@@ -574,22 +655,29 @@ mod tests {
     fn the_verdict_gate_wins_when_both_gates_trip() {
         let blind_and_hot = rea_offline::json::parse(
             r#"{"verdict":"critical","coverage":{"complete":false,"issue_count":1,"issues":
-                [{"path":"locked","stage":"traverse","message":"denied"}]}}"#
-        ).unwrap();
-        let p = parse("report", &args(&["r.json", "--fail-on", "high", "--fail-on-incomplete"])).unwrap();
+                [{"path":"locked","stage":"traverse","message":"denied"}]}}"#,
+        )
+        .unwrap();
+        let p = parse(
+            "report",
+            &args(&["r.json", "--fail-on", "high", "--fail-on-incomplete"]),
+        )
+        .unwrap();
         assert_eq!(gate(&blind_and_hot, &p).unwrap(), 2);
     }
 
     #[test]
     fn coverage_gate_refuses_archives_that_never_recorded_coverage() {
         // No coverage block and no scan_issues: "unknown" is not "complete".
-        let legacy = rea_offline::json::parse(r#"{"verdict":"low","report":{"files":[]}}"#).unwrap();
+        let legacy =
+            rea_offline::json::parse(r#"{"verdict":"low","report":{"files":[]}}"#).unwrap();
         let p = parse("report", &args(&["r.json", "--fail-on-incomplete"])).unwrap();
         let error = gate(&legacy, &p).unwrap_err().to_string();
         assert!(error.contains("does not"), "{error}");
 
         // Older archives that did record analysis limits remain gateable.
-        let old_clean = rea_offline::json::parse(r#"{"verdict":"low","report":{"scan_issues":[]}}"#).unwrap();
+        let old_clean =
+            rea_offline::json::parse(r#"{"verdict":"low","report":{"scan_issues":[]}}"#).unwrap();
         assert_eq!(gate(&old_clean, &p).unwrap(), 0);
         let old_blind = rea_offline::json::parse(
             r#"{"verdict":"low","report":{"scan_issues":[{"path":"a","stage":"hash","message":"m"}]}}"#
@@ -605,7 +693,10 @@ mod tests {
         assert_eq!(gate(&report, &pass).unwrap(), 0);
         assert_eq!(gate(&report, &fail).unwrap(), 2);
         // No --fail-on → never gates.
-        assert_eq!(gate(&report, &parse("scan", &args(&["a.exe"])).unwrap()).unwrap(), 0);
+        assert_eq!(
+            gate(&report, &parse("scan", &args(&["a.exe"])).unwrap()).unwrap(),
+            0
+        );
     }
 
     #[test]
@@ -637,11 +728,26 @@ mod tests {
 
     #[test]
     fn parser_keeps_installer_arguments_after_double_dash_untouched() {
-        let p = parse("sandbox", &args(&[
-            "setup.exe", "--timeout", "60", "--", "--output", "installer.log", "--quiet", "--", "x"
-        ])).unwrap();
+        let p = parse(
+            "sandbox",
+            &args(&[
+                "setup.exe",
+                "--timeout",
+                "60",
+                "--",
+                "--output",
+                "installer.log",
+                "--quiet",
+                "--",
+                "x",
+            ]),
+        )
+        .unwrap();
         assert_eq!(p.get("timeout"), Some("60"));
-        assert_eq!(p.rest, vec!["--output", "installer.log", "--quiet", "--", "x"]);
+        assert_eq!(
+            p.rest,
+            vec!["--output", "installer.log", "--quiet", "--", "x"]
+        );
         assert_eq!(p.positional, vec!["setup.exe"]);
     }
 
@@ -653,5 +759,4 @@ mod tests {
         assert!(gate(&missing, &p).is_err());
         assert!(gate(&invalid, &p).is_err());
     }
-
 }

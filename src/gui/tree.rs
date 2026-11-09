@@ -117,10 +117,12 @@ impl DirNode {
         self.size = size;
         self.file_count = count;
         self.worst = Tint::from_rank(worst);
-        self.risk = self.risk.max(
-            self.children.iter().map(|c| c.risk).max().unwrap_or(0),
-        );
-        self.risk = self.risk.max(self.files.iter().map(|f| f.risk).max().unwrap_or(0));
+        self.risk = self
+            .risk
+            .max(self.children.iter().map(|c| c.risk).max().unwrap_or(0));
+        self.risk = self
+            .risk
+            .max(self.files.iter().map(|f| f.risk).max().unwrap_or(0));
         // Deterministic display order: biggest first, then name.
         self.children
             .sort_by(|a, b| b.size.cmp(&a.size).then(a.name.cmp(&b.name)));
@@ -251,7 +253,9 @@ fn subtree_has_match(node: &DirNode, needle: &str, view: &View) -> bool {
     if node.files.iter().any(|f| passes(f, needle, view)) {
         return true;
     }
-    node.children.iter().any(|c| subtree_has_match(c, needle, view))
+    node.children
+        .iter()
+        .any(|c| subtree_has_match(c, needle, view))
 }
 
 fn walk(
@@ -277,7 +281,11 @@ fn walk(
         format!("{visible_prefix}/{}", node.name)
     };
     let self_report = if report_prefix.is_empty() {
-        if depth == 0 { String::new() } else { node.name.clone() }
+        if depth == 0 {
+            String::new()
+        } else {
+            node.name.clone()
+        }
     } else if node.name.is_empty() {
         report_prefix.to_string()
     } else {
@@ -289,8 +297,11 @@ fn walk(
     let expanded = view.expanded.iter().any(|e| e == &self_path)
         || (depth == 0 && view.expanded.iter().any(|e| e.is_empty()))
         || (!needle.is_empty() && subtree_has_match(node, needle, view));
-    let matching_files: Vec<&Artifact> =
-        node.files.iter().filter(|f| passes(f, needle, view)).collect();
+    let matching_files: Vec<&Artifact> = node
+        .files
+        .iter()
+        .filter(|f| passes(f, needle, view))
+        .collect();
     let visible_children: Vec<&DirNode> = node
         .children
         .iter()
@@ -303,7 +314,11 @@ fn walk(
     }
     out.push(Row {
         depth,
-        name: if node.name.is_empty() { visible_prefix.to_string() } else { node.name.clone() },
+        name: if node.name.is_empty() {
+            visible_prefix.to_string()
+        } else {
+            node.name.clone()
+        },
         path: self_path.clone(),
         size: node.size,
         file_count: node.file_count,
@@ -317,12 +332,25 @@ fn walk(
         return;
     }
     for child in visible_children {
-        walk(child, &self_path, &self_report, depth + 1, needle, view, out);
+        walk(
+            child,
+            &self_path,
+            &self_report,
+            depth + 1,
+            needle,
+            view,
+            out,
+        );
     }
     for file in matching_files {
         out.push(Row {
             depth: depth + 1,
-            name: file.path.rsplit('/').next().unwrap_or(&file.path).to_string(),
+            name: file
+                .path
+                .rsplit('/')
+                .next()
+                .unwrap_or(&file.path)
+                .to_string(),
             path: if self_report.is_empty() {
                 file.path.clone()
             } else {
@@ -350,14 +378,21 @@ fn sort_rows(rows: Vec<Row>, column: SortColumn, descending: bool) -> Vec<Row> {
     }
     let compare = |a: &Row, b: &Row| {
         let ordering = match column {
-            SortColumn::Name => a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()),
+            SortColumn::Name => a
+                .name
+                .to_ascii_lowercase()
+                .cmp(&b.name.to_ascii_lowercase()),
             SortColumn::Size => a.size.cmp(&b.size),
             SortColumn::Risk => a.risk.cmp(&b.risk),
             SortColumn::Files => a.file_count.cmp(&b.file_count),
             SortColumn::Format => a.format.cmp(&b.format),
         }
         .then(a.name.cmp(&b.name));
-        if descending { ordering.reverse() } else { ordering }
+        if descending {
+            ordering.reverse()
+        } else {
+            ordering
+        }
     };
     fn span_len(rows: &[Row]) -> usize {
         // rows[0] owns every following row that is deeper than it.
@@ -389,7 +424,10 @@ fn sort_rows(rows: Vec<Row>, column: SortColumn, descending: bool) -> Vec<Row> {
 
 /// Build the size tree from a report's `report.files` array.
 pub fn from_report(report: &Value) -> DirNode {
-    let mut root = DirNode { name: String::new(), ..Default::default() };
+    let mut root = DirNode {
+        name: String::new(),
+        ..Default::default()
+    };
     // file path → (artifact)
     let mut artifacts: Vec<Artifact> = Vec::new();
     // Findings by file, so each artifact knows why it is coloured.
@@ -397,13 +435,30 @@ pub fn from_report(report: &Value) -> DirNode {
     if let Some(rules) = report.get("rules") {
         if let Some(Value::Array(items)) = rules.get("findings") {
             for item in items {
-                let file = item.get("file").and_then(Value::as_str).unwrap_or("").to_string();
-                let rule = item.get("rule").and_then(Value::as_str).unwrap_or("").to_string();
-                let title = item.get("title").and_then(Value::as_str).unwrap_or("").to_string();
+                let file = item
+                    .get("file")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let rule = item
+                    .get("rule")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let title = item
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
                 let severity = severity_from(
-                    item.get("severity").and_then(Value::as_str).unwrap_or("info"),
+                    item.get("severity")
+                        .and_then(Value::as_str)
+                        .unwrap_or("info"),
                 );
-                findings_by_file.entry(file).or_default().push((rule, title, severity));
+                findings_by_file
+                    .entry(file)
+                    .or_default()
+                    .push((rule, title, severity));
             }
         }
     }
@@ -418,7 +473,11 @@ pub fn from_report(report: &Value) -> DirNode {
     }
     if let Some(Value::Array(files)) = report.get("files") {
         for file in files {
-            let path = file.get("path").and_then(Value::as_str).unwrap_or("").to_string();
+            let path = file
+                .get("path")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
             if path.is_empty() {
                 continue;
             }
@@ -433,10 +492,25 @@ pub fn from_report(report: &Value) -> DirNode {
             artifacts.push(Artifact {
                 path,
                 size,
-                sha256: file.get("sha256").and_then(Value::as_str).unwrap_or("").to_string(),
-                md5: file.get("md5").and_then(Value::as_str).unwrap_or("").to_string(),
-                imphash: file.get("imphash").and_then(Value::as_str).map(|s| s.to_string()),
-                format: file.get("format").and_then(Value::as_str).unwrap_or("").to_string(),
+                sha256: file
+                    .get("sha256")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                md5: file
+                    .get("md5")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                imphash: file
+                    .get("imphash")
+                    .and_then(Value::as_str)
+                    .map(|s| s.to_string()),
+                format: file
+                    .get("format")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
                 risk: match file.get("risk") {
                     Some(Value::Number(x)) => *x as u64,
                     _ => tint_score(tint),
@@ -489,7 +563,10 @@ fn insert(node: &mut DirNode, artifact: &Artifact) {
         let position = match cursor.children.iter().position(|c| c.name == component) {
             Some(index) => index,
             None => {
-                cursor.children.push(DirNode { name: component.to_string(), ..Default::default() });
+                cursor.children.push(DirNode {
+                    name: component.to_string(),
+                    ..Default::default()
+                });
                 cursor.children.len() - 1
             }
         };
@@ -520,6 +597,14 @@ pub struct Tile {
     pub is_dir: bool,
     /// Nesting level: 0 = top-level tile.
     pub depth: usize,
+}
+
+#[derive(Clone, Copy)]
+struct Rect {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
 }
 
 /// Squarified treemap of `root`, sized to `width` x `height`.
@@ -574,7 +659,18 @@ pub fn treemap(root: &DirNode, width: f64, height: f64, view: &View, min_side: f
     if survivors == 0 {
         return out;
     }
-    layout_items(&mut items, 0.0, 0.0, width, height, 0, min_side, &mut out);
+    layout_items(
+        &mut items,
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            width,
+            height,
+        },
+        0,
+        min_side,
+        &mut out,
+    );
     out
 }
 
@@ -628,14 +724,17 @@ fn collect_files<'a>(
 
 fn layout_items<'a>(
     items: &mut Vec<Item<'a>>,
-    x: f64,
-    y: f64,
-    width: f64,
-    height: f64,
+    bounds: Rect,
     depth: usize,
     min_side: f64,
     out: &mut Vec<Tile>,
 ) {
+    let Rect {
+        x,
+        y,
+        width,
+        height,
+    } = bounds;
     if items.is_empty() || width <= 0.0 || height <= 0.0 {
         return;
     }
@@ -670,11 +769,19 @@ fn layout_items<'a>(
         }
         let row_area: f64 = areas[index..row_end].iter().sum();
         let horizontal = cw >= ch;
-        let row_thickness = if shortest > 0.0 { row_area / shortest } else { 0.0 };
+        let row_thickness = if shortest > 0.0 {
+            row_area / shortest
+        } else {
+            0.0
+        };
         let mut offset2 = 0.0;
         for slot in index..row_end {
             let area = areas[slot];
-            let side = if row_thickness > 0.0 { area / row_thickness } else { 0.0 };
+            let side = if row_thickness > 0.0 {
+                area / row_thickness
+            } else {
+                0.0
+            };
             let (tx, ty, tw, th) = if horizontal {
                 (cx, cy + offset2, row_thickness, side)
             } else {
@@ -723,10 +830,12 @@ fn layout_items<'a>(
                     // slightly inset, reading as "inside" the parent.
                     layout_items(
                         &mut children,
-                        tx + 1.0,
-                        ty + 1.0,
-                        (tw - 2.0).max(0.0),
-                        (th - 2.0).max(0.0),
+                        Rect {
+                            x: tx + 1.0,
+                            y: ty + 1.0,
+                            width: (tw - 2.0).max(0.0),
+                            height: (th - 2.0).max(0.0),
+                        },
                         depth + 1,
                         min_side,
                         out,
@@ -743,7 +852,6 @@ fn layout_items<'a>(
         }
         index = row_end;
     }
-    let _ = (x, y);
 }
 
 /// Worst (largest) aspect ratio of a candidate row. Lower is squarer.
@@ -780,7 +888,11 @@ pub fn details_text(root: &DirNode, path: &str) -> String {
     out.push_str(&format!("Path:    {path}\n"));
     out.push_str(&format!("Size:    {} bytes\n", artifact.size));
     out.push_str(&format!("Format:  {}\n", artifact.format));
-    out.push_str(&format!("Risk:    {} ({})\n", artifact.risk, artifact.tint.as_str()));
+    out.push_str(&format!(
+        "Risk:    {} ({})\n",
+        artifact.risk,
+        artifact.tint.as_str()
+    ));
     out.push_str(&format!("SHA-256: {}\n", artifact.sha256));
     out.push_str(&format!("MD5:     {}\n", artifact.md5));
     if let Some(imphash) = &artifact.imphash {
@@ -856,20 +968,29 @@ mod tests {
     #[test]
     fn rows_follow_expansion_and_sorting() {
         let tree = from_report(&sample_report());
-        let mut view = View::default();
-        view.expanded = vec![String::new()];
+        let mut view = View {
+            expanded: vec![String::new()],
+            ..View::default()
+        };
         let collapsed = rows(&tree, &view);
         // Root + its immediate children/files only.
         assert!(collapsed.iter().all(|r| r.depth <= 1), "{collapsed:?}");
 
         view.expanded = vec![String::new(), "sub".to_string()];
         let expanded = rows(&tree, &view);
-        assert!(expanded.iter().any(|r| r.path == "sub/b.exe"), "{expanded:?}");
+        assert!(
+            expanded.iter().any(|r| r.path == "sub/b.exe"),
+            "{expanded:?}"
+        );
 
         view.sort = SortColumn::Name;
         view.descending = false;
         let by_name = rows(&tree, &view);
-        let names: Vec<&str> = by_name.iter().filter(|r| r.depth == 1).map(|r| r.name.as_str()).collect();
+        let names: Vec<&str> = by_name
+            .iter()
+            .filter(|r| r.depth == 1)
+            .map(|r| r.name.as_str())
+            .collect();
         let mut sorted = names.clone();
         sorted.sort();
         assert_eq!(names, sorted, "ascending name order");
@@ -878,15 +999,23 @@ mod tests {
     #[test]
     fn filters_hide_clean_files_and_empty_folders() {
         let tree = from_report(&sample_report());
-        let mut view = View::default();
-        view.expanded = vec![String::new(), "sub".to_string(), "sub/deep".to_string()];
-        view.hide_clean = true;
+        let mut view = View {
+            expanded: vec![String::new(), "sub".to_string(), "sub/deep".to_string()],
+            hide_clean: true,
+            ..View::default()
+        };
         let visible = rows(&tree, &view);
         let paths: Vec<&str> = visible.iter().map(|r| r.path.as_str()).collect();
         assert!(paths.contains(&"sub/b.exe"));
-        assert!(!paths.contains(&"sub/d_clean.txt"), "clean file hidden: {paths:?}");
+        assert!(
+            !paths.contains(&"sub/d_clean.txt"),
+            "clean file hidden: {paths:?}"
+        );
         assert!(!paths.contains(&"sub/deep/c.dat"));
-        assert!(!paths.contains(&"sub/deep"), "folder with nothing left disappears");
+        assert!(
+            !paths.contains(&"sub/deep"),
+            "folder with nothing left disappears"
+        );
 
         view.filter = "clean".to_string();
         view.hide_clean = false;
@@ -932,7 +1061,10 @@ mod tests {
         let tiles = treemap(&tree, 500.0, 500.0, &view, 4.0);
         let sub = tiles.iter().find(|t| t.path == "sub" && t.depth == 0);
         if let Some(sub) = sub {
-            for child in tiles.iter().filter(|t| t.depth == 1 && t.path.starts_with("sub/")) {
+            for child in tiles
+                .iter()
+                .filter(|t| t.depth == 1 && t.path.starts_with("sub/"))
+            {
                 assert!(child.x >= sub.x - 0.01 && child.y >= sub.y - 0.01);
                 assert!(child.x + child.w <= sub.x + sub.w + 0.01);
                 assert!(child.y + child.h <= sub.y + sub.h + 0.01);
@@ -952,7 +1084,14 @@ mod tests {
 
     #[test]
     fn tint_colours_are_distinct_and_readable() {
-        let tints = [Tint::Clean, Tint::Info, Tint::Low, Tint::Medium, Tint::High, Tint::Critical];
+        let tints = [
+            Tint::Clean,
+            Tint::Info,
+            Tint::Low,
+            Tint::Medium,
+            Tint::High,
+            Tint::Critical,
+        ];
         let colours: Vec<u32> = tints.iter().map(|t| t.rgb()).collect();
         let mut unique = colours.clone();
         unique.sort_unstable();
