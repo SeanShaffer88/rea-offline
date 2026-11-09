@@ -600,26 +600,36 @@ pub fn page_html(page: &Page, query: &str) -> String {
 fn compact_summary(page: &Page) -> String {
     let text = page.summary_text();
     // The footer gets the interesting half of the text report, not the whole.
-    let mut lines: Vec<String> = text.lines().take(18).map(str::to_string).collect();
-    if text.lines().count() > lines.len() {
-        lines.push("…".into());
-    }
     // Never let the compact view turn an incomplete scan into a clean-looking
     // summary: coverage warnings are appended even when the cutoff hit first.
+    let mut lines: Vec<String> = text.lines().take(18).map(str::to_string).collect();
+    if text.lines().count() > lines.len() { lines.push("…".into()); }
     if let Some(issues) = page.report.get("coverage").and_then(|c| c.get("issues")) {
         let count = array(Some(issues)).len();
         if count > 0 {
             let heading = format!("coverage: INCOMPLETE ({count} issue(s))");
             if !lines.contains(&heading) { lines.push(heading); }
         }
-        return lines.join("\n");
+    } else {
+        for (label, key) in [("", "report"), ("installer ", "installer_report"), ("dropped files ", "drops_report")] {
+            let issues = array(page.report.get(key).and_then(|r| r.get("scan_issues")));
+            if issues.is_empty() { continue; }
+            let heading = format!("{label}coverage: INCOMPLETE ({} issue(s))", issues.len());
+            if !lines.contains(&heading) {
+                lines.push(heading);
+            }
+        }
     }
-    for (label, key) in [("", "report"), ("installer ", "installer_report"), ("dropped files ", "drops_report")] {
-        let issues = array(page.report.get(key).and_then(|r| r.get("scan_issues")));
-        if issues.is_empty() { continue; }
-        let heading = format!("{label}coverage: INCOMPLETE ({} issue(s))", issues.len());
-        if !lines.contains(&heading) {
-            lines.push(heading);
+    // What the sandbox could not contain is what is missing from this tree:
+    // an elevated installer writes where the snapshot never looks.
+    if let Some(block) = page.report.get("containment") {
+        for (label, value) in crate::render::containment_lines(block) {
+            // Continuation lines (the method's standing limits) are already
+            // in the text half when it fits; only the labelled facts are
+            // worth re-stating, and never twice.
+            if label.is_empty() { continue; }
+            let already = lines.iter().any(|existing| existing.starts_with(&label));
+            if !already { lines.push(format!("{label}: {value}")); }
         }
     }
     lines.join("\n")

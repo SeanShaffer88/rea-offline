@@ -126,3 +126,8 @@ per-report `scan_issues` for older archives) and shows an amber
 repeats the warning even when the file list is truncated, so a glance at a
 partially observed run cannot read as a clean one. The chip is a statement
 about what the inspection could see; it never changes the score.
+
+When the envelope carries a `containment` block (sandbox runs), the compact
+summary also states the facts the tree cannot show: whether the run was
+elevated/root, and whether the registry hive mounted. Like the chip, it never
+changes the score — it says which writes may have escaped the snapshot.

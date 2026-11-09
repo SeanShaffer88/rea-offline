@@ -581,6 +581,60 @@ fn an_archive_cannot_claim_complete_coverage_for_a_run_that_was_killed() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// An archive cannot claim complete coverage for a run it admits was never
+/// contained. Portable: it exercises the validator, not a process.
+#[test]
+fn a_run_that_was_not_contained_cannot_claim_complete_coverage() {
+    let dir = workdir("containment-tamper");
+    // An elevated run, recorded honestly: coverage must agree that evidence
+    // may have escaped the sandbox.
+    let honest = r#"{"schema_version":3,"mode":"sandbox-installer","verdict":"low","risk_score":0,
+        "coverage":{"complete":false,"issue_count":1,"unverified_count":0,"issues":[
+            {"area":"containment","path":"/tmp/rea_sandbox_x","stage":"elevated",
+             "message":"ran as root"}]},
+        "containment":{"elevated":true,"registry":{"mounted":false,"status":"unavailable",
+            "message":"RegLoadKeyW failed"},"limits":[]},
+        "execution":{"command":"setup.exe","exit_code":0,"timed_out":false},
+        "report":{"file_count":0,"risk_score":0,"verdict":"low","files":[],"scan_issues":[]}}"#;
+    std::fs::write(dir.join("honest.json"), honest).unwrap();
+    let gated = run(&dir, &["report", "honest.json", "--fail-on-incomplete", "--quiet"]);
+    assert_eq!(gated.code, 3, "an uncontained run is incomplete evidence: {}", gated.stderr);
+
+    // The same run with the coverage record quietly flipped: refused, not
+    // rendered, and certainly not gated as clean.
+    let tampered = honest.replace(
+        r#""coverage":{"complete":false,"issue_count":1,"unverified_count":0,"issues":[
+            {"area":"containment","path":"/tmp/rea_sandbox_x","stage":"elevated",
+             "message":"ran as root"}]}"#,
+        r#""coverage":{"complete":true,"issue_count":0,"unverified_count":0,"issues":[]}"#,
+    );
+    assert_ne!(tampered, honest, "fixture must actually be rewritten");
+    std::fs::write(dir.join("tampered.json"), tampered).unwrap();
+    let rejected = run(&dir, &["report", "tampered.json", "--fail-on-incomplete"]);
+    assert_eq!(rejected.code, 1, "a contradictory archive must fail closed: {}", rejected.stdout);
+    assert!(rejected.stderr.contains("not contained"), "{}", rejected.stderr);
+
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// `doctor` has to say whether this session is the standard-account one the
+/// manual asks for: an elevated run can write past the sandbox.
+#[test]
+fn doctor_reports_whether_the_session_is_elevated() {
+    let dir = workdir("doctor-elevation");
+    let doctor = run(&dir, &["doctor"]);
+    assert_eq!(doctor.code, 0, "{}", doctor.stderr);
+    let json = rea_offline::json::parse(&doctor.stdout).expect("doctor JSON");
+    assert!(
+        matches!(json.get("elevated"), Some(rea_offline::json::Value::Bool(_))
+            | Some(rea_offline::json::Value::Null)),
+        "doctor must state the session's privilege level: {json:?}"
+    );
+    let md = run(&dir, &["doctor", "--format", "markdown"]);
+    assert!(md.stdout.contains("running elevated"), "{}", md.stdout);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// A minimal archive whose coverage record is the only interesting part.
 fn coverage_archive(complete: bool) -> String {
     let issues = if complete {

@@ -337,6 +337,80 @@ fn a_payload_dropped_outside_the_install_tree_decides_the_verdict() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// The report has to say what the sandbox could not hold, because nothing in
+/// a file tree can: an elevated installer writes where the snapshot never
+/// looks, and an unmounted hive leaves registry persistence unrecorded.
+#[cfg(unix)]
+#[test]
+fn a_run_records_what_the_sandbox_could_not_contain() {
+    use rea_offline::app::{mode_sandbox, SandboxOptions};
+    use rea_offline::json::Value;
+    use rea_offline::universal_sandbox::SandboxConfig;
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tmp_dir("containment");
+    let script = dir.join("installer.sh");
+    std::fs::write(&script, "#!/bin/sh\nprintf 'MZ' > \"$REASANDBOX_INSTALL/app.exe\"\n").unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let elevated = rea_offline::containment::elevation();
+
+    let report = mode_sandbox(SandboxOptions {
+        installer: script,
+        installer_args: vec![],
+        rea_path: None,
+        sandbox: SandboxConfig::default(),
+    })
+    .unwrap();
+
+    let containment = report.get("containment").expect("containment block");
+    assert_eq!(containment.get("elevated").and_then(Value::as_bool), elevated,
+        "the block states this run's privileges: {containment:?}");
+    // POSIX has no registry to redirect, and must not claim one was captured.
+    assert_eq!(
+        containment.get("registry").and_then(|r| r.get("status")).and_then(Value::as_str),
+        Some("not-applicable")
+    );
+    let limits = match containment.get("limits") {
+        Some(Value::Array(items)) => items.clone(),
+        other => panic!("limits array expected, got {other:?}"),
+    };
+    assert!(!limits.is_empty(), "the method's standing limits travel with the report");
+
+    // An unprivileged run stays quiet; a privileged one says so, and the
+    // coverage record agrees with it either way.
+    let coverage = report.get("coverage").expect("coverage block");
+    let issues = match coverage.get("issues") {
+        Some(Value::Array(items)) => items.clone(),
+        other => panic!("issues array expected, got {other:?}"),
+    };
+    let contained_issues: Vec<_> = issues
+        .iter()
+        .filter(|i| i.get("area").and_then(Value::as_str) == Some("containment"))
+        .collect();
+    if elevated == Some(true) {
+        assert!(!contained_issues.is_empty(),
+            "a privileged run must say what it could not contain: {issues:?}");
+        assert_eq!(coverage.get("complete"), Some(&Value::Bool(false)), "{coverage:?}");
+    } else {
+        assert!(contained_issues.is_empty(), "an unprivileged run is not a coverage gap: {issues:?}");
+        assert_eq!(coverage.get("complete"), Some(&Value::Bool(true)), "{coverage:?}");
+    }
+
+    // Every surface states the same facts, and the archive validates.
+    let text = rea_offline::render::summary_text(&report);
+    assert!(text.contains("ran elevated"), "{text}");
+    assert!(text.contains("registry hive"), "{text}");
+    let md = rea_offline::render::to_markdown(&report);
+    assert!(md.contains("## Containment & cleanup"), "{md}");
+    assert!(md.contains("not visible to this method"), "{md}");
+    let html = rea_offline::gui::page_html(
+        &rea_offline::gui::Page::new(report.clone(), "sandbox"), "");
+    assert!(html.contains("ran elevated"), "the window must say so too");
+    rea_offline::report::validate(&report).unwrap();
+
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// An installer killed at the timeout has only performed *part* of its
 /// install. What it dropped is still evidence — but it is not evidence of a
 /// complete run, and a clean-looking delta must not be read as one.

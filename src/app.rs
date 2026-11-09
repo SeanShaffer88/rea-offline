@@ -56,7 +56,7 @@ pub fn mode_sandbox(opts: SandboxOptions) -> Result<Value> {
     }
     let install_dir = sandbox.install_dir.clone();
 
-    let result = run_sandbox_inner(&opts, &sandbox, &install_dir);
+    let result = run_sandbox_inner(&opts, &sandbox, &install_dir, &registry);
 
     // 6. Teardown & purge (also on analysis failure).
     let mut purge_json = Value::Null;
@@ -87,7 +87,8 @@ pub fn mode_sandbox(opts: SandboxOptions) -> Result<Value> {
     Ok(report)
 }
 
-fn run_sandbox_inner(opts: &SandboxOptions, sandbox: &Sandbox, install_dir: &Path) -> Result<Value> {
+fn run_sandbox_inner(opts: &SandboxOptions, sandbox: &Sandbox, install_dir: &Path,
+                     registry: &RegistrySandbox) -> Result<Value> {
     // Baseline snapshot of the (empty) install target.
     let before = Snapshot::capture(install_dir)?;
     // Baseline of the *whole* sandbox tree: installers also drop files
@@ -169,8 +170,22 @@ fn run_sandbox_inner(opts: &SandboxOptions, sandbox: &Sandbox, install_dir: &Pat
     let sandbox_issues = |snap: &Snapshot| -> Vec<crate::rea_bridge::ScanIssue> {
         snap.issues.iter().filter(|i| !is_internal(&i.path)).cloned().collect()
     };
+    // What the sandbox could not contain is what this report cannot show:
+    // an elevated installer writes where we are not looking, and a hive that
+    // would not mount leaves registry persistence entirely unrecorded.
+    let containment = crate::containment::to_json(
+        crate::containment::elevation(), &registry.status(),
+    );
+    let containment_issues = crate::containment::issues(&containment)
+        .into_iter()
+        .map(|(stage, message)| {
+            ScanIssue::new(crate::util::path_to_slash_string(&sandbox.root), stage, message)
+        })
+        .collect::<Vec<_>>();
+
     let coverage = coverage_block(
         vec![
+            ("containment", containment_issues),
             ("installer execution", execution_issues),
             ("install-tree snapshot (before)", before.issues.clone()),
             ("install-tree snapshot (after)", after.issues.clone()),
@@ -191,6 +206,7 @@ fn run_sandbox_inner(opts: &SandboxOptions, sandbox: &Sandbox, install_dir: &Pat
         ("risk_score", Value::num(score)),
         ("verdict_sources", verdict_sources),
         ("coverage", coverage),
+        ("containment", containment),
         ("installer", Value::str(opts.installer.display().to_string())),
         ("execution", Value::obj(vec![
             ("command", Value::str(outcome.command.clone())),
@@ -350,6 +366,13 @@ pub fn mode_doctor(rea_path: Option<PathBuf>) -> Result<Value> {
         ])),
         ("os", Value::str(std::env::consts::OS)),
         ("arch", Value::str(std::env::consts::ARCH)),
+        // The documented advice is "run untrusted installers from a standard
+        // account". Doctor states whether this session actually does, because
+        // an elevated run can write past the sandbox and out of the report.
+        ("elevated", match crate::containment::elevation() {
+            Some(flag) => Value::Bool(flag),
+            None => Value::Null,
+        }),
         ("windows_job_objects", Value::Bool(cfg!(windows))),
         ("registry_hive_mount", Value::str(if cfg!(windows) {
             "available (requires SeRestorePrivilege + a valid hive file)"
