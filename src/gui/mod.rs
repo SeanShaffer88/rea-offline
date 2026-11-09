@@ -411,6 +411,10 @@ pub fn page_html(page: &Page, query: &str) -> String {
         body.push_str(&format!(
             "<span class=\"chip coverage-incomplete\">incomplete coverage — {issue_count} issue(s)</span>"
         ));
+    } else if page.report.get("coverage").is_none() {
+        // Archives that predate coverage records carry no block at all;
+        // no chip would read as "complete".
+        body.push_str("<span class=\"chip coverage-incomplete\">coverage not recorded</span>");
     }
     body.push_str(&format!(
         "<span class=\"chip\">{} files · {}</span>",
@@ -619,6 +623,13 @@ fn compact_summary(page: &Page) -> String {
                 lines.push(heading);
             }
         }
+    }
+    if page.report.get("coverage").is_none() {
+        // An archive with no coverage block and no recorded issues must not
+        // read as complete in the glance view either.
+        let heading = "coverage: NOT RECORDED (this archive predates coverage records; what the inspection could not see is unknown)".to_string();
+        let any_incomplete = lines.iter().any(|l| l.contains("coverage: INCOMPLETE"));
+        if !any_incomplete && !lines.contains(&heading) { lines.push(heading); }
     }
     // What the sandbox could not contain is what is missing from this tree:
     // an elevated installer writes where the snapshot never looks.
@@ -868,6 +879,21 @@ mod tests {
         assert!(html.contains("incomplete coverage — 1 issue(s)"), "{html}");
         // The compact summary is what a glance reads; it cannot look clean.
         assert!(compact_summary(&page).contains("coverage: INCOMPLETE (1 issue(s))"));
+    }
+
+    #[test]
+    fn the_window_marks_an_archive_with_no_coverage_block_as_not_recorded() {
+        // Schema-2-era shape: no coverage block, no scan_issues. No chip
+        // would read as "complete".
+        let report = crate::json::parse(
+            r#"{"mode":"scan","verdict":"low","risk_score":0,
+                "report":{"target":"C:/x","file_count":0,"risk_score":0,
+                          "verdict":"low","files":[]}}"#
+        ).unwrap();
+        let page = Page::new(report, "scan");
+        let html = page_html(&page, "");
+        assert!(html.contains("coverage not recorded"), "the chip must disclose it: {html}");
+        assert!(compact_summary(&page).contains("coverage: NOT RECORDED"));
     }
 
     #[test]
