@@ -147,28 +147,41 @@ jobs:
           grep -q '"unverified_count"' delta.json
           # A delta is only as complete as the two manifests behind it.
           grep -q '"coverage"' delta.json
-          grep -q '"before snapshot"' delta.json
-          grep -q '"after snapshot"' delta.json
+          grep -q '"complete": true' delta.json
           "$EXE" snapshot tree --fail-on-incomplete --quiet
           "$EXE" diff before.json after.json --fail-on-incomplete --quiet
-          # Blind either way: a locked directory must reach both exit codes.
+
+          # 5a-bis. Blind on one side: the snapshot says so, and so does the
+          #         diff built from it — naming which snapshot could not see.
           if [ "${RUNNER_OS:-}" != "Windows" ]; then
             mkdir -p tree/locked && printf 'MZ' > tree/locked/payload.exe
             chmod 000 tree/locked
             if [ -r tree/locked ]; then
-              echo "expected the locked directory to be unreadable" >&2; chmod 700 tree/locked; exit 1
+              echo "skipping blind-tree checks: this process ignores mode bits"
+              chmod 700 tree/locked
+            else
+              set +e
+              "$EXE" snapshot tree --fail-on-incomplete --quiet --output blind.json
+              snap=$?
+              set -e
+              chmod 700 tree/locked
+              if [ "$snap" -ne 3 ]; then
+                echo "expected a blind snapshot to exit 3, got $snap" >&2; exit 1
+              fi
+              grep -q '"complete": false' blind.json
+              # before.json saw everything; blind.json did not. The diff of
+              # the two is incomplete, and says which side went blind.
+              "$EXE" diff before.json blind.json --output blind-diff.json --quiet
+              grep -q '"complete": false' blind-diff.json
+              grep -q '"after snapshot"' blind-diff.json
+              set +e
+              "$EXE" diff before.json blind.json --fail-on-incomplete --quiet
+              diff_code=$?
+              set -e
+              if [ "$diff_code" -ne 3 ]; then
+                echo "expected a blind diff to exit 3, got $diff_code" >&2; exit 1
+              fi
             fi
-            set +e
-            "$EXE" snapshot tree --fail-on-incomplete --quiet --output blind.json
-            snap=$?
-            "$EXE" diff before.json after.json --fail-on-incomplete --quiet
-            df=$?
-            set -e
-            chmod 700 tree/locked
-            if [ "$snap" -ne 3 ] || [ "$df" -ne 3 ]; then
-              echo "expected snapshot/diff to exit 3 on a blind tree (got $snap / $df)" >&2; exit 1
-            fi
-            grep -q '"complete": false' blind.json
           fi
 
           # 5b. Coverage gate: a calm verdict on partial evidence must fail.

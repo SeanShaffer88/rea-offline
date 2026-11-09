@@ -552,6 +552,7 @@ mod tests {
         assert_eq!(coverage_incomplete(&unlabelled), Some(false));
     }
 
+    #[test]
     fn fail_on_incomplete_gates_on_coverage_not_on_risk() {
         let complete = rea_offline::json::parse(
             r#"{"verdict":"low","coverage":{"complete":true,"issue_count":0,"issues":[]}}"#
