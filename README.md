@@ -194,6 +194,30 @@ both snapshots, contents not comparable). Text, Markdown and the window show
 the warning next to the decision, and coverage never inflates the risk score
 — it is a statement about the evidence, not about the sample.
 
+### Coverage: a run that did not finish
+
+The delta of a killed installer is real evidence — of a *partial* install.
+Nothing in the file tree says so, so how the run ended is part of coverage
+too, under the area `installer execution`:
+
+* `timeout` — the installer was killed at `--timeout`. Whatever it had
+  already written is still analyzed and reported, but it is not the install
+  it was going to perform.
+* `exit` — the installer exited with a code that is not success, or its exit
+  code could not be read at all. On Windows the documented Windows Installer
+  codes `1641` and `3010` count as success: the product is installed and the
+  reboot is a request, not a failure.
+
+```json
+{"area": "installer execution", "path": "setup.exe", "stage": "timeout",
+ "message": "installer was killed at the timeout before it finished; the delta describes a partial install"}
+```
+
+Text and Markdown label a failing exit code next to the number it reports, and
+`--fail-on-incomplete` (exit `3`) refuses a run that never finished. An archive
+whose `execution` block says the installer was killed while its `coverage` says
+`complete` is rejected rather than rendered.
+
 `--fail-on-incomplete` makes partial evidence a build failure (exit `3`),
 independently of how calm the verdict is:
 
@@ -206,8 +230,9 @@ Exit codes: `0` pass, `1` error/invalid archive, `2` verdict gate, `3`
 incomplete coverage. The verdict gate wins when both trip. An archive that
 records no coverage at all is refused by this gate rather than assumed
 complete. Archives cannot be edited into looking clean either: `coverage`
-is validated against the issues it lists and the per-report `scan_issues`
-that produced it, so flipping `complete` to `true` is rejected.
+is validated against the issues it lists, the per-report `scan_issues` that
+produced it, and the `execution` block that says how the run ended, so
+flipping `complete` to `true` is rejected.
 
 ### imphash compatibility
 
@@ -342,6 +367,28 @@ Created by Sean Shaffer
 MIT — see [LICENSE](LICENSE).
 
 ## Changelog
+
+### 0.9.0
+- **A run that did not finish is not complete evidence**: an installer killed
+  at the timeout, or one that exited without reporting success, produced a
+  delta of a *partial* install that still read as `coverage: complete` — and
+  passed `--fail-on-incomplete`. How the run ended is now part of coverage,
+  under the area `installer execution` (stages `timeout` and `exit`).
+- **Partial evidence is still reported**: a half-installed tree is analyzed and
+  rendered as before. Coverage labels the run; it never discards or inflates
+  what was found, and a killed installer adds no risk points.
+- **Windows Installer reboot codes count as success**: `1641` and `3010` are
+  documented successes (installed, reboot requested), so a reboot-requiring
+  MSI is no longer reported as a run that never finished.
+- **Human formats say so**: text and Markdown label an exit code that is not
+  success next to the number (`3 (did not report success)`), instead of
+  printing a bare `3` for the reader to interpret.
+- **Tamper resistance**: an archive whose `execution` block says the installer
+  was killed while its `coverage` claims `complete` is rejected (exit `1`)
+  rather than rendered or gated, and a malformed `execution` block is refused.
+- **Tests**: a stalling installer end to end (library, CLI exit code `3`, and
+  CI), an exit-code-3 installer, writer/validator agreement on which exit
+  codes count as success, and archive-level tampering on both records at once.
 
 ### 0.8.0
 - **Snapshot coverage is recorded, not skipped**: an unreadable directory used

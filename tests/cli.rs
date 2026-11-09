@@ -509,6 +509,78 @@ fn sandbox_gate_fires_on_a_profile_drop() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// End-to-end through the CLI: an installer that stalls must reach the exit
+/// code, not just the JSON. A pipeline cannot read a coverage block; it can
+/// read `3`.
+#[cfg(unix)]
+#[test]
+fn a_timed_out_sandbox_run_exits_three() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = workdir("sandbox-timeout");
+    let script = dir.join("stall.sh");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\nmkdir -p \"$REASANDBOX_INSTALL\"\nprintf 'MZ half' > \"$REASANDBOX_INSTALL/partial.exe\"\nsleep 30\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let gated = run(
+        &dir,
+        &["sandbox", "stall.sh", "--timeout", "1", "--fail-on-incomplete", "--quiet", "--output", "run.json"],
+    );
+    assert_eq!(gated.code, 3, "a killed run is not complete evidence: {}", gated.stderr);
+
+    // The report is still written, and it says why the run is not complete.
+    let json = rea_offline::json::parse(&std::fs::read_to_string(dir.join("run.json")).unwrap()).unwrap();
+    assert_eq!(
+        json.get("execution").and_then(|e| e.get("timed_out")),
+        Some(&rea_offline::json::Value::Bool(true))
+    );
+    assert_eq!(
+        json.get("coverage").and_then(|c| c.get("complete")),
+        Some(&rea_offline::json::Value::Bool(false))
+    );
+
+    // Without the flag the verdict is unchanged: coverage never adds risk.
+    let plain = run(&dir, &["sandbox", "stall.sh", "--timeout", "1", "--quiet", "--output", "plain.json"]);
+    assert_eq!(plain.code, 0, "{}", plain.stderr);
+
+    // The recorded run gates the same way when reopened later.
+    let archived = run(&dir, &["report", "run.json", "--fail-on-incomplete", "--quiet"]);
+    assert_eq!(archived.code, 3, "{}", archived.stderr);
+
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// An archive cannot claim complete coverage for a run its own `execution`
+/// block says was killed. Portable: it exercises the validator, not a
+/// process, so it runs on Windows too.
+#[test]
+fn an_archive_cannot_claim_complete_coverage_for_a_run_that_was_killed() {
+    let dir = workdir("execution-tamper");
+    let path = dir.join("killed.json");
+    // Only the two records disagree: the run says it was killed at the
+    // timeout, the coverage record says everything was seen. Everything
+    // else is left exactly as a real (critical) run would have written it.
+    let killed = SANDBOX_ARCHIVE.replace(
+        "\"execution\": {\"command\": \"setup.exe\", \"exit_code\": 0, \"timed_out\": false, \"duration_ms\": 10}",
+        "\"coverage\": {\"complete\": true, \"issue_count\": 0, \"unverified_count\": 0, \"issues\": []},\n  \
+         \"execution\": {\"command\": \"setup.exe\", \"exit_code\": null, \"timed_out\": true, \"duration_ms\": 300000}",
+    );
+    assert_ne!(killed, SANDBOX_ARCHIVE, "fixture must actually be rewritten");
+    std::fs::write(&path, killed).unwrap();
+
+    let rejected = run(&dir, &["report", "killed.json", "--fail-on-incomplete"]);
+    assert_eq!(rejected.code, 1, "a contradictory archive must fail closed: {}", rejected.stdout);
+    assert!(rejected.stderr.contains("did not finish"), "{}", rejected.stderr);
+    // It is refused rather than rendered, in every format.
+    let rendered = run(&dir, &["report", "killed.json", "--format", "text"]);
+    assert_eq!(rendered.code, 1, "{}", rendered.stdout);
+
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// A minimal archive whose coverage record is the only interesting part.
 fn coverage_archive(complete: bool) -> String {
     let issues = if complete {

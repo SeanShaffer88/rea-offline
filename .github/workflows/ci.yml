@@ -158,6 +158,33 @@ jobs:
           fi
           "$EXE" report blind.json --format text | grep -q 'coverage: INCOMPLETE'
 
+          # 5c. A run that never finished cannot claim complete coverage.
+          #     (Portable: it exercises the archive validator, not a process.)
+          printf '%s' '{"schema_version":3,"mode":"sandbox-installer","verdict":"low","risk_score":0,
+            "verdict_sources":{"install_tree":{"risk_score":0,"verdict":"low"}},
+            "coverage":{"complete":true,"issue_count":0,"unverified_count":0,"issues":[]},
+            "execution":{"command":"setup.exe","exit_code":null,"timed_out":true,"duration_ms":300000},
+            "report":{"file_count":0,"risk_score":0,"verdict":"low","files":[],"scan_issues":[]}}' > killed.json
+          if "$EXE" report killed.json --fail-on-incomplete --quiet; then
+            echo "a killed run must not claim complete coverage" >&2; exit 1
+          fi
+
+          # 5d. End to end: an installer that stalls reaches exit code 3.
+          if [ "${RUNNER_OS:-}" != "Windows" ]; then
+            printf '%s\n' '#!/bin/sh' 'mkdir -p "$REASANDBOX_INSTALL"' \
+              'printf "MZ half" > "$REASANDBOX_INSTALL/partial.exe"' 'sleep 30' > stall.sh
+            chmod +x stall.sh
+            set +e
+            "$EXE" sandbox stall.sh --timeout 1 --fail-on-incomplete --quiet --output stall.json
+            code=$?
+            set -e
+            if [ "$code" -ne 3 ]; then
+              echo "expected a timed-out run to exit 3, got $code" >&2; exit 1
+            fi
+            grep -q '"timed_out": true' stall.json
+            grep -q '"complete": false' stall.json
+          fi
+
           # 6. Purge guard: refuse an arbitrary directory, then purge a real
           #    sandbox layout and verify zero residue.
           mkdir -p not_a_sandbox

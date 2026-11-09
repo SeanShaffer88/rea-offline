@@ -136,10 +136,47 @@ pub fn validate(report: &Value) -> Result<()> {
     if let Some(coverage) = report.get("coverage").filter(|v| !matches!(v, Value::Null)) {
         validate_coverage(coverage, report)?;
     }
-    if mode == "sandbox-installer" && report.get("execution").is_none() {
-        return Err(invalid("invalid report: sandbox-installer is missing its execution block"));
+    if mode == "sandbox-installer" {
+        let execution = report.get("execution")
+            .ok_or_else(|| invalid("invalid report: sandbox-installer is missing its execution block"))?;
+        validate_execution(execution, report)?;
     }
     Ok(())
+}
+
+/// The `execution` block is the only record of how the run ended, so it is
+/// the one place an unfinished install can be seen. An archive that claims
+/// complete coverage while its own execution block says the installer was
+/// killed is claiming evidence it never collected.
+fn validate_execution(execution: &Value, report: &Value) -> Result<()> {
+    if !matches!(execution, Value::Object(_)) {
+        return Err(invalid("invalid report: execution must be an object"));
+    }
+    let timed_out = match execution.get("timed_out") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(flag)) => *flag,
+        Some(_) => return Err(invalid("invalid report: execution.timed_out must be a boolean")),
+    };
+    let exit_code = match execution.get("exit_code") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(integer(Some(value))
+            .filter(|code| *code <= u32::MAX as u64)
+            .ok_or_else(|| invalid(
+                "invalid report: execution.exit_code must be null or a non-negative integer"
+            ))? as u32),
+    };
+    let Some((stage, _)) = crate::universal_sandbox::run_issue(timed_out, exit_code) else {
+        return Ok(());
+    };
+    // Rewriting the coverage block is the cheapest way to make a killed run
+    // look like a finished one, so the two records are checked against each
+    // other rather than trusted separately.
+    match report.get("coverage").filter(|v| !matches!(v, Value::Null)) {
+        Some(coverage) if coverage.get("complete") == Some(&Value::Bool(true)) => Err(invalid(format!(
+            "invalid report: coverage claims to be complete but the installer run did not finish ({stage})"
+        ))),
+        _ => Ok(()),
+    }
 }
 
 /// The coverage block says what the inspection could not see. Rewriting it
@@ -404,6 +441,65 @@ mod tests {
         assert!(validate(&report).is_err(), "a source verdict must match its own score");
     }
 
+    fn with_execution(execution_json: &str, coverage_json: Option<&str>) -> Value {
+        let mut report = sandbox_archive();
+        if let Value::Object(map) = &mut report {
+            map.insert("execution".into(), crate::json::parse(execution_json).unwrap());
+            if let Some(coverage) = coverage_json {
+                map.insert("coverage".into(), crate::json::parse(coverage).unwrap());
+            }
+        }
+        report
+    }
+
+    const CLEAN_COVERAGE: &str =
+        r#"{"complete":true,"issue_count":0,"unverified_count":0,"issues":[]}"#;
+
+    #[test]
+    fn a_run_that_did_not_finish_cannot_claim_complete_coverage() {
+        // Killed at the timeout, failed, or never reported an exit code at
+        // all: none of these is a finished install, however calm the delta.
+        for (execution, expected) in [
+            (r#"{"timed_out":true,"exit_code":null}"#, "timeout"),
+            (r#"{"timed_out":true,"exit_code":0}"#, "timeout"),
+            (r#"{"timed_out":false,"exit_code":3}"#, "exit"),
+            (r#"{"timed_out":false}"#, "exit"),
+        ] {
+            let error = validate(&with_execution(execution, Some(CLEAN_COVERAGE)))
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("did not finish"), "expected a contradiction, got {error}");
+            assert!(error.contains(expected), "expected stage {expected:?}, got {error}");
+        }
+        // A finished run is free to claim complete coverage.
+        validate(&with_execution(r#"{"timed_out":false,"exit_code":0}"#, Some(CLEAN_COVERAGE))).unwrap();
+    }
+
+    #[test]
+    fn an_unfinished_run_is_still_readable_when_it_says_so() {
+        // The honest pairing: what happened, recorded next to the decision.
+        let report = with_execution(
+            r#"{"command":"setup.exe","timed_out":true,"exit_code":null}"#,
+            Some(r#"{"complete":false,"issue_count":1,"unverified_count":0,"issues":[
+                {"area":"installer execution","path":"setup.exe","stage":"timeout",
+                 "message":"killed at the timeout"}]}"#),
+        );
+        validate(&report).unwrap();
+    }
+
+    #[test]
+    fn rejects_a_malformed_execution_block() {
+        for (json, expected) in [
+            ("[]", "execution must be an object"),
+            (r#"{"timed_out":"yes"}"#, "timed_out must be a boolean"),
+            (r#"{"exit_code":"0"}"#, "exit_code must be null"),
+            (r#"{"exit_code":-1}"#, "exit_code must be null"),
+        ] {
+            let error = validate(&with_execution(json, None)).unwrap_err().to_string();
+            assert!(error.contains(expected), "expected {expected:?}, got {error}");
+        }
+    }
+
     #[test]
     fn local_scans_still_reject_conflicting_verdicts_and_stray_sources() {
         let mut report = archive();
@@ -418,7 +514,10 @@ mod tests {
         let mut report = archive();
         if let Value::Object(map) = &mut report {
             map.insert("mode".into(), Value::str("sandbox-installer"));
-            map.insert("execution".into(), Value::obj(vec![]));
+            map.insert("execution".into(), Value::obj(vec![
+                ("exit_code".into(), Value::num(0)),
+                ("timed_out".into(), Value::Bool(false)),
+            ]));
             map.insert("installer_report".into(), Value::obj(vec![
                 ("file_count", Value::num(0)), ("files", Value::Array(vec![])),
                 ("scan_issues", Value::Array(vec![Value::obj(vec![

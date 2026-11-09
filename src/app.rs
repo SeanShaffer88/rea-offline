@@ -2,10 +2,10 @@
 
 use crate::cleanup::CleanupController;
 use crate::json::Value;
-use crate::rea_bridge::{ReaBridge, ReaConfig};
+use crate::rea_bridge::{ReaBridge, ReaConfig, ScanIssue};
 use crate::registry_sandbox::RegistrySandbox;
 use crate::snapshot::Snapshot;
-use crate::universal_sandbox::{Sandbox, SandboxConfig};
+use crate::universal_sandbox::{run_issue, Sandbox, SandboxConfig};
 use crate::util::unix_secs;
 use crate::{Error, Result};
 use std::path::{Path, PathBuf};
@@ -96,6 +96,15 @@ fn run_sandbox_inner(opts: &SandboxOptions, sandbox: &Sandbox, install_dir: &Pat
     let sandbox_before = Snapshot::capture(&sandbox.root)?;
     // 3. Execution under containment.
     let outcome = sandbox.run_installer(&opts.installer, &opts.installer_args)?;
+    // How the run ended is part of the evidence. A killed or failing
+    // installer leaves behind the delta of a *partial* install, and nothing
+    // in the file tree says so — only the run does.
+    let execution_issues = match run_issue(outcome.timed_out, outcome.exit_code) {
+        Some((stage, message)) => vec![ScanIssue::new(
+            crate::util::path_to_slash_string(&opts.installer), stage, message,
+        )],
+        None => Vec::new(),
+    };
     // 4. Post-install snapshot & delta.
     let after = Snapshot::capture(install_dir)?;
     let delta = before.diff(&after);
@@ -154,13 +163,15 @@ fn run_sandbox_inner(opts: &SandboxOptions, sandbox: &Sandbox, install_dir: &Pat
     );
 
     // Snapshot coverage from the install tree and the whole sandbox, plus
-    // every analysis limit. install/ is snapshotted in its own right, so its
-    // sandbox-side duplicate (and our tmp/work bookkeeping) is dropped here.
+    // every analysis limit and how the run itself ended. install/ is
+    // snapshotted in its own right, so its sandbox-side duplicate (and our
+    // tmp/work bookkeeping) is dropped here.
     let sandbox_issues = |snap: &Snapshot| -> Vec<crate::rea_bridge::ScanIssue> {
         snap.issues.iter().filter(|i| !is_internal(&i.path)).cloned().collect()
     };
     let coverage = coverage_block(
         vec![
+            ("installer execution", execution_issues),
             ("install-tree snapshot (before)", before.issues.clone()),
             ("install-tree snapshot (after)", after.issues.clone()),
             ("sandbox snapshot (before)", sandbox_issues(&sandbox_before)),

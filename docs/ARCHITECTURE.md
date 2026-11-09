@@ -74,6 +74,20 @@ are never followed by static directory analysis.
 revisiting the target. Schema 2 remains readable; a gate requires a valid
 verdict, and conflicting envelope/body verdicts are rejected.
 
+Snapshots and analysis are not the only things that can go unobserved: the
+run itself can end early. A sandbox envelope therefore folds the outcome of
+`execution` into the same `coverage` block, as the area
+`installer execution` — stage `timeout` when the job was killed at the
+deadline, stage `exit` when the installer reported a code that is not success
+(or no code could be read). Those files are still analyzed and reported: the
+delta of a partial install is real evidence, it is just not evidence of a
+*complete* install, and nothing in the file tree distinguishes the two.
+On Windows, `1641` and `3010` are treated as success (installed, reboot
+requested), so a reboot-requiring MSI is not reported as a failed run. The
+writer and the archive validator share one function for this
+(`universal_sandbox::run_issue`), so a saved report cannot claim complete
+coverage while its own `execution` block says the installer was killed.
+
 ## One verdict, three evidence sets
 
 A sandbox run produces three analysis bodies: `installer_report` (the binary
