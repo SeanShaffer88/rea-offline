@@ -394,14 +394,16 @@ fn an_installer_killed_at_the_timeout_makes_the_run_incomplete() {
     assert!(html.contains("coverage-incomplete"), "the window must flag it too");
 
     // The archive is self-consistent, and cannot be edited into a
-    // clean-looking one by flipping a single boolean.
+    // clean-looking one: erasing the coverage issues does not help, because
+    // the execution block still records that the installer was killed.
     rea_offline::report::validate(&report).unwrap();
     let mut tampered = report.clone();
     if let Value::Object(map) = &mut tampered {
         map.insert("coverage".into(), Value::obj(vec![
             ("complete", Value::Bool(true)),
-            ("issue_count", Value::num(issues.len() as u64)),
-            ("issues", Value::Array(issues)),
+            ("issue_count", Value::num(0)),
+            ("unverified_count", Value::num(0)),
+            ("issues", Value::Array(Vec::new())),
         ]));
     }
     let error = rea_offline::report::validate(&tampered).unwrap_err().to_string();
