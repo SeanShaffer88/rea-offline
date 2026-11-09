@@ -170,11 +170,6 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let mut registry = RegistrySandbox::new(&dir, "test");
         let mounted = registry.mount();
-        if mounted.is_ok() && registry.is_mounted() {
-            // A loaded hive holds its file open: unmount before cleanup, or
-            // Windows refuses the delete (ERROR_SHARING_VIOLATION).
-            let _ = registry.unmount();
-        }
         if cfg!(windows) {
             // Either the hive took, or the report must be able to say why not.
             match mounted {
@@ -188,6 +183,9 @@ mod tests {
             assert_eq!(registry.status(), RegistryStatus::NotApplicable);
             assert!(!registry.is_mounted());
         }
+        // A loaded hive holds its file open: unmount before cleanup, or
+        // Windows refuses the delete (ERROR_SHARING_VIOLATION).
+        let _ = registry.unmount();
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
