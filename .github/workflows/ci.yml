@@ -115,6 +115,10 @@ jobs:
             echo "mistyped option must be rejected" >&2; exit 1
           fi
           test ! -e typo.json
+          # An archive that predates coverage records must say so when
+          # rendered, not read as a complete inspection.
+          printf '%s' '{"schema_version":2,"tool":"rea-offline","tool_version":"0.2.0","mode":"local-scan","created_unix":1700000000,"target":"x","report":{"verdict":"low","risk_score":0,"file_count":0,"files":[]}}' > old.json
+          "$EXE" report old.json --format text | grep -q 'NOT RECORDED'
 
           # 3c. A PE wearing a document extension must be called out.
           cp sample.exe disguised.pdf
