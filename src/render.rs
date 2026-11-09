@@ -106,10 +106,12 @@ fn append_coverage_text(out: &mut String, root: &Value) {
         return;
     }
     // Older archives only carry per-report analysis limits.
+    let mut printed = false;
     for (label, key) in [("", "report"), ("installer ", "installer_report"), ("dropped files ", "drops_report")] {
         let Some(issues) = root.get(key).and_then(|r| r.get("scan_issues")) else { continue };
         let issues = array(Some(issues));
         if issues.is_empty() { continue; }
+        printed = true;
         out.push_str(&format!("\n{}coverage: INCOMPLETE ({} issue(s))\n", label, issues.len()));
         for issue in issues.iter().take(8) {
             out.push_str(&format!("  {}\n", issue_line(issue)));
@@ -117,6 +119,12 @@ fn append_coverage_text(out: &mut String, root: &Value) {
         if issues.len() > 8 {
             out.push_str(&format!("  … {} more; see JSON\n", issues.len() - 8));
         }
+    }
+    if !printed && root.get("coverage").is_none() {
+        // No coverage block and no per-report issues: this archive predates
+        // coverage records, so nothing here can say what was missed.
+        // Silence would read as "complete".
+        out.push_str("\ncoverage: NOT RECORDED (this archive predates coverage records; what the inspection could not see is unknown)\n");
     }
 }
 
@@ -562,6 +570,12 @@ pub fn summary_markdown(root: &Value) -> String {
             }
             coverage.push('\n');
         }
+        if coverage.is_empty() && root.get("coverage").is_none() {
+            // No coverage block and no per-report issues: this archive
+            // predates coverage records, so nothing here can say what was
+            // missed. Silence would read as "complete".
+            coverage.push_str("Coverage was **not recorded** for this archive — it predates coverage records, so what the inspection could not see is unknown.\n");
+        }
         if !coverage.is_empty() {
             out.push_str("## Coverage warnings\n\n**Inspection incomplete.** These are operational limitations, not risk findings: they describe what the inspection could not see, so a calm verdict below is not evidence of a clean target.\n\n");
             out.push_str(&coverage);
@@ -974,7 +988,23 @@ mod tests {
                 "report":{"file_count":0,"risk_score":0,"verdict":"low","files":[],"scan_issues":[]}}"#
         ).unwrap();
         assert!(!summary_text(&report).contains("INCOMPLETE"));
+        assert!(!summary_text(&report).contains("NOT RECORDED"));
         assert!(!summary_markdown(&report).contains("Coverage warnings"));
+    }
+
+    #[test]
+    fn an_archive_with_no_coverage_record_says_so() {
+        // Schema-2 shape: no coverage block, no scan_issues. Silence would
+        // read as "complete"; the renderers must disclose the unknown.
+        let report = crate::json::parse(
+            r#"{"schema_version":2,"mode":"local-scan","verdict":"low",
+                "report":{"file_count":0,"risk_score":0,"verdict":"low","files":[]}}"#
+        ).unwrap();
+        let text = summary_text(&report);
+        assert!(text.contains("coverage: NOT RECORDED"), "{text}");
+        let md = summary_markdown(&report);
+        assert!(md.contains("Coverage warnings"), "{md}");
+        assert!(md.contains("not recorded"), "{md}");
     }
 
     #[test]
