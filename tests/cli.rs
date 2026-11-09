@@ -617,6 +617,44 @@ fn a_run_that_was_not_contained_cannot_claim_complete_coverage() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// An archive cannot describe an installer it never analyzed and still claim
+/// it saw everything. Portable: it exercises the validator, not a process.
+#[test]
+fn an_installer_that_was_never_analyzed_cannot_claim_complete_coverage() {
+    let dir = workdir("installer-error");
+    // Recorded honestly: one of the three evidence sets is missing, and the
+    // coverage block says so.
+    let honest = r#"{"schema_version":3,"mode":"sandbox-installer","installer":"setup.exe",
+        "verdict":"low","risk_score":0,
+        "verdict_sources":{"installer":null,"install_tree":{"risk_score":0,"verdict":"low"},
+            "drops":{"risk_score":0,"verdict":"low"}},
+        "coverage":{"complete":false,"issue_count":1,"unverified_count":0,"issues":[
+            {"area":"installer analysis","path":"setup.exe","stage":"analysis",
+             "message":"the installer could not be analyzed"}]},
+        "installer_error":"not found: setup.exe","installer_report":null,
+        "execution":{"command":"setup.exe","exit_code":0,"timed_out":false},
+        "report":{"file_count":0,"risk_score":0,"verdict":"low","files":[],"scan_issues":[]},
+        "drops_report":{"file_count":0,"risk_score":0,"verdict":"low","files":[],"scan_issues":[]}}"#;
+    std::fs::write(dir.join("honest.json"), honest).unwrap();
+    let gated = run(&dir, &["report", "honest.json", "--fail-on-incomplete", "--quiet"]);
+    assert_eq!(gated.code, 3, "a missing evidence set is incomplete: {}", gated.stderr);
+
+    // The same archive with the coverage record quietly flipped: refused.
+    let tampered = honest.replace(
+        r#""coverage":{"complete":false,"issue_count":1,"unverified_count":0,"issues":[
+            {"area":"installer analysis","path":"setup.exe","stage":"analysis",
+             "message":"the installer could not be analyzed"}]}"#,
+        r#""coverage":{"complete":true,"issue_count":0,"unverified_count":0,"issues":[]}"#,
+    );
+    assert_ne!(tampered, honest, "fixture must actually be rewritten");
+    std::fs::write(dir.join("tampered.json"), tampered).unwrap();
+    let rejected = run(&dir, &["report", "tampered.json", "--fail-on-incomplete"]);
+    assert_eq!(rejected.code, 1, "a contradictory archive must fail closed: {}", rejected.stdout);
+    assert!(rejected.stderr.contains("records a failure"), "{}", rejected.stderr);
+
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// `doctor` has to say whether this session is the standard-account one the
 /// manual asks for: an elevated run can write past the sandbox.
 #[test]

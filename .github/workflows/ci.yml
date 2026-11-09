@@ -180,6 +180,17 @@ jobs:
           if "$EXE" report uncontained.json --fail-on-incomplete --quiet; then
             echo "an uncontained run must not claim complete coverage" >&2; exit 1
           fi
+          # 5c-iii. A report that never analyzed the installer (or never
+          #         cleaned up) cannot claim it saw everything.
+          printf '%s' '{"schema_version":3,"mode":"sandbox-installer","installer":"setup.exe",
+            "verdict":"low","risk_score":0,
+            "coverage":{"complete":true,"issue_count":0,"unverified_count":0,"issues":[]},
+            "installer_error":"not found: setup.exe","installer_report":null,
+            "execution":{"command":"setup.exe","exit_code":0,"timed_out":false},
+            "report":{"file_count":0,"risk_score":0,"verdict":"low","files":[],"scan_issues":[]}}' > noinstaller.json
+          if "$EXE" report noinstaller.json --fail-on-incomplete --quiet; then
+            echo "a missing installer analysis must not claim complete coverage" >&2; exit 1
+          fi
           # Doctor states whether this session is the standard account the
           # manual asks for.
           "$EXE" doctor --output doctor-elev.json
@@ -202,6 +213,18 @@ jobs:
             # ...and what the sandbox could not contain is on the record.
             grep -q '"containment"' stall.json
             grep -q '"not-applicable"' stall.json
+            # An installer that erases itself leaves a hole the record names.
+            printf '%s\n' '#!/bin/sh' 'printf "MZ" > "$REASANDBOX_INSTALL/app.exe"' 'rm -f "$0"' > ghost.sh
+            chmod +x ghost.sh
+            set +e
+            "$EXE" sandbox ghost.sh --fail-on-incomplete --quiet --output ghost.json
+            code=$?
+            set -e
+            if [ "$code" -ne 3 ]; then
+              echo "expected a self-deleting installer to exit 3, got $code" >&2; exit 1
+            fi
+            grep -q '"installer_error"' ghost.json
+            grep -q '"installer analysis"' ghost.json
           fi
 
           # 6. Purge guard: refuse an arbitrary directory, then purge a real

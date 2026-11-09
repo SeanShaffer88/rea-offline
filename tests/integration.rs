@@ -411,6 +411,82 @@ fn a_run_records_what_the_sandbox_could_not_contain() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// A dropper that deletes itself is the realistic version of this gap: the
+/// one artifact the report most needs is gone, and "we could not read it" is
+/// not the same as "it was clean".
+#[cfg(unix)]
+#[test]
+fn an_installer_that_erases_itself_leaves_a_hole_in_the_record() {
+    use rea_offline::app::{mode_sandbox, SandboxOptions};
+    use rea_offline::json::Value;
+    use rea_offline::universal_sandbox::SandboxConfig;
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tmp_dir("self-delete");
+    let script = dir.join("dropper.sh");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\nprintf 'MZ' > \"$REASANDBOX_INSTALL/app.exe\"\nrm -f \"$0\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let report = mode_sandbox(SandboxOptions {
+        installer: script.clone(),
+        installer_args: vec![],
+        rea_path: None,
+        sandbox: SandboxConfig::default(),
+    })
+    .unwrap();
+
+    // The installer is really gone: the analysis had nothing to read.
+    assert!(!script.exists(), "the fixture must actually self-delete");
+    assert!(report.get("installer_error").and_then(Value::as_str).is_some(),
+        "a failed installer analysis must be recorded: {}", report.to_string_pretty());
+    assert_eq!(report.get("installer_report"), Some(&Value::Null));
+    // ...and its part of the verdict is absent rather than counted as zero.
+    let sources = report.get("verdict_sources").expect("verdict_sources");
+    assert_eq!(sources.get("installer"), Some(&Value::Null));
+
+    // What was still analyzable is still reported — the install tree is here.
+    let text = report.to_string_pretty();
+    assert!(text.contains("app.exe"), "the drop is still evidence:\n{text}");
+
+    // The hole is in the coverage record, not just in a free-text field.
+    let coverage = report.get("coverage").expect("coverage block");
+    assert_eq!(coverage.get("complete"), Some(&Value::Bool(false)),
+        "a missing evidence set must not look like a clean run: {}", coverage.to_string_pretty());
+    let issues = match coverage.get("issues") {
+        Some(Value::Array(items)) => items.clone(),
+        other => panic!("issues array expected, got {other:?}"),
+    };
+    assert!(issues.iter().any(|i| {
+        i.get("area").and_then(Value::as_str) == Some("installer analysis")
+            && i.get("stage").and_then(Value::as_str) == Some("analysis")
+    }), "the missing installer must be named: {issues:?}");
+
+    let rendered = rea_offline::render::summary_text(&report);
+    assert!(rendered.contains("coverage: INCOMPLETE"), "{rendered}");
+    assert!(rendered.contains("installer analysis"), "{rendered}");
+    assert!(rea_offline::render::to_markdown(&report).contains("## Installer analysis"));
+
+    // Self-consistent, and not editable into a clean-looking report.
+    rea_offline::report::validate(&report).unwrap();
+    let mut tampered = report.clone();
+    if let Value::Object(map) = &mut tampered {
+        map.insert("coverage".into(), Value::obj(vec![
+            ("complete", Value::Bool(true)),
+            ("issue_count", Value::num(0)),
+            ("unverified_count", Value::num(0)),
+            ("issues", Value::Array(Vec::new())),
+        ]));
+    }
+    let error = rea_offline::report::validate(&tampered).unwrap_err().to_string();
+    assert!(error.contains("records a failure"), "{error}");
+
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// An installer killed at the timeout has only performed *part* of its
 /// install. What it dropped is still evidence — but it is not evidence of a
 /// complete run, and a clean-looking delta must not be read as one.
