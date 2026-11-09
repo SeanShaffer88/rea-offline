@@ -24,7 +24,9 @@ pub fn mode_scan(opts: ScanOptions) -> Result<Value> {
         ("mode", Value::str("local-scan")),
         ("generated_unix", Value::num(unix_secs())),
         ("verdict", Value::str(report.verdict())),
-        ("coverage", coverage_block(vec![("analysis", report.scan_issues.clone())], vec![])),
+        ("coverage", crate::coverage::block(
+            vec![("analysis", report.scan_issues.clone())], vec![],
+        )),
         ("report", report.to_json()),
     ]))
 }
@@ -84,6 +86,11 @@ pub fn mode_sandbox(opts: SandboxOptions) -> Result<Value> {
             map.insert("sandbox_path".into(), Value::str(sandbox.root.display().to_string()));
         }
     }
+    // Cleanup is the last phase, so the coverage summary is settled last: a
+    // sandbox we could not purge is a machine still holding the installer's
+    // files, and it is the report failing to keep its own promise.
+    let failures = crate::coverage::recorded_failures(&report);
+    crate::coverage::record(&mut report, failures);
     Ok(report)
 }
 
@@ -183,7 +190,7 @@ fn run_sandbox_inner(opts: &SandboxOptions, sandbox: &Sandbox, install_dir: &Pat
         })
         .collect::<Vec<_>>();
 
-    let coverage = coverage_block(
+    let coverage = crate::coverage::block(
         vec![
             ("containment", containment_issues),
             ("installer execution", execution_issues),
@@ -230,48 +237,13 @@ fn run_sandbox_inner(opts: &SandboxOptions, sandbox: &Sandbox, install_dir: &Pat
     if let (Some(error), Value::Object(map)) = (installer_error, &mut report) {
         map.insert("installer_error".into(), Value::str(error));
     }
+    // The coverage block is a summary of the envelope, so it is finished
+    // against the finished envelope: whatever the report admits it did not
+    // do (analyze the installer, clean up the sandbox) becomes a coverage
+    // issue here, using the same function the archive validator will use.
+    let failures = crate::coverage::recorded_failures(&report);
+    crate::coverage::record(&mut report, failures);
     Ok(report)
-}
-
-/// One place that answers "did this inspection actually see everything?".
-///
-/// Per-report `scan_issues` already recorded *analysis* limits, but snapshot
-/// traversal failures and files whose contents could not be compared never
-/// reached the envelope. An operator reading `low` needs to know whether that
-/// means "clean" or "we were not allowed to look" — the two demand opposite
-/// responses, and only one of them is a verdict.
-///
-/// Coverage never contributes to the risk score: it is a statement about the
-/// evidence, not about the sample.
-fn coverage_block(sources: Vec<(&str, Vec<crate::rea_bridge::ScanIssue>)>, deltas: Vec<(&str, &crate::snapshot::Delta)>) -> Value {
-    let mut issues: Vec<Value> = Vec::new();
-    let mut push = |area: &str, path: &str, stage: &str, message: &str| {
-        issues.push(Value::obj(vec![
-            ("area", Value::str(area)),
-            ("path", Value::str(path)),
-            ("stage", Value::str(stage)),
-            ("message", Value::str(message)),
-        ]));
-    };
-    for (area, list) in &sources {
-        for issue in list {
-            push(area, &issue.path, &issue.stage, &issue.message);
-        }
-    }
-    let mut unverified_count = 0u64;
-    for (area, delta) in &deltas {
-        for entry in &delta.unverified {
-            unverified_count += 1;
-            push(area, &entry.path, "compare",
-                 "contents could not be compared: unreadable in one or both snapshots");
-        }
-    }
-    Value::obj(vec![
-        ("complete", Value::Bool(issues.is_empty())),
-        ("issue_count", Value::num(issues.len() as u64)),
-        ("unverified_count", Value::num(unverified_count)),
-        ("issues", Value::Array(issues)),
-    ])
 }
 
 /// Native analysis of the files an installer added/modified **outside** the

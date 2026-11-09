@@ -144,6 +144,26 @@ pub fn validate(report: &Value) -> Result<()> {
             .ok_or_else(|| invalid("invalid report: sandbox-installer is missing its execution block"))?;
         validate_execution(execution, report)?;
     }
+    // A report can say in one field that it never analyzed the installer, or
+    // never cleaned up its sandbox, while claiming in another that it saw
+    // everything. The coverage block is a summary of the envelope, so it is
+    // checked against the failures the envelope records about itself.
+    let failures = crate::coverage::recorded_failures(report);
+    if !failures.is_empty() {
+        let stages = failures
+            .iter()
+            .map(|issue| issue.stage.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        match report.get("coverage").filter(|v| !matches!(v, Value::Null)) {
+            Some(coverage) if coverage.get("complete") == Some(&Value::Bool(true)) => {
+                return Err(invalid(format!(
+                    "invalid report: coverage claims to be complete but the report records a failure ({stages})"
+                )))
+            }
+            _ => {}
+        }
+    }
     Ok(())
 }
 
@@ -611,6 +631,56 @@ mod tests {
             let error = validate(&with_containment(json, None)).unwrap_err().to_string();
             assert!(error.contains(expected), "expected {expected:?}, got {error}");
         }
+    }
+
+    fn with_failure(field: &str) -> Value {
+        let mut report = sandbox_archive();
+        if let Value::Object(map) = &mut report {
+            map.insert("execution".into(), crate::json::parse(
+                r#"{"command":"setup.exe","exit_code":0,"timed_out":false}"#).unwrap());
+            map.insert("coverage".into(), crate::json::parse(CLEAN_COVERAGE).unwrap());
+            if let Value::Object(extra) = crate::json::parse(field).unwrap() {
+                for (key, value) in extra {
+                    map.insert(key, value);
+                }
+            }
+        }
+        report
+    }
+
+    #[test]
+    fn a_report_that_admits_a_failure_cannot_claim_complete_coverage() {
+        // Each of these is a field the writer sets when part of the
+        // inspection did not happen. None of them may sit next to "complete".
+        for (field, expected) in [
+            (r#"{"installer_error":"not found: setup.exe"}"#, "analysis"),
+            (r#"{"purge_error":"access denied"}"#, "purge"),
+            (r#"{"purge":{"path":"/tmp/x","removed":true,"verified_zero_residue":false}}"#, "verify"),
+        ] {
+            let error = validate(&with_failure(field)).unwrap_err().to_string();
+            assert!(error.contains("records a failure"), "expected a contradiction, got {error}");
+            assert!(error.contains(expected), "expected stage {expected:?}, got {error}");
+        }
+    }
+
+    #[test]
+    fn a_failure_is_readable_when_the_coverage_record_says_so() {
+        // The honest pairing: what did not happen, next to the decision.
+        let mut report = with_failure(r#"{"installer_error":"not found: setup.exe"}"#);
+        if let Value::Object(map) = &mut report {
+            map.insert("coverage".into(), crate::json::parse(
+                r#"{"complete":false,"issue_count":1,"unverified_count":0,"issues":[
+                    {"area":"installer analysis","path":"setup.exe","stage":"analysis",
+                     "message":"could not be analyzed"}]}"#).unwrap());
+        }
+        validate(&report).unwrap();
+        // And a run that recorded no failure is free to claim completion.
+        let mut clean = with_failure(r#"{"purge":{"path":"/tmp/x","removed":true,
+            "verified_zero_residue":true}}"#);
+        if let Value::Object(map) = &mut clean {
+            map.insert("coverage".into(), crate::json::parse(CLEAN_COVERAGE).unwrap());
+        }
+        validate(&clean).unwrap();
     }
 
     #[test]

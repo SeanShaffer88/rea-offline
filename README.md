@@ -251,6 +251,23 @@ An archive that claims `coverage: complete` while its `containment` block says
 the run was elevated, or that the hive never mounted, is rejected rather than
 rendered.
 
+### Coverage: a failure the report admits
+
+The coverage block is a **summary of the envelope**, so anything the report
+records as not happening is a coverage issue and not merely a footnote:
+
+| the report says | coverage issue |
+|---|---|
+| `installer_error` (the installer could not be read or analyzed) | area `installer analysis`, stage `analysis` — one of the three evidence sets is missing, which is not the same as clean |
+| `purge_error` (the sandbox could not be cleaned up) | area `cleanup`, stage `purge` — the machine still holds the installer's files |
+| `purge.verified_zero_residue: false` (deleted, but residue unconfirmed) | area `cleanup`, stage `verify` |
+
+A dropper that deletes itself after running is the ordinary case for the first
+row: the artifact the report most needs is gone. Its part of the verdict stays
+`null` rather than a silent zero, and the run is incomplete — so
+`--fail-on-incomplete` (exit `3`) catches it instead of a calm verdict sailing
+through a pipeline.
+
 `--fail-on-incomplete` makes partial evidence a build failure (exit `3`),
 independently of how calm the verdict is:
 
@@ -378,6 +395,7 @@ and Linux.
 | `src/render.rs`, `src/mdtable.rs` | Text / Markdown rendering |
 | `src/gui/` | WizTree-shaped window: tree, treemap, loopback server |
 | `src/containment.rs` | What a run could not contain (privileges, registry) |
+| `src/coverage.rs` | Coverage vocabulary: what a report means by incomplete |
 | `src/cleanup.rs` | Cleanup & zero-residue purge controller |
 | `src/imphash_ordinals.rs` | Frozen pefile ordinal tables (generated, checked in) |
 | `src/sha256.rs`, `src/json.rs` | Std-only SHA-256 / JSON (offline build) |
@@ -401,6 +419,25 @@ Created by Sean Shaffer
 MIT — see [LICENSE](LICENSE).
 
 ## Changelog
+
+### 0.11.0
+- **A failure the report admits is now a coverage failure**: a run whose
+  installer could not be analyzed, or whose sandbox could not be cleaned up,
+  reported `coverage: complete` — the installer is one of the three evidence
+  sets, so "we could not read it" was not the same as "it was clean", yet the
+  record claimed otherwise and `--fail-on-incomplete` passed.
+- **The coverage block is a derived summary of the envelope.** New
+  `src/coverage.rs` owns the vocabulary; the block is finished against the
+  finished envelope, using the same function (`coverage::recorded_failures`)
+  the archive validator uses, so the two cannot drift.
+- **What counts**: `installer_error` (area `installer analysis`), `purge_error`
+  and `purge.verified_zero_residue: false` (area `cleanup`). Recording is
+  idempotent, so the block is a summary rather than an append-only log.
+- **Tamper resistance**: an archive claiming `coverage: complete` while it
+  records any of those failures is rejected (exit `1`) rather than rendered.
+- **Tests**: an installer that deletes itself after dropping its payload
+  (library, CLI exit `3`, and CI), coverage/validator agreement on each
+  recorded failure, block arithmetic after recording, and archive tampering.
 
 ### 0.10.0
 - **What the sandbox could not contain is now on the record**: an elevated or
