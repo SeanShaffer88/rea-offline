@@ -294,8 +294,61 @@ fn sandbox_delta_catches_drops_outside_install_dir() {
     let added = sandbox_delta.get("added").expect("added list");
     let text = format!("{added:?}");
     assert!(text.contains("profile_drop.txt"), "profile drop must be reported: {text}");
-    assert!(!text.contains("scratch.txt"), "tmp/ bookkeeping must be filtered out: {text}");
+    // tmp/ is the installer's own temp folder (TEMP points there), not our
+    // bookkeeping: what it leaves there is a drop, and is reported as one.
+    assert!(text.contains("tmp/scratch.txt"), "a file left in the installer's temp must be reported: {text}");
+    // Only our own files stay internal: the capture logs in work/.
+    assert!(!text.contains("installer.stdout.log"), "our capture logs are bookkeeping: {text}");
+    assert!(!text.contains("installer.stderr.log"), "our capture logs are bookkeeping: {text}");
     CleanupController::purge_dir(&root, false).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A payload staged in the installer's temp folder — the classic unpack
+/// location — is analyzed as a drop, as is a file dropped into the
+/// working directory. Filtering tmp/ and work/ wholesale, as the delta
+/// used to, made both invisible: not in the delta, not analyzed, and not
+/// recorded as excluded anywhere.
+#[cfg(unix)]
+#[test]
+fn a_payload_staged_in_the_installers_temp_is_analyzed_as_a_drop() {
+    use rea_offline::app::{mode_sandbox, SandboxOptions};
+    use rea_offline::json::Value;
+    use rea_offline::universal_sandbox::SandboxConfig;
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tmp_dir("tmpdrop");
+    let script = dir.join("staging_installer.sh");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\nprintf 'MZ staged' > \"$TMPDIR/staged.exe\"\nprintf 'MZ cwd' > ./cwd-drop.exe\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let report = mode_sandbox(SandboxOptions {
+        installer: script,
+        installer_args: vec![],
+        rea_path: None,
+        sandbox: SandboxConfig::default(),
+    })
+    .unwrap();
+
+    let drops = report.get("drops_report").expect("drops_report");
+    let paths = match drops.get("files") {
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter_map(|f| f.get("path").and_then(Value::as_str).map(str::to_string))
+            .collect::<Vec<_>>(),
+        other => panic!("files array expected, got {other:?}"),
+    };
+    assert!(paths.iter().any(|p| p == "tmp/staged.exe"), "temp-staged payload must be analyzed: {paths:?}");
+    assert!(paths.iter().any(|p| p == "work/cwd-drop.exe"), "working-directory drop must be analyzed: {paths:?}");
+
+    let sources = report.get("verdict_sources").expect("verdict_sources");
+    assert!(sources.get("drops").is_some_and(|d| !matches!(d, Value::Null)),
+        "the drops part of the verdict must exist: {sources:?}");
+
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -410,7 +463,16 @@ fn directory_analysis_does_not_follow_symlinks_outside_the_target() {
     let report = ReaBridge::new(ReaConfig::default()).analyze(&target).unwrap();
     assert_eq!(report.files.len(), 1);
     assert_eq!(report.files[0].path, "inside.txt");
-    assert!(report.scan_issues.is_empty());
+    // Not followed — but not silent either: each link is named as a scan
+    // issue, so the summary no longer claims a complete scan of a tree
+    // whose links it never looked behind.
+    assert_eq!(report.scan_issues.len(), 2, "{:?}", report.scan_issues);
+    for link in ["linked-dir", "linked-file.txt"] {
+        let issue = report.scan_issues.iter().find(|i| i.path == link)
+            .unwrap_or_else(|| panic!("{link} must be named: {:?}", report.scan_issues));
+        assert_eq!(issue.stage, "symlink");
+    }
+    assert!(!report.summary_json().get("complete").is_some_and(|v| *v == rea_offline::json::Value::Bool(true)));
     std::fs::remove_dir_all(&dir).unwrap();
 }
 

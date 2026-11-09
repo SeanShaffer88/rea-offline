@@ -292,6 +292,18 @@ jobs:
             fi
             grep -q '"installer_error"' ghost.json
             grep -q '"installer analysis"' ghost.json
+            # A payload staged in the installer's own temp folder is a
+            # drop, not bookkeeping: it must be analyzed and reported.
+            printf '%s\n' '#!/bin/sh' 'printf "MZ staged" > "$TMPDIR/staged.exe"' > stage.sh
+            chmod +x stage.sh
+            "$EXE" sandbox stage.sh --quiet --output stage.json
+            grep -q '"tmp/staged.exe"' stage.json
+            # A link a scan does not follow is named, not silently skipped.
+            mkdir -p linktree && printf 'x' > linktree/real.txt
+            ln -s "$PWD/linktree/real.txt" linktree/linked.txt
+            "$EXE" scan linktree --output link.json --quiet
+            grep -q '"stage": "symlink"' link.json
+            grep -q '"complete": false' link.json
           fi
 
           # 6. Purge guard: refuse an arbitrary directory, then purge a real

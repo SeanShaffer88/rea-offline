@@ -35,7 +35,10 @@ How Mode B works (blueprint workflow):
 6. Runs REA over the install tree (external REA if configured, otherwise
    the built-in native analyzer), analyzes the installer binary itself, and
    natively analyzes every file added/modified **outside** the install
-   directory (`drops_report`). The verdict is the worst of those three
+   directory (`drops_report`) — including its own temp folder (`tmp\`,
+   where its `TEMP` points) and its working directory (`work\`); only the
+   sandbox's own files (the hive and the two capture logs) are excluded.
+   The verdict is the worst of those three
    parts, so a payload dropped into `AppData` cannot hide behind an empty
    install directory.
 7. Unmounts the hive, recursively purges the sandbox, and verifies
@@ -184,7 +187,10 @@ Directory scans disclose unreadable files/directories, failed external REA runs,
 and the 32 MiB per-file content-analysis limit in `report.scan_issues` (also
 summarized by `summary.complete` and `summary.scan_issue_count`). Text, Markdown,
 and the window surface incomplete coverage; these operational issues do not
-inflate the risk score. Regular files are analyzed without following symlinks.
+inflate the risk score. Files are analyzed without following symlinks — and a
+link a scan does not follow is named in `scan_issues` (stage `symlink`), as is
+anything that is not a regular file or directory (stage `special`), so a tree
+whose links were never looked behind does not read as completely scanned.
 
 `--fail-on <level>` turns the verdict into an exit code (`2` when the verdict
 reaches the level), so the same report can gate a CI job or a deployment
@@ -460,6 +466,32 @@ Created by Sean Shaffer
 MIT — see [LICENSE](LICENSE).
 
 ## Changelog
+
+### 0.15.0
+- **The sandbox no longer throws away the installer's temp folder**: the
+  whole-sandbox delta filtered out everything under `tmp\` and `work\` as
+  "sandbox bookkeeping". They are the installer's folders — `TEMP`/`TMP`
+  point at `tmp\`, and the installer runs with `work\` as its working
+  directory — so a payload staged in its temp folder, or dropped next to
+  its working directory, never reached the delta, was never analyzed as a
+  drop, and was not recorded as excluded anywhere. Only the sandbox's own
+  files are filtered now (the install tree, reported separately; the
+  registry hive file; and the two `work\installer.*.log` capture logs), and
+  temp/working-directory drops are analyzed into `drops_report` and count
+  toward the verdict like any other drop.
+- **A scan names the links it does not follow**: directory analysis never
+  follows symlinks (a link could pull a file outside the tree into the
+  report), but it skipped them in silence — the link appeared nowhere, and
+  `summary.complete` still claimed a complete scan. Each skipped symlink
+  is now a `scan_issues` entry (stage `symlink`), as is anything that is
+  not a regular file or directory (stage `special`), so the coverage
+  record and every human format disclose what was not analyzed.
+- **Tests**: a temp-staged payload and a working-directory drop analyzed
+  as drops end to end; the profile-drop delta test now expects the temp
+  file it used to assert was filtered; the symlink boundary test now
+  expects both links named instead of an empty issue list; a CLI scan
+  naming a link as a coverage issue; and CI smoke checks for a
+  temp-staged drop and a scanned link.
 
 ### 0.14.0
 - **A manifest refuses entries it cannot read**: `diff` refused a document

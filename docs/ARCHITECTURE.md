@@ -15,7 +15,10 @@ User / CLI
          stdout/stderr captured to work\installer.*.log (tails in report)
       5. post-install snapshot → delta (added / modified / deleted),
          plus a whole-sandbox delta catching drops into the redirected
-         profile (tmp/ work/ and the hive file are filtered out)
+         profile (only our own bookkeeping is filtered out: the hive file
+         and the two work/installer.*.log capture logs — tmp/ is the
+         installer's own temp folder and work/ its working directory, so
+         what it leaves in either is a drop and is analyzed as one)
       6. REA analysis of install\  (external REA if found, else native)
          + native analysis of the installer binary (installer_report)
          + native analysis of the changed files outside install\
@@ -160,7 +163,15 @@ coverage while its own `execution` block says the installer was killed.
 A sandbox run produces three analysis bodies: `installer_report` (the binary
 that was run), `report` (the install tree) and `drops_report` (files added or
 modified elsewhere inside the sandbox — the redirected profile, startup
-folders, and so on). The envelope's `verdict`/`risk_score` are the **worst**
+folders, and so on). "Elsewhere" includes the installer's own temp folder
+and its working directory: `TEMP`/`TMP` point at `tmp/` and the process runs
+with `work/` as its working directory, so those are the installer's folders,
+not sandbox bookkeeping. The whole-sandbox delta filters out only what is
+actually ours — the `install/` tree (reported separately), the registry hive
+file, and the two `work/installer.*.log` capture logs. Filtering `tmp/` and
+`work/` wholesale, as an earlier version did, made a payload staged in the
+installer's temp invisible: not in the delta, not analyzed, not recorded as
+excluded. The envelope's `verdict`/`risk_score` are the **worst**
 of the three, and `verdict_sources` records each part's score so the decision
 is explainable. Worst rather than sum because the installer is frequently
 copied into its own install tree: summing would score one binary twice.

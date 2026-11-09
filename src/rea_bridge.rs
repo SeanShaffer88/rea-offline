@@ -398,9 +398,17 @@ impl ReaBridge {
                             }
                             Err(e) => scan_issues.push(ScanIssue::new(rel, "analysis", e.to_string())),
                         }
+                    } else if meta.file_type().is_symlink() {
+                        // Never follow a link to a target outside the tree —
+                        // but say so. A link that is silently skipped is a
+                        // file the report never mentions, under a summary
+                        // that still claims the scan was complete.
+                        scan_issues.push(ScanIssue::new(rel, "symlink",
+                            "symlink not followed; its target was not analyzed"));
+                    } else {
+                        scan_issues.push(ScanIssue::new(rel, "special",
+                            "not a regular file or directory; not analyzed"));
                     }
-                    // Symlinks and special files are not regular install-tree
-                    // content. Never follow them to a target outside the tree.
                 }
             }
         } else {

@@ -118,11 +118,21 @@ fn run_sandbox_inner(opts: &SandboxOptions, sandbox: &Sandbox, install_dir: &Pat
     let delta = before.diff(&after);
     let sandbox_after = Snapshot::capture(&sandbox.root)?;
     let mut sandbox_delta = sandbox_before.diff(&sandbox_after);
-    // Drop our own bookkeeping areas from the whole-tree view: the install
-    // dir is already reported in `delta`; tmp/work/hive are sandbox guts.
+    // Drop only *our own* bookkeeping from the whole-tree view: the install
+    // dir is already reported in `delta`, the hive file is our registry
+    // scratch, and the two work/ logs are our capture of the installer's
+    // output. Everything else under tmp/ and work/ is the installer's, not
+    // ours: TEMP/TMP point at tmp/, and work/ is its working directory, so
+    // a payload it stages in its temp folder — or drops next to its own
+    // working directory — is a drop like any other and is analyzed as one.
+    // Filtering the whole directories, as this used to, made exactly those
+    // files invisible: not in the delta, not analyzed, not even recorded
+    // as excluded.
     let is_internal = |p: &str| {
-        p.starts_with("install/") || p.starts_with("tmp/") || p.starts_with("work/")
+        p.starts_with("install/")
             || p == "sandbox_reg.dat"
+            || p == "work/installer.stdout.log"
+            || p == "work/installer.stderr.log"
     };
     sandbox_delta.added.retain(|e| !is_internal(&e.path));
     sandbox_delta.modified.retain(|e| !is_internal(&e.path));

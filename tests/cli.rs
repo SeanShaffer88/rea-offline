@@ -377,6 +377,34 @@ fn unreadable_files_are_visible_as_coverage_issues_in_every_format() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// A scan does not follow links out of the tree — and now says so: the
+/// link is named in scan_issues and the coverage reads incomplete.
+#[cfg(unix)]
+#[test]
+fn symlinks_a_scan_does_not_follow_are_named_as_coverage_issues() {
+    let dir = workdir("scan-symlink");
+    let target = dir.join("tree");
+    let outside = dir.join("outside");
+    std::fs::create_dir_all(&target).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(target.join("inside.txt"), b"visible").unwrap();
+    std::fs::write(outside.join("secret.txt"), b"outside").unwrap();
+    std::os::unix::fs::symlink(outside.join("secret.txt"), target.join("linked.txt")).unwrap();
+
+    let result = run(&dir, &["scan", "tree"]);
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    let json = rea_offline::json::parse(&result.stdout).unwrap();
+    let report = json.get("report").unwrap();
+    let issues = format!("{:?}", report.get("scan_issues"));
+    assert!(issues.contains("linked.txt"), "{issues}");
+    assert!(issues.contains("symlink"), "{issues}");
+    assert_eq!(report.get("summary").and_then(|s| s.get("complete")), Some(&rea_offline::json::Value::Bool(false)));
+    assert!(!result.stdout.contains("secret"), "the link target's content must not leak into the scan");
+    let text = run(&dir, &["scan", "tree", "--format", "text"]);
+    assert!(text.stdout.contains("coverage: INCOMPLETE"), "{}", text.stdout);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// An archived sandbox run whose install tree is clean but whose profile
 /// drop is critical. Written by hand so the gate/GUI/render path is covered
 /// on Windows too, where the POSIX dropper fixture cannot run.
