@@ -360,14 +360,41 @@ pub fn mode_doctor(rea_path: Option<PathBuf>) -> Result<Value> {
     ]))
 }
 
+/// `snapshot <dir>`: the manifest, plus the same coverage record a report
+/// carries, so the manual workflow (snapshot → install → diff) can be gated
+/// the same way a sandbox run is.
 pub fn mode_snapshot(dir: &Path) -> Result<Value> {
-    Ok(Snapshot::capture(dir)?.to_json())
+    let snapshot = Snapshot::capture(dir)?;
+    let coverage = crate::coverage::block(vec![("snapshot", snapshot.issues.clone())], vec![]);
+    let mut json = snapshot.to_json();
+    if let Value::Object(map) = &mut json {
+        map.insert("coverage".into(), coverage);
+    }
+    Ok(json)
 }
 
+/// `diff <before> <after>`: what changed, and whether it can be trusted.
+///
+/// A delta inherits the blindness of *both* snapshots it came from. Two
+/// snapshots that each failed to list the same directory agree completely —
+/// and that agreement is not evidence. Both sets of issues travel with the
+/// diff instead of being dropped at the door.
 pub fn mode_diff(before_path: &Path, after_path: &Path) -> Result<Value> {
     let before = Snapshot::load(before_path)?;
     let after = Snapshot::load(after_path)?;
-    Ok(before.diff(&after).to_json())
+    let delta = before.diff(&after);
+    let coverage = crate::coverage::block(
+        vec![
+            ("before snapshot", before.issues.clone()),
+            ("after snapshot", after.issues.clone()),
+        ],
+        vec![("compare", &delta)],
+    );
+    let mut json = delta.to_json();
+    if let Value::Object(map) = &mut json {
+        map.insert("coverage".into(), coverage);
+    }
+    Ok(json)
 }
 
 pub fn mode_purge(path: &Path, force: bool) -> Result<Value> {

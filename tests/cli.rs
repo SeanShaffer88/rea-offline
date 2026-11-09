@@ -617,6 +617,53 @@ fn a_run_that_was_not_contained_cannot_claim_complete_coverage() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// The manual workflow (snapshot → install → diff) must be gateable the same
+/// way a sandbox run is: a delta of two blind manifests is not evidence.
+#[cfg(unix)]
+#[test]
+fn snapshot_and_diff_gate_on_their_own_coverage() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = workdir("snapshot-gate");
+    let tree = dir.join("tree");
+    let locked = tree.join("locked");
+    std::fs::create_dir_all(&locked).unwrap();
+    std::fs::write(locked.join("payload.exe"), b"MZ").unwrap();
+    std::fs::write(tree.join("visible.txt"), b"hi").unwrap();
+
+    // Unlocked: both commands pass the gate.
+    let clean = run(&dir, &["snapshot", "tree", "--fail-on-incomplete", "--quiet",
+        "--output", "before.json"]);
+    assert_eq!(clean.code, 0, "{}", clean.stderr);
+    std::fs::write(tree.join("dropped.exe"), b"MZ dropped").unwrap();
+    let after = run(&dir, &["snapshot", "tree", "--fail-on-incomplete", "--quiet",
+        "--output", "after.json"]);
+    assert_eq!(after.code, 0, "{}", after.stderr);
+    let diff = run(&dir, &["diff", "before.json", "after.json", "--fail-on-incomplete", "--quiet"]);
+    assert_eq!(diff.code, 0, "{}", diff.stderr);
+
+    // Locked: the snapshot cannot see it, so neither can the diff.
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read_dir(&locked).is_ok() {
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        return; // privileged process: mode bits do not apply
+    }
+    let blind_snap = run(&dir, &["snapshot", "tree", "--fail-on-incomplete", "--quiet",
+        "--output", "blind.json"]);
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(blind_snap.code, 3, "{}", blind_snap.stderr);
+    let json = rea_offline::json::parse(&std::fs::read_to_string(dir.join("blind.json")).unwrap())
+        .unwrap();
+    assert_eq!(
+        json.get("coverage").and_then(|c| c.get("complete")),
+        Some(&rea_offline::json::Value::Bool(false))
+    );
+    // A diff of a blind manifest and a sighted one is still incomplete.
+    let blind_diff = run(&dir, &["diff", "before.json", "blind.json", "--fail-on-incomplete"]);
+    assert_eq!(blind_diff.code, 3, "{}", blind_diff.stderr);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// An archive cannot describe an installer it never analyzed and still claim
 /// it saw everything. Portable: it exercises the validator, not a process.
 #[test]

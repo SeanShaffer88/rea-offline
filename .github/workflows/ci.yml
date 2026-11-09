@@ -145,6 +145,31 @@ jobs:
           "$EXE" diff before.json after.json --output delta.json --quiet
           grep -q 'b.txt' delta.json
           grep -q '"unverified_count"' delta.json
+          # A delta is only as complete as the two manifests behind it.
+          grep -q '"coverage"' delta.json
+          grep -q '"before snapshot"' delta.json
+          grep -q '"after snapshot"' delta.json
+          "$EXE" snapshot tree --fail-on-incomplete --quiet
+          "$EXE" diff before.json after.json --fail-on-incomplete --quiet
+          # Blind either way: a locked directory must reach both exit codes.
+          if [ "${RUNNER_OS:-}" != "Windows" ]; then
+            mkdir -p tree/locked && printf 'MZ' > tree/locked/payload.exe
+            chmod 000 tree/locked
+            if [ -r tree/locked ]; then
+              echo "expected the locked directory to be unreadable" >&2; chmod 700 tree/locked; exit 1
+            fi
+            set +e
+            "$EXE" snapshot tree --fail-on-incomplete --quiet --output blind.json
+            snap=$?
+            "$EXE" diff before.json after.json --fail-on-incomplete --quiet
+            df=$?
+            set -e
+            chmod 700 tree/locked
+            if [ "$snap" -ne 3 ] || [ "$df" -ne 3 ]; then
+              echo "expected snapshot/diff to exit 3 on a blind tree (got $snap / $df)" >&2; exit 1
+            fi
+            grep -q '"complete": false' blind.json
+          fi
 
           # 5b. Coverage gate: a calm verdict on partial evidence must fail.
           "$EXE" scan tree --fail-on-incomplete --quiet
