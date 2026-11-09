@@ -39,15 +39,20 @@ fn a_diff_inherits_the_blindness_of_both_snapshots() {
     std::fs::write(dir.join("c.txt"), b"three").unwrap();
     Snapshot::capture(&dir).unwrap().save(&after_path).unwrap();
 
-    let snap = rea_offline::json::parse(
-        &std::fs::read_to_string(&before_path).unwrap()).unwrap();
+    // A fully readable tree: the manifest's own fields and the coverage
+    // record the gate reads agree with each other.
+    let snapshot = rea_offline::app::mode_snapshot(&dir).unwrap();
     assert_eq!(
-        snap.get("coverage").and_then(|c| c.get("complete")),
+        snapshot.get("coverage").and_then(|c| c.get("complete")),
         Some(&rea_offline::json::Value::Bool(true)),
-        "a fully readable tree is complete: {snap:?}"
+        "a fully readable tree is complete: {snapshot:?}"
     );
-    assert_eq!(snap.get("complete"), Some(&rea_offline::json::Value::Bool(true)),
-        "the pre-existing fields are unchanged: {snap:?}");
+    assert_eq!(snapshot.get("complete"), Some(&rea_offline::json::Value::Bool(true)),
+        "the manifest's pre-existing fields are unchanged: {snapshot:?}");
+    // The saved manifest keeps the shape `diff` reads back: issues, not a
+    // coverage block, since the diff recomputes it from both sides.
+    let saved = rea_offline::json::parse(&std::fs::read_to_string(&before_path).unwrap()).unwrap();
+    assert_eq!(saved.get("complete"), Some(&rea_offline::json::Value::Bool(true)), "{saved:?}");
 
     let diff = rea_offline::app::mode_diff(&before_path, &after_path).unwrap();
     let coverage = diff.get("coverage").expect("a diff carries its coverage record");
