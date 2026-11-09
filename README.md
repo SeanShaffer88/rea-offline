@@ -283,7 +283,9 @@ through a pipeline.
 `--fail-on-incomplete` makes partial evidence a build failure (exit `3`),
 independently of how calm the verdict is. It works on every command that
 produces evidence — `scan`, `sandbox`, `report`, and the `snapshot` / `diff`
-pair:
+pair. A file neither snapshot could hash counts as something the inspection
+did not see: an empty hash on both sides is not evidence that nothing
+changed.
 
 ```bat
 rea-offline.exe sandbox setup.exe --fail-on high --fail-on-incomplete
@@ -444,7 +446,9 @@ MIT — see [LICENSE](LICENSE).
   after.json` dropped both manifests' traversal issues, so a directory neither
   snapshot could list looked *unchanged*. The delta now carries a `coverage`
   block aggregating both (`before snapshot` / `after snapshot`) plus every file
-  whose contents could not be compared.
+  whose contents could not be compared — the same rule the sandbox already
+  applied to its own two deltas, so the manual workflow is neither more nor
+  less permissive than the run it stands in for.
 - **`snapshot` and `diff` are gateable**: both take `--fail-on-incomplete`
   (exit `3`), so the manual workflow — snapshot, install for real, diff — can
   refuse partial evidence the same way a sandbox run does. Both documents now
@@ -454,9 +458,11 @@ MIT — see [LICENSE](LICENSE).
   `complete` while listing blind spots is refused (exit `1`) rather than
   believed. Reports are validated when loaded; snapshots and diffs are not, so
   the gate no longer trusts a boolean it can check.
-- **Tests**: a snapshot/diff round trip that carries coverage, an unreadable
-  directory making both incomplete and naming each phase, CLI exit codes for
-  both commands, and CI checks including a real locked-directory diff.
+- **Tests**: a snapshot/diff round trip that carries coverage; an unreadable
+  directory making both incomplete and naming each phase; an unreadable *file*
+  that the diff refuses to call unchanged, pinning that the manual workflow is
+  no more permissive than the sandbox; CLI exit codes for both commands; and
+  CI checks including a real locked-directory diff.
 
 ### 0.11.0
 - **A failure the report admits is now a coverage failure**: a run whose
