@@ -699,7 +699,11 @@ fn an_installer_that_erases_itself_leaves_a_hole_in_the_record() {
         ]));
     }
     let error = rea_offline::report::validate(&tampered).unwrap_err().to_string();
-    assert!(error.contains("records a failure"), "{error}");
+    // Which completeness contradiction is reported first depends on the
+    // environment: a privileged test run is also "not contained", and that
+    // check fires before the recorded-failure one. Both are the same
+    // rejection — a claim of complete coverage the envelope contradicts.
+    assert!(error.contains("coverage claims to be complete"), "{error}");
 
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -774,7 +778,9 @@ fn an_installer_killed_at_the_timeout_makes_the_run_incomplete() {
         ]));
     }
     let error = rea_offline::report::validate(&tampered).unwrap_err().to_string();
-    assert!(error.contains("did not finish"), "{error}");
+    // Same ordering note as the self-erasing installer test: under a
+    // privileged test run the containment contradiction fires first.
+    assert!(error.contains("coverage claims to be complete"), "{error}");
 
     std::fs::remove_dir_all(&dir).unwrap();
 }

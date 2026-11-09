@@ -345,6 +345,13 @@ fn unreadable_files_are_visible_as_coverage_issues_in_every_format() {
     let locked = target.join("locked.bin");
     std::fs::write(&locked, b"hidden").unwrap();
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::File::open(&locked).is_ok() {
+        // Privileged process: mode bits do not block it, so the file is
+        // not unreadable here and this fixture cannot be built.
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        return;
+    }
 
     let result = run(&dir, &["scan", "tree"]);
     assert_eq!(result.code, 0, "{}", result.stderr);
@@ -677,6 +684,32 @@ fn diff_refuses_a_document_that_is_not_a_manifest() {
     std::fs::write(dir.join("empty.json"), "{}").unwrap();
 
     for name in ["report.json", "empty.json"] {
+        let out = run(&dir, &["diff", name, name]);
+        assert_eq!(out.code, 1, "{name} must be refused: {}", out.stderr);
+        assert!(out.stderr.contains("is not a snapshot manifest"), "{name}: {}", out.stderr);
+        assert!(out.stderr.contains(name), "{name}: the file is named: {}", out.stderr);
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A manifest whose entries are malformed is refused the same way: an
+/// entry silently dropped on load is a file the delta never mentions.
+#[test]
+fn diff_refuses_a_manifest_with_malformed_entries() {
+    let dir = workdir("diff-entry-refusal");
+    let entry = r#"{"path":"a.txt","size":1,"sha256":"aa","kind":"file"}"#;
+    std::fs::write(
+        dir.join("dup.json"),
+        format!(r#"{{"root":"tree","entries":[{entry},{entry}]}}"#),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("nopath.json"),
+        r#"{"root":"tree","entries":[{"size":1,"sha256":"aa","kind":"file"}]}"#,
+    )
+    .unwrap();
+
+    for name in ["dup.json", "nopath.json"] {
         let out = run(&dir, &["diff", name, name]);
         assert_eq!(out.code, 1, "{name} must be refused: {}", out.stderr);
         assert!(out.stderr.contains("is not a snapshot manifest"), "{name}: {}", out.stderr);

@@ -63,9 +63,10 @@ privilege level before a run is trusted. An elevation the platform will not
 disclose is recorded as unknown rather than silently treated as "no".
 
 The method's permanent blind spots — registry writes need a driver to
-redirect, writes outside the sandbox tree are invisible to a Job Object, and
-there is no process/network/syscall telemetry — are listed once per report as
-`containment.limits`. They are deliberately *not* coverage issues: a warning
+redirect, writes outside the sandbox tree are invisible to a Job Object,
+there is no process/network/syscall telemetry, and a file created and
+deleted between the two snapshots leaves no trace in either — are listed
+once per report as `containment.limits`. They are deliberately *not* coverage issues: a warning
 that is true of every run is a warning nobody reads, and it would make
 `--fail-on-incomplete` useless. They are stated so an archived verdict can be
 read months later without the manual.
@@ -102,7 +103,14 @@ Inheriting blindness is only half of it: a delta also has to be *between two
 things that can be compared*. `Snapshot::load` therefore refuses a document
 that is not a manifest at all — no `root`, or no `entries` — rather than
 letting a report archive load as "a snapshot of nothing" and diff into a
-confident "everything was deleted". `Snapshot::compare_issues` then states
+confident "everything was deleted". The entries get the same treatment: an
+entry with no path, a duplicated path, or a size or hash of the wrong shape
+is refused at load instead of being dropped, overwritten or defaulted,
+because a manifest that loses entries on the way in is the same failure one
+level down — a delta that claims complete coverage of evidence it never
+held. A missing `sha256` is the one deliberate exception: it loads as an
+empty digest and diffs as `unverified`, which is exactly what an unreadable
+file already means. `Snapshot::compare_issues` then states
 what makes two otherwise-valid manifests incomparable: a different root, or
 an `after` that predates its `before`. Both are coverage issues, not errors,
 because a manifest stores root-relative paths precisely so it stays

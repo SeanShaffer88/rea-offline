@@ -162,6 +162,16 @@ jobs:
           if [ "$bad" -ne 1 ]; then
             echo "expected diff to refuse a non-manifest with exit 1, got $bad" >&2; exit 1
           fi
+          # A manifest's entries are its evidence: a duplicated entry must
+          # be refused, not silently overwritten on load.
+          printf '%s' '{"root":"tree","entries":[{"path":"a.txt","size":1,"sha256":"aa","kind":"file"},{"path":"a.txt","size":1,"sha256":"aa","kind":"file"}]}' > dup-entry.json
+          set +e
+          "$EXE" diff dup-entry.json after.json --quiet
+          dup=$?
+          set -e
+          if [ "$dup" -ne 1 ]; then
+            echo "expected diff to refuse a duplicate-entry manifest with exit 1, got $dup" >&2; exit 1
+          fi
           # Two complete trees can still be incomparable; the delta says so.
           mkdir -p elsewhere && printf 'unrelated' > elsewhere/other.txt
           "$EXE" snapshot elsewhere --output elsewhere.json --quiet
@@ -269,6 +279,7 @@ jobs:
             # ...and what the sandbox could not contain is on the record.
             grep -q '"containment"' stall.json
             grep -q '"not-applicable"' stall.json
+            grep -q 'created and deleted between' stall.json
             # An installer that erases itself leaves a hole the record names.
             printf '%s\n' '#!/bin/sh' 'printf "MZ" > "$REASANDBOX_INSTALL/app.exe"' 'rm -f "$0"' > ghost.sh
             chmod +x ghost.sh

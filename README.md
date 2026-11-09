@@ -61,7 +61,14 @@ A delta is only meaningful if the two manifests describe the same thing, so
 `diff` refuses anything that is not a snapshot manifest (a report archive
 handed to it by mistake exits `1` rather than reporting every file as
 deleted), and the document names both sides — `before_root`, `after_root`
-and their capture times. Two different directories compared by accident, or
+and their capture times. The entries inside a manifest are held to the same
+standard: an entry that is not an object, has no path, duplicates an earlier
+path, or carries a size or hash of the wrong shape is refused at load
+(exit `1`) rather than silently dropped, overwritten or defaulted — a
+manifest that loses entries on the way in would diff with complete-looking
+coverage of evidence it never actually held. (A missing `sha256` stays
+lenient by design: it is an empty digest, which diffs as `unverified`,
+never as `unchanged`.) Two different directories compared by accident, or
 an `after` that predates the `before` (swapped arguments invert `added` and
 `deleted`), are recorded as coverage issues rather than quietly assumed
 away: they gate, they do not refuse, because a manifest stores root-relative
@@ -265,9 +272,12 @@ tell you what escaped it. Each sandbox run records that in `containment`:
   `not-applicable` (POSIX: there is no registry to redirect).
 * `limits` — what this **method** can never see, so an archived report can be
   read without the manual: registry writes (no driver to redirect them),
-  writes outside the sandbox tree, and the absence of any process, network or
-  syscall monitoring. These are true of every run, so they are *not* coverage
-  issues — a warning that is always on is a warning nobody reads.
+  writes outside the sandbox tree, the absence of any process, network or
+  syscall monitoring, and files created and deleted between the two
+  snapshots — a delta only sees what exists at the capture moments, so a
+  drop that cleans up after itself leaves no trace. These are true of every
+  run, so they are *not* coverage issues — a warning that is always on is a
+  warning nobody reads.
 
 An archive that claims `coverage: complete` while its `containment` block says
 the run was elevated, or that the hive never mounted, is rejected rather than
@@ -450,6 +460,31 @@ Created by Sean Shaffer
 MIT — see [LICENSE](LICENSE).
 
 ## Changelog
+
+### 0.14.0
+- **A manifest refuses entries it cannot read**: `diff` refused a document
+  that was not a snapshot manifest, but inside a real manifest an entry with
+  no path was silently skipped, a duplicate path silently overwrote the
+  first entry, and a missing or mistyped size was defaulted to zero — the
+  loaded manifest held fewer files than the one on disk, and the delta
+  still claimed complete coverage. Entries are now validated on load: a
+  non-object entry, a missing or empty path, a duplicate path, a size that
+  is absent, negative, fractional or not a number, and a non-string
+  `sha256`/`kind` are all refused with exit `1`, naming the entry. A missing
+  `sha256` remains an empty digest by design — it diffs as `unverified`,
+  not `unchanged`.
+- **A drop that cleans up after itself is now a stated limit**: a file
+  created and deleted between the before and after snapshots leaves no
+  trace in either, and unlike every other standing blind spot this one was
+  stated nowhere. It is now in `containment.limits` on every sandbox
+  report, alongside registry writes, writes outside the tree and the
+  absence of runtime telemetry.
+- **Tests**: malformed-entry refusal for each failure shape (library),
+  an absent hash loading as unverified, CLI exit `1` on duplicated and
+  pathless entries, the transient-drop limit asserted on the containment
+  block, and CI smoke checks for both. The permission-based fixtures also
+  now skip cleanly under a privileged (root) test runner instead of
+  failing: root ignores mode bits, so the fixture cannot be built there.
 
 ### 0.13.0
 - **A delta refuses what it cannot compare**: `diff` accepted any two JSON

@@ -87,6 +87,12 @@ pub fn limits() -> Vec<String> {
          static analysis plus a filesystem delta only"
             .to_string(),
     );
+    limits.push(
+        "files created and deleted between the before and after snapshots \
+         leave no trace: a delta only sees what exists at the two capture \
+         moments, so a drop that cleans up after itself is invisible"
+            .to_string(),
+    );
     limits
 }
 
@@ -286,6 +292,11 @@ mod tests {
             Some("access denied")
         );
         assert!(!array(&json, "limits").is_empty(), "the method's standing limits travel with the report");
+        assert!(
+            array(&json, "limits").iter().any(|limit| limit.as_str()
+                .is_some_and(|text| text.contains("created and deleted between"))),
+            "a drop that cleans up after itself is a standing blind spot and must be stated",
+        );
         // An unprivileged run on a machine with no registry is the quiet case.
         let plain = to_json(Some(false), &RegistryStatus::NotApplicable);
         assert_eq!(plain.get("elevated"), Some(&Value::Bool(false)));

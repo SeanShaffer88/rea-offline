@@ -242,19 +242,55 @@ impl Snapshot {
                 path.display(),
             ))),
         };
+        // The entries are the evidence, so they are held to the same
+        // standard as the document itself. An entry that is not an object,
+        // has no path, repeats an earlier path, or carries a size or hash
+        // of the wrong shape used to be silently dropped, overwritten or
+        // defaulted — the manifest loaded with fewer files than it listed,
+        // and a diff against it still claimed complete coverage of a
+        // comparison that had quietly lost evidence. Refuse instead, the
+        // way a document that is not a manifest at all is refused. Two
+        // fields stay lenient by design: a missing `sha256` is an empty
+        // digest, which diffs as `unverified` rather than `unchanged`,
+        // and a missing `kind` is a regular file.
+        let malformed = |reason: String| {
+            Error::InvalidInput(format!(
+                "{} is not a snapshot manifest ({reason}); expected a file \
+                 written by `rea-offline snapshot`",
+                path.display(),
+            ))
+        };
         let mut entries = BTreeMap::new();
-        {
-            for item in items {
-                let rel = item.get("path").and_then(Value::as_str).unwrap_or_default().to_string();
-                if rel.is_empty() { continue; }
-                let size = match item.get("size") { Some(Value::Number(n)) => *n as u64, _ => 0 };
-                entries.insert(rel.clone(), FileEntry {
-                    path: rel,
-                    size,
-                    sha256: item.get("sha256").and_then(Value::as_str).unwrap_or_default().to_string(),
-                    kind: EntryKind::from_str(item.get("kind").and_then(Value::as_str).unwrap_or("file")),
-                });
+        for (index, item) in items.iter().enumerate() {
+            if !matches!(item, Value::Object(_)) {
+                return Err(malformed(format!("entry {index} is not an object")));
             }
+            let rel = match item.get("path").and_then(Value::as_str) {
+                Some(rel) if !rel.is_empty() => rel.to_string(),
+                _ => return Err(malformed(format!("entry {index} has no path"))),
+            };
+            if entries.contains_key(&rel) {
+                return Err(malformed(format!("entry {index} duplicates '{rel}'")));
+            }
+            let size = match item.get("size") {
+                Some(Value::Number(n))
+                    if n.is_finite() && *n >= 0.0 && n.fract() == 0.0 && *n <= u64::MAX as f64 =>
+                {
+                    *n as u64
+                }
+                _ => return Err(malformed(format!("entry {index} ('{rel}') has no usable size"))),
+            };
+            let sha256 = match item.get("sha256") {
+                None => String::new(),
+                Some(Value::String(hash)) => hash.clone(),
+                _ => return Err(malformed(format!("entry {index} ('{rel}') has a non-string sha256"))),
+            };
+            let kind = match item.get("kind") {
+                None => EntryKind::File,
+                Some(Value::String(kind)) => EntryKind::from_str(kind),
+                _ => return Err(malformed(format!("entry {index} ('{rel}') has a non-string kind"))),
+            };
+            entries.insert(rel.clone(), FileEntry { path: rel, size, sha256, kind });
         }
         // Manifests written before coverage was recorded carry no issues
         // block. They are still readable; files they could not hash have an
@@ -473,6 +509,51 @@ mod tests {
     }
 
     #[test]
+    fn malformed_entries_are_refused_not_silently_dropped() {
+        // The entries are the evidence. Each of these used to load anyway:
+        // the pathless entry vanished, the duplicate overwrote the first
+        // copy, and the rest were defaulted — so the manifest that reached
+        // the diff held less than the manifest on disk, and said nothing.
+        let dir = std::env::temp_dir().join(format!("rea_load_{}", crate::util::new_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let good = r#"{"path":"a.txt","size":1,"sha256":"aa","kind":"file"}"#;
+        for (name, entries, reason) in [
+            ("bare.json", r#"["oops"]"#, "is not an object"),
+            ("nopath.json", r#"[{"size":1,"sha256":"aa","kind":"file"}]"#, "has no path"),
+            ("emptypath.json", r#"[{"path":"","size":1,"sha256":"aa","kind":"file"}]"#, "has no path"),
+            ("dupe.json", &format!("[{good},{good}]"), "duplicates 'a.txt'"),
+            ("nosize.json", r#"[{"path":"a.txt","sha256":"aa","kind":"file"}]"#, "has no usable size"),
+            ("strsize.json", r#"[{"path":"a.txt","size":"1","sha256":"aa","kind":"file"}]"#, "has no usable size"),
+            ("negsize.json", r#"[{"path":"a.txt","size":-1,"sha256":"aa","kind":"file"}]"#, "has no usable size"),
+            ("fracsize.json", r#"[{"path":"a.txt","size":1.5,"sha256":"aa","kind":"file"}]"#, "has no usable size"),
+            ("numhash.json", r#"[{"path":"a.txt","size":1,"sha256":7,"kind":"file"}]"#, "non-string sha256"),
+            ("numkind.json", r#"[{"path":"a.txt","size":1,"sha256":"aa","kind":7}]"#, "non-string kind"),
+        ] {
+            let path = dir.join(name);
+            std::fs::write(&path, format!(r#"{{"root":"/virtual","entries":{entries}}}"#)).unwrap();
+            let error = Snapshot::load(&path).unwrap_err().to_string();
+            assert!(error.contains("is not a snapshot manifest"), "{name}: {error}");
+            assert!(error.contains(reason), "{name}: {error}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_manifest_entry_without_a_hash_loads_as_unverified_not_unchanged() {
+        // The one lenient field, by design: a file the capture could not
+        // read has an empty digest, and an absent field is the same fact.
+        let dir = std::env::temp_dir().join(format!("rea_load_{}", crate::util::new_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("nohash.json");
+        std::fs::write(&path, r#"{"root":"/virtual","entries":[{"path":"a.txt","size":1,"kind":"file"}]}"#).unwrap();
+        let loaded = Snapshot::load(&path).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        let entry = &loaded.entries["a.txt"];
+        assert!(entry.sha256.is_empty());
+        assert!(!entry.content_verified());
+    }
+
+    #[test]
     fn a_manifest_of_an_empty_directory_is_still_a_manifest() {
         let dir = std::env::temp_dir().join(format!("rea_load_{}", crate::util::new_id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -543,8 +624,15 @@ mod tests {
     fn make_unreadable(path: &Path) -> bool {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000)).unwrap();
-        let blocked = std::fs::read_dir(path).is_err()
-            || std::fs::File::open(path).is_err();
+        // A directory is blocked when it cannot be listed; a file when it
+        // cannot be opened. `read_dir` on a file errors for every caller,
+        // so asking it about a file would claim "blocked" even for a
+        // privileged process that can in fact read the file.
+        let blocked = if path.is_dir() {
+            std::fs::read_dir(path).is_err()
+        } else {
+            std::fs::File::open(path).is_err()
+        };
         if !blocked {
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
         }
