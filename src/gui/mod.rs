@@ -702,28 +702,15 @@ footer pre{margin:0;font:12px/1.5 "Cascadia Mono",Consolas,monospace;color:#c6d3
 /// One request at a time, no keep-alive, no chunking: enough for a UI that a
 /// single operator drives, and small enough to audit. Only loopback is bound,
 /// so nothing is exposed to the network (this tool is for air-gapped hosts).
-pub fn serve(page: Page, preferred_port: u16) -> crate::Result<u16> {
+/// Bind the first free loopback port at or after `preferred_port`.
+fn bind(preferred_port: u16) -> crate::Result<(TcpListener, u16)> {
     let mut last_error = None;
     for offset in 0..40u16 {
         let port = preferred_port.saturating_add(offset);
         match TcpListener::bind(("127.0.0.1", port)) {
             Ok(listener) => {
                 listener.set_nonblocking(false).ok();
-                eprintln!("[rea-offline] GUI: http://127.0.0.1:{port}/  (Ctrl+C to stop)");
-                for stream in listener.incoming() {
-                    match stream {
-                        Ok(stream) => {
-                            if let Err(e) = handle(stream, &page) {
-                                eprintln!("[rea-offline] gui request error: {e}");
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("[rea-offline] gui accept error: {e}");
-                            std::thread::sleep(Duration::from_millis(50));
-                        }
-                    }
-                }
-                return Ok(port);
+                return Ok((listener, port));
             }
             Err(e) => last_error = Some(e),
         }
@@ -733,19 +720,49 @@ pub fn serve(page: Page, preferred_port: u16) -> crate::Result<u16> {
     })))
 }
 
-fn handle(mut stream: TcpStream, page: &Page) -> std::io::Result<()> {
+fn accept_loop(listener: TcpListener, mut serve_one: impl FnMut(TcpStream)) -> ! {
+    for stream in listener.incoming() {
+        match stream {
+            Ok(stream) => serve_one(stream),
+            Err(e) => {
+                eprintln!("[rea-offline] gui accept error: {e}");
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
+    unreachable!("the accept loop only ends with the process")
+}
+
+pub fn serve(page: Page, preferred_port: u16) -> crate::Result<u16> {
+    let (listener, port) = bind(preferred_port)?;
+    eprintln!("[rea-offline] GUI: http://127.0.0.1:{port}/  (Ctrl+C to stop)");
+    accept_loop(listener, |stream| {
+        if let Err(e) = handle(stream, &page) {
+            eprintln!("[rea-offline] gui request error: {e}");
+        }
+    });
+}
+
+/// Read one request line and split it into (method, path, query).
+fn read_request(stream: &mut TcpStream) -> std::io::Result<(String, String, String)> {
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(10)))?;
     let mut buffer = [0u8; 8192];
     let read = stream.read(&mut buffer)?;
     let request = String::from_utf8_lossy(&buffer[..read]).to_string();
     let mut parts = request.lines().next().unwrap_or("").split_whitespace();
-    let method = parts.next().unwrap_or("");
-    let target = parts.next().unwrap_or("/");
+    let method = parts.next().unwrap_or("").to_string();
+    let target = parts.next().unwrap_or("/").to_string();
     let (path, query) = match target.split_once('?') {
-        Some((path, query)) => (path, query),
-        None => (target, ""),
+        Some((path, query)) => (path.to_string(), query.to_string()),
+        None => (target, String::new()),
     };
+    Ok((method, path, query))
+}
+
+fn handle(mut stream: TcpStream, page: &Page) -> std::io::Result<()> {
+    let (method, path, query) = read_request(&mut stream)?;
+    let (path, query) = (path.as_str(), query.as_str());
     // Refuse anything but GET on loopback: no uploads, no state changes.
     if method != "GET" {
         return respond(&mut stream, "405 Method Not Allowed", "text/plain", b"GET only\n");
@@ -769,6 +786,199 @@ fn handle(mut stream: TcpStream, page: &Page) -> std::io::Result<()> {
         }
         "/healthz" => respond(&mut stream, "200 OK", "text/plain", b"ok\n"),
         _ => respond(&mut stream, "404 Not Found", "text/plain", b"not found\n"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Picker server: the window before a target is chosen
+// ---------------------------------------------------------------------------
+
+/// The page a bare launch opens: one question — what should I inspect? A
+/// browser file dialog cannot hand a local tool real paths, so the picker
+/// asks for the path as text; everything stays on this machine.
+pub fn picker_html(error: Option<&str>) -> String {
+    let error_block = match error {
+        Some(message) => format!(
+            "<p class=\"error\" role=\"alert\">{}</p>",
+            html_escape(message)
+        ),
+        None => String::new(),
+    };
+    format!(
+        r#"<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rea-offline — what should I inspect?</title>
+<style>
+:root{{--bg:#0b0f14;--panel:#121820;--line:#1f2937;--text:#e5edf5;--muted:#8b9bb0;--accent:#e5484d}}
+*{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:var(--text);
+font:15px/1.5 "Segoe UI",system-ui,sans-serif;display:flex;justify-content:center;padding:8vh 16px}}
+main{{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+padding:28px 32px;max-width:640px;width:100%}}
+h1{{font-size:20px;margin:0 0 4px}}h1 .logo{{color:var(--accent)}}
+p.hint{{color:var(--muted);margin:0 0 20px}}
+label{{display:block;margin:14px 0 6px;font-weight:600}}
+input[type=text]{{width:100%;padding:10px;border-radius:6px;border:1px solid var(--line);
+background:var(--bg);color:var(--text);font:inherit}}
+fieldset{{border:1px solid var(--line);border-radius:6px;margin:18px 0;padding:10px 14px}}
+fieldset label{{font-weight:400;margin:6px 0}}
+button{{background:var(--accent);color:#fff;border:0;border-radius:6px;
+padding:10px 22px;font:inherit;font-weight:600;cursor:pointer}}
+.error{{background:#3a1414;border:1px solid var(--accent);border-radius:6px;padding:10px 14px}}
+code{{color:var(--muted)}}
+</style></head><body><main>
+<h1><span class="logo">rea-offline</span> — what should I inspect?</h1>
+<p class="hint">Type or paste the full path of a file, a folder, or an installer.
+The inspection runs entirely on this PC; nothing is uploaded anywhere.</p>
+{error_block}
+<form method="get" action="/inspect">
+<label for="path">Path</label>
+<input type="text" id="path" name="path" autofocus
+ placeholder="C:\Users\you\Downloads\setup.exe" autocomplete="off">
+<fieldset><legend>That path is…</legend>
+<label><input type="radio" name="kind" value="target" checked>
+ a file, folder or installer to inspect</label>
+<label><input type="radio" name="kind" value="report">
+ a report saved earlier (a <code>report.json</code> from a previous run)</label>
+</fieldset>
+<button type="submit">Inspect</button>
+</form>
+</main></body></html>"#
+    )
+}
+
+/// Percent-decode one query component (`+` means space in a form query).
+fn url_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => { out.push(b' '); i += 1; }
+            b'%' if i + 2 < bytes.len() => {
+                let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("");
+                match u8::from_str_radix(hex, 16) {
+                    Ok(byte) => { out.push(byte); i += 3; }
+                    Err(_) => { out.push(bytes[i]); i += 1; }
+                }
+            }
+            byte => { out.push(byte); i += 1; }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn query_param(query: &str, key: &str) -> Option<String> {
+    for pair in query.split('&') {
+        let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
+        if url_decode(name) == key {
+            return Some(url_decode(value));
+        }
+    }
+    None
+}
+
+/// The report page, plus the way back to the picker. Only picker-served
+/// pages get the bar; a page built for one named target is unchanged.
+fn with_picker_bar(html: String) -> String {
+    let bar = "<div style=\"background:#121820;border-bottom:1px solid #1f2937;\
+               padding:8px 16px;font:14px 'Segoe UI',system-ui,sans-serif\">\
+               <a href=\"/new\" style=\"color:#e5484d\">← Inspect something else</a></div>";
+    match html.find("<body>") {
+        Some(at) => {
+            let mut out = String::with_capacity(html.len() + bar.len());
+            out.push_str(&html[..at + 6]);
+            out.push_str(bar);
+            out.push_str(&html[at + 6..]);
+            out
+        }
+        None => format!("{bar}{html}"),
+    }
+}
+
+/// Serve the picker until a target is chosen, then that target's report.
+/// The process serves until killed, exactly like [`serve`].
+pub fn serve_picker(preferred_port: u16) -> crate::Result<u16> {
+    let (listener, port) = bind(preferred_port)?;
+    eprintln!("[rea-offline] GUI picker: http://127.0.0.1:{port}/  (Ctrl+C to stop)");
+    let mut current: Option<Page> = None;
+    accept_loop(listener, |stream| {
+        if let Err(e) = handle_picker(stream, &mut current) {
+            eprintln!("[rea-offline] gui request error: {e}");
+        }
+    });
+}
+
+fn handle_picker(mut stream: TcpStream, current: &mut Option<Page>) -> std::io::Result<()> {
+    let (method, path, query) = read_request(&mut stream)?;
+    if method != "GET" {
+        return respond(&mut stream, "405 Method Not Allowed", "text/plain", b"GET only\n");
+    }
+    let path = path.as_str();
+    match path {
+        "/inspect" => {
+            let target = query_param(&query, "path").unwrap_or_default();
+            let target = target.trim().trim_matches('"').to_string();
+            if target.is_empty() {
+                let html = picker_html(Some("Type the full path of the file, folder or installer first."));
+                return respond(&mut stream, "200 OK", "text/html; charset=utf-8", html.as_bytes());
+            }
+            let built = if query_param(&query, "kind").as_deref() == Some("report") {
+                page_from_report_file(Path::new(&target))
+            } else {
+                page_for_path(Path::new(&target), None)
+            };
+            match built {
+                Ok(page) => {
+                    let html = with_picker_bar(page_html(&page, ""));
+                    *current = Some(page);
+                    respond(&mut stream, "200 OK", "text/html; charset=utf-8", html.as_bytes())
+                }
+                Err(e) => {
+                    let html = picker_html(Some(&format!("Could not inspect {target}: {e}")));
+                    respond(&mut stream, "200 OK", "text/html; charset=utf-8", html.as_bytes())
+                }
+            }
+        }
+        "/new" => {
+            *current = None;
+            let html = picker_html(None);
+            respond(&mut stream, "200 OK", "text/html; charset=utf-8", html.as_bytes())
+        }
+        "/" | "/view" | "/index.html" => match current {
+            Some(page) => {
+                let html = with_picker_bar(page_html(page, &query));
+                respond(&mut stream, "200 OK", "text/html; charset=utf-8", html.as_bytes())
+            }
+            None => {
+                let html = picker_html(None);
+                respond(&mut stream, "200 OK", "text/html; charset=utf-8", html.as_bytes())
+            }
+        },
+        "/json" | "/text" | "/markdown" => match current {
+            Some(page) => handle_report_route(&mut stream, path, page),
+            None => respond(&mut stream, "404 Not Found", "text/plain", b"nothing inspected yet\n"),
+        },
+        "/healthz" => respond(&mut stream, "200 OK", "text/plain", b"ok\n"),
+        _ => respond(&mut stream, "404 Not Found", "text/plain", b"not found\n"),
+    }
+}
+
+/// The non-HTML report routes, shared shape with [`handle`].
+fn handle_report_route(stream: &mut TcpStream, path: &str, page: &Page) -> std::io::Result<()> {
+    match path {
+        "/json" => {
+            let body = format!("{}\n", page.report.to_string_pretty());
+            respond(stream, "200 OK", "application/json", body.as_bytes())
+        }
+        "/text" => {
+            let body = page.summary_text();
+            respond(stream, "200 OK", "text/plain; charset=utf-8", body.as_bytes())
+        }
+        _ => {
+            let body = crate::render::to_markdown(&page.report);
+            respond(stream, "200 OK", "text/markdown; charset=utf-8", body.as_bytes())
+        }
     }
 }
 
@@ -894,6 +1104,37 @@ mod tests {
         let html = page_html(&page, "");
         assert!(html.contains("coverage not recorded"), "the chip must disclose it: {html}");
         assert!(compact_summary(&page).contains("coverage: NOT RECORDED"));
+    }
+
+    #[test]
+    fn the_picker_asks_for_a_path_and_shows_errors() {
+        let html = picker_html(None);
+        assert!(html.contains("action=\"/inspect\""), "{html}");
+        assert!(html.contains("name=\"path\""), "{html}");
+        assert!(!html.contains("role=\"alert\""), "{html}");
+        let html = picker_html(Some("no such file"));
+        assert!(html.contains("no such file"), "{html}");
+        assert!(html.contains("role=\"alert\""), "{html}");
+    }
+
+    #[test]
+    fn picker_query_decoding_round_trips_a_windows_path() {
+        let q = "path=C%3A%5CUsers%5Cme%5CDownloads%5Csetup+one.exe&kind=report";
+        assert_eq!(query_param(q, "path").as_deref(), Some("C:\\Users\\me\\Downloads\\setup one.exe"));
+        assert_eq!(query_param(q, "kind").as_deref(), Some("report"));
+        assert_eq!(query_param(q, "missing"), None);
+    }
+
+    #[test]
+    fn picker_served_pages_link_back_to_the_picker() {
+        let report = crate::json::parse(
+            r#"{"mode":"scan","verdict":"low","risk_score":0,
+                "report":{"target":"C:/x","file_count":0,"risk_score":0,
+                          "verdict":"low","files":[]}}"#
+        ).unwrap();
+        let page = Page::new(report, "scan");
+        let html = with_picker_bar(page_html(&page, ""));
+        assert!(html.contains("href=\"/new\""), "the way back must be there: {html}");
     }
 
     #[test]

@@ -18,8 +18,10 @@ USAGE:
   rea-offline report   <report.json> [--format text|markdown] [--fail-on <level>]
                        (render/gate an archived scan or sandbox report; no rescan)
   rea-offline sandbox  <installer.exe|.msi> [options] [-- <installer args>...]
-  rea-offline gui      <path> [--port 8787] [--no-open] [--output page.html]
-                       [--from-report]  (open an archived report.json instead)
+  rea-offline gui      [<path>] [--port 8787] [--no-open] [--output page.html]
+                       [--from-report]  (open an archived report.json instead;
+                       no path opens a picker window — also what a
+                       double-click on the .exe opens)
   rea-offline snapshot <dir> [--output snap.json] [--fail-on-incomplete]
   rea-offline diff     <before.json> <after.json> [--fail-on-incomplete]
   rea-offline purge    <rea_sandbox_dir> [--force]
@@ -59,6 +61,7 @@ EXAMPLES:
   rea-offline scan sample.exe --format text
   rea-offline report report.json --format markdown --fail-on high
   rea-offline gui "C:\Program Files\SomeApp"
+  rea-offline gui            (picker window: choose what to inspect)
   rea-offline gui Downloads --output window.html --no-open
   rea-offline gui report.json --from-report
   rea-offline sandbox setup.msi --output report.json -- /quiet
@@ -129,6 +132,9 @@ struct CommandSpec {
     value_flags: &'static [&'static str],
     bool_flags: &'static [&'static str],
     positional: usize,
+    /// True when `positional` is a maximum and zero is also accepted
+    /// (only `gui`: no path opens the picker window).
+    optional_positional: bool,
     installer_args: bool,
 }
 
@@ -136,7 +142,7 @@ struct CommandSpec {
 /// option belonging to another command makes a failed inspection look successful.
 fn command_spec(command: &str) -> Option<CommandSpec> {
     let spec = |value_flags, bool_flags, positional, installer_args| Some(CommandSpec {
-        value_flags, bool_flags, positional, installer_args,
+        value_flags, bool_flags, positional, optional_positional: false, installer_args,
     });
     match command {
         "scan" => spec(&["output", "rea", "format", "fail-on"], &["quiet", "fail-on-incomplete"], 1, false),
@@ -145,7 +151,8 @@ fn command_spec(command: &str) -> Option<CommandSpec> {
             &["quiet", "keep", "fail-on-incomplete"], 1, true,
         ),
         "report" => spec(&["output", "format", "fail-on"], &["quiet", "fail-on-incomplete"], 1, false),
-        "gui" => spec(&["output", "rea", "port"], &["quiet", "no-open", "from-report"], 1, false),
+        "gui" => spec(&["output", "rea", "port"], &["quiet", "no-open", "from-report"], 1, false)
+            .map(|mut s| { s.optional_positional = true; s }),
         "snapshot" => spec(&["output"], &["quiet", "fail-on-incomplete"], 1, false),
         "diff" => spec(&["output"], &["quiet", "fail-on-incomplete"], 2, false),
         "purge" => spec(&["output"], &["quiet", "force"], 1, false),
@@ -220,10 +227,20 @@ fn parse(command: &str, args: &[String]) -> rea_offline::Result<Parsed> {
             i += 1;
         }
     }
-    if p.positional.len() != spec.positional {
+    let count_ok = if spec.optional_positional {
+        p.positional.len() <= spec.positional
+    } else {
+        p.positional.len() == spec.positional
+    };
+    if !count_ok {
+        let expects = if spec.optional_positional {
+            format!("at most {}", spec.positional)
+        } else {
+            format!("{}", spec.positional)
+        };
         return Err(rea_offline::Error::InvalidInput(format!(
-            "{command} expects {} positional argument(s), got {} (see --help)",
-            spec.positional, p.positional.len()
+            "{command} expects {expects} positional argument(s), got {} (see --help)",
+            p.positional.len()
         )));
     }
     Ok(p)
@@ -352,6 +369,15 @@ fn gate_verdict(json: &Value, p: &Parsed) -> rea_offline::Result<u8> {
 
 fn run(args: &[String]) -> rea_offline::Result<u8> {
     let Some(cmd) = args.first() else {
+        // Double-clicked in Explorer there is no terminal to read help in:
+        // the console Windows hands the process is its alone, and it closes
+        // the moment the process exits — the help text would flash and be
+        // gone, which reads as "the file does nothing". Open the picker
+        // window instead. In a terminal, no command means help, as before.
+        if launched_without_console() {
+            let p = parse("gui", &[])?;
+            return gui_picker(&p);
+        }
         println!("{HELP}");
         return Ok(0);
     };
@@ -434,6 +460,14 @@ fn run(args: &[String]) -> rea_offline::Result<u8> {
             Ok(0)
         }
         "gui" => {
+            if p.positional.is_empty() {
+                if p.has("from-report") {
+                    return Err(rea_offline::Error::InvalidInput(
+                        "--from-report needs the report file path (see --help)".into(),
+                    ));
+                }
+                return gui_picker(&p);
+            }
             let target = need(0, "path")?;
             let page = if p.has("from-report") {
                 rea_offline::gui::page_from_report_file(&target)?
@@ -447,13 +481,7 @@ fn run(args: &[String]) -> rea_offline::Result<u8> {
                 }
                 return Ok(0);
             }
-            let port = match p.get("port") {
-                Some(value) => rea_offline::util::parse_number(value, "--port")?,
-                None => 8787u16,
-            };
-            if port == 0 {
-                return Err(rea_offline::Error::InvalidInput("--port must be between 1 and 65535".into()));
-            }
+            let port = gui_port(&p)?;
             if !p.has("no-open") {
                 open_browser(&format!("http://127.0.0.1:{port}/"));
             }
@@ -474,6 +502,58 @@ fn run(args: &[String]) -> rea_offline::Result<u8> {
 
 fn page_html_for(page: &rea_offline::gui::Page) -> String {
     rea_offline::gui::page_html(page, "")
+}
+
+fn gui_port(p: &Parsed) -> rea_offline::Result<u16> {
+    let port = match p.get("port") {
+        Some(value) => rea_offline::util::parse_number(value, "--port")?,
+        None => 8787u16,
+    };
+    if port == 0 {
+        return Err(rea_offline::Error::InvalidInput("--port must be between 1 and 65535".into()));
+    }
+    Ok(port)
+}
+
+/// The window with no target chosen yet: a picker page asks what to
+/// inspect, then swaps in the report. This is what `gui` with no path —
+/// and a double-click on the .exe — opens.
+fn gui_picker(p: &Parsed) -> rea_offline::Result<u8> {
+    if let Some(path) = p.get("output") {
+        // A static file cannot ask anything: its form would have no server
+        // behind it. Refuse rather than write a page that cannot work.
+        let _ = path;
+        return Err(rea_offline::Error::InvalidInput(
+            "--output needs a path to write a static window for; run gui with no path and no --output for the picker".into(),
+        ));
+    }
+    let port = gui_port(p)?;
+    if !p.has("no-open") {
+        open_browser(&format!("http://127.0.0.1:{port}/"));
+    }
+    rea_offline::gui::serve_picker(port)?;
+    Ok(0)
+}
+
+/// Whether the process has no terminal of the user's to talk to. On
+/// Windows, a process started from a terminal shares that console (the
+/// console's process list has the shell in it too); a double-clicked
+/// process is alone in a fresh console, or has none. Elsewhere, a bare
+/// launch is assumed to be a terminal asking for help.
+#[cfg(windows)]
+fn launched_without_console() -> bool {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetConsoleProcessList(process_list: *mut u32, count: u32) -> u32;
+    }
+    let mut pids = [0u32; 2];
+    let attached = unsafe { GetConsoleProcessList(pids.as_mut_ptr(), pids.len() as u32) };
+    attached <= 1
+}
+
+#[cfg(not(windows))]
+fn launched_without_console() -> bool {
+    false
 }
 
 /// Best-effort: hand the URL to the platform's default browser. Failure is
@@ -509,6 +589,14 @@ mod tests {
         assert_eq!(p.get("format"), Some("text"));
         assert!(p.has("quiet"));
         assert_eq!(p.format().unwrap(), Format::Text);
+    }
+
+    #[test]
+    fn gui_accepts_zero_or_one_positional() {
+        // Zero is the picker (and the double-click launch); two is a typo.
+        assert!(parse("gui", &args(&[])).is_ok());
+        assert!(parse("gui", &args(&["x"])).is_ok());
+        assert!(parse("gui", &args(&["x", "y"])).is_err());
     }
 
     #[test]

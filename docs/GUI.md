@@ -5,7 +5,14 @@ rea-offline gui "C:\Program Files\SomeApp"
 rea-offline gui Downloads --port 9100
 rea-offline gui Downloads --output window.html --no-open   # shareable snapshot
 rea-offline gui report.json --from-report                 # validated archived evidence
+rea-offline gui                                           # picker: choose in the window
 ```
+
+Double-clicking the .exe opens the same picker: the program is a console
+tool, and a console opened by a double-click closes the moment the program
+exits, so the no-command help text could never be read there. A launch
+whose console belongs to the process alone (no terminal behind it) opens
+the picker window instead; in a terminal, no command still prints help.
 
 The GUI is a **single window with a treemap on the right and a size grid on
 the left** — the layout WizTree made familiar — retargeted from "what is
