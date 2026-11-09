@@ -257,7 +257,8 @@ mod tests {
     fn recording_keeps_the_blocks_own_arithmetic_true() {
         let mut report = envelope(r#","installer_error":"unreadable""#);
         assert!(report.get("coverage").is_none());
-        record(&mut report, recorded_failures(&report));
+        let failures = recorded_failures(&report);
+        record(&mut report, failures);
         let coverage = report.get("coverage").expect("coverage block");
         assert_eq!(coverage.get("complete"), Some(&Value::Bool(false)));
         assert_eq!(coverage.get("issue_count"), Some(&Value::num(1)));
@@ -275,7 +276,8 @@ mod tests {
 
         // An unblemished envelope stays complete.
         let mut clean = envelope("");
-        record(&mut clean, recorded_failures(&clean));
+        let failures = recorded_failures(&clean);
+        record(&mut clean, failures);
         assert_eq!(
             clean.get("coverage").and_then(|c| c.get("complete")),
             Some(&Value::Bool(true))
