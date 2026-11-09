@@ -48,6 +48,53 @@ pub struct RunOutcome {
     pub stderr_bytes: u64,
 }
 
+/// Exit codes that mean "the install succeeded, but the machine must reboot".
+///
+/// Windows Installer documents 1641 (`ERROR_SUCCESS_REBOOT_INITIATED`) and
+/// 3010 (`ERROR_SUCCESS_REBOOT_REQUIRED`) as *successes*: the product is
+/// installed, the reboot is a request. Counting them as a botched run would
+/// make every reboot-requiring MSI look like it never finished.
+const WINDOWS_REBOOT_SUCCESS: [u32; 2] = [1641, 3010];
+
+/// Whether an installer exit code counts as a completed install.
+pub fn exit_code_completed(code: u32) -> bool {
+    code == 0 || (cfg!(windows) && WINDOWS_REBOOT_SUCCESS.contains(&code))
+}
+
+/// Whether a run finished normally, so its delta can be read as "this is
+/// what the installer does".
+///
+/// A run killed at the timeout, or one whose exit code we never learned, is
+/// evidence of a *partial* install however calm the delta looks: the
+/// installer was still working when it stopped.
+pub fn run_completed(timed_out: bool, exit_code: Option<u32>) -> bool {
+    !timed_out && exit_code.map_or(false, exit_code_completed)
+}
+
+/// The coverage issue a run leaves behind when it did not finish normally:
+/// `(stage, message)`, or `None` when the installer ran to a clean end.
+///
+/// Shared by the writer (`app`) and the archive validator (`report`) so a
+/// saved report cannot claim complete coverage while its own `execution`
+/// block says the installer was killed.
+pub fn run_issue(timed_out: bool, exit_code: Option<u32>) -> Option<(&'static str, String)> {
+    if timed_out {
+        // The timeout wins over the exit code: on Windows the job is
+        // terminated with a code of our choosing, so the code is ours and
+        // not the installer's verdict on its own work.
+        return Some(("timeout",
+            "installer was killed at the timeout before it finished; the delta describes a partial install"
+                .to_string()));
+    }
+    match exit_code {
+        None => Some(("exit",
+            "installer exit code is unavailable; the run could not be confirmed as complete".to_string())),
+        Some(code) if !exit_code_completed(code) => Some(("exit", format!(
+            "installer exited with code {code}; it did not report success, so the install may be incomplete"))),
+        Some(_) => None,
+    }
+}
+
 /// Read up to the last 8 KiB of a captured log; returns (tail, total_bytes).
 pub fn read_log_tail(path: &Path) -> (String, u64) {
     use std::io::{Read, Seek, SeekFrom};
@@ -398,6 +445,42 @@ mod win {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_finished_run_leaves_no_coverage_issue() {
+        assert!(run_completed(false, Some(0)), "exit 0 is a completed install");
+        assert!(run_issue(false, Some(0)).is_none(), "a clean run is not a coverage issue");
+    }
+
+    #[test]
+    fn a_killed_or_failed_run_is_recorded_as_incomplete() {
+        // Timeout outranks the exit code: we killed the job, so the code is
+        // ours, not the installer's account of its own work.
+        let (stage, message) = run_issue(true, Some(1)).expect("a timeout must be reported");
+        assert_eq!(stage, "timeout");
+        assert!(message.contains("partial install"), "{message}");
+        assert!(!run_completed(true, Some(0)), "a killed run never completed");
+
+        let (stage, message) = run_issue(false, Some(3)).expect("a failing exit code must be reported");
+        assert_eq!(stage, "exit");
+        assert!(message.contains('3'), "the code is the evidence: {message}");
+        assert!(!run_completed(false, Some(3)));
+
+        // POSIX: killed by a signal; Windows: GetExitCodeProcess failed.
+        let (stage, message) = run_issue(false, None).expect("an unknown exit code must be reported");
+        assert_eq!(stage, "exit");
+        assert!(message.contains("unavailable"), "{message}");
+        assert!(!run_completed(false, None));
+    }
+
+    #[test]
+    fn reboot_requested_exit_codes_count_as_success_on_windows_only() {
+        // Documented MSI successes: installed, reboot pending.
+        assert_eq!(exit_code_completed(1641), cfg!(windows));
+        assert_eq!(exit_code_completed(3010), cfg!(windows));
+        assert!(exit_code_completed(0));
+        assert!(!exit_code_completed(1603), "ERROR_INSTALL_FAILURE is a failure everywhere");
+    }
 
     #[test]
     fn log_tail_reads_last_bytes_and_total() {

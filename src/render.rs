@@ -48,6 +48,22 @@ fn issue_line(issue: &Value) -> String {
     format!("{} [{}]: {}", s(issue.get("path")), s(issue.get("stage")), s(issue.get("message")))
 }
 
+/// An exit code is only readable next to what it means: a run killed at the
+/// timeout, or one that never reported success, is not "installed".
+fn exit_code_text(exec: &Value) -> String {
+    if nullish(exec.get("exit_code")) {
+        if flag(exec.get("timed_out")) { "killed (timeout)".to_string() } else { "n/a".to_string() }
+    } else {
+        let code = n(exec.get("exit_code"));
+        let note = if crate::universal_sandbox::exit_code_completed(code as u32) {
+            ""
+        } else {
+            " (did not report success)"
+        };
+        format!("{code}{note}")
+    }
+}
+
 /// Coverage warnings belong next to the decision, not buried after findings.
 /// They are operational limitations and never contribute to the risk score.
 fn append_coverage_text(out: &mut String, root: &Value) {
@@ -364,12 +380,7 @@ pub fn summary_text(root: &Value) -> String {
     if let Some(exec) = root.get("execution") {
         out.push_str("\nExecution\n");
         out.push_str(&format!("{}{}\n", pad("command"), s(exec.get("command"))));
-        let code = if nullish(exec.get("exit_code")) {
-            if flag(exec.get("timed_out")) { "killed (timeout)".to_string() } else { "n/a".to_string() }
-        } else {
-            n(exec.get("exit_code")).to_string()
-        };
-        out.push_str(&format!("{}{}\n", pad("exit code"), code));
+        out.push_str(&format!("{}{}\n", pad("exit code"), exit_code_text(exec)));
         out.push_str(&format!("{}{} ms\n", pad("duration"), n(exec.get("duration_ms"))));
         let tail = s(exec.get("stdout_tail"));
         if !tail.trim().is_empty() {
@@ -555,12 +566,7 @@ pub fn summary_markdown(root: &Value) -> String {
     if let Some(exec) = root.get("execution") {
         out.push_str("## Execution\n\n");
         out.push_str(&format!("- command: `{}`\n", s(exec.get("command"))));
-        let code = if nullish(exec.get("exit_code")) {
-            if flag(exec.get("timed_out")) { "killed (timeout)".to_string() } else { "n/a".to_string() }
-        } else {
-            n(exec.get("exit_code")).to_string()
-        };
-        out.push_str(&format!("- exit code: {code}\n"));
+        out.push_str(&format!("- exit code: {}\n", exit_code_text(exec)));
         out.push_str(&format!("- duration: {} ms\n", n(exec.get("duration_ms"))));
         out.push_str(&format!(
             "- stdout captured: {}\n",
@@ -832,6 +838,28 @@ mod tests {
         let text = summary_text(&root);
         assert!(text.contains("killed (timeout)"), "{text}");
         assert!(to_markdown(&root).contains("killed (timeout)"));
+    }
+
+    #[test]
+    fn an_exit_code_that_is_not_success_is_labelled() {
+        // Same report, one number different: the reader must not have to
+        // know that 3 means "this installer did not finish".
+        let mut root = sample_report();
+        if let Value::Object(map) = &mut root {
+            map.insert("execution".into(), Value::obj(vec![
+                ("command", Value::str("setup.exe")),
+                ("exit_code", Value::num(3)),
+                ("timed_out", Value::Bool(false)),
+                ("duration_ms", Value::num(1200)),
+            ]));
+        }
+        let text = summary_text(&root);
+        assert!(text.contains("3 (did not report success)"), "{text}");
+        assert!(to_markdown(&root).contains("3 (did not report success)"));
+        // A clean exit keeps its plain number.
+        let plain = summary_text(&sample_report());
+        assert!(plain.contains("exit code"), "{plain}");
+        assert!(!plain.contains("did not report success"), "{plain}");
     }
 
     fn coverage_report(aggregated: bool) -> Value {

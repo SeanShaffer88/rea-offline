@@ -108,6 +108,19 @@ fn sandbox_captures_installer_output_and_exit_code() {
     // The installer file itself is analyzed as evidence too.
     let installer_report = report.get("installer_report").expect("installer report");
     assert!(installer_report.get("file_count").is_some());
+    // Exit 3 is not a crash of the tool — it is the installer reporting that
+    // it did not finish, so the run is not complete evidence of an install.
+    let coverage = report.get("coverage").expect("coverage block");
+    assert_eq!(coverage.get("complete"), Some(&rea_offline::json::Value::Bool(false)),
+        "an installer that failed must not look like a completed run: {coverage:?}");
+    let issues = match coverage.get("issues") {
+        Some(rea_offline::json::Value::Array(items)) => items.clone(),
+        other => panic!("issues array expected, got {other:?}"),
+    };
+    assert!(issues.iter().any(|issue| {
+        issue.get("area").and_then(|v| v.as_str()) == Some("installer execution")
+            && issue.get("stage").and_then(|v| v.as_str()) == Some("exit")
+    }), "the failed run must be named: {issues:?}");
     assert!(!root.exists(), "sandbox purged after run");
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -320,6 +333,79 @@ fn a_payload_dropped_outside_the_install_tree_decides_the_verdict() {
     let html = rea_offline::gui::page_html(&page, "");
     assert!(html.contains("chip verdict-critical"), "verdict chip");
     assert!(html.contains("payload.exe"), "the drop must be visible in the grid");
+
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// An installer killed at the timeout has only performed *part* of its
+/// install. What it dropped is still evidence — but it is not evidence of a
+/// complete run, and a clean-looking delta must not be read as one.
+#[cfg(unix)]
+#[test]
+fn an_installer_killed_at_the_timeout_makes_the_run_incomplete() {
+    use rea_offline::app::{mode_sandbox, SandboxOptions};
+    use rea_offline::json::Value;
+    use rea_offline::universal_sandbox::SandboxConfig;
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tmp_dir("timeout");
+    let script = dir.join("slow_installer.sh");
+    // Writes a decoy payload and then stalls: what a hung or deliberately
+    // slow installer looks like from inside the sandbox.
+    std::fs::write(
+        &script,
+        "#!/bin/sh\nmkdir -p \"$REASANDBOX_INSTALL\"\nprintf 'MZ half' > \"$REASANDBOX_INSTALL/partial.exe\"\nsleep 30\n",
+    ).unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let report = mode_sandbox(SandboxOptions {
+        installer: script,
+        installer_args: vec![],
+        rea_path: None,
+        sandbox: SandboxConfig { timeout: std::time::Duration::from_secs(1), ..Default::default() },
+    }).unwrap();
+
+    // The half-installed tree is still reported: partial evidence is not
+    // discarded, it is labelled.
+    let text = report.to_string_pretty();
+    assert!(text.contains("partial.exe"), "the partial install is still evidence:\n{text}");
+    assert_eq!(report.get("execution").and_then(|e| e.get("timed_out")), Some(&Value::Bool(true)));
+
+    // ...but the run is not complete, and the record says which phase said so.
+    let coverage = report.get("coverage").expect("coverage block");
+    assert_eq!(coverage.get("complete"), Some(&Value::Bool(false)),
+        "a killed installer must not look like a clean run: {}", coverage.to_string_pretty());
+    let issues = match coverage.get("issues") {
+        Some(Value::Array(items)) => items.clone(),
+        other => panic!("issues array expected, got {other:?}"),
+    };
+    assert!(issues.iter().any(|i| {
+        i.get("area").and_then(Value::as_str) == Some("installer execution")
+            && i.get("stage").and_then(Value::as_str) == Some("timeout")
+    }), "the killed run must be named: {issues:?}");
+
+    let rendered = rea_offline::render::summary_text(&report);
+    assert!(rendered.contains("coverage: INCOMPLETE"), "{rendered}");
+    assert!(rendered.contains("installer execution"), "{rendered}");
+    let md = rea_offline::render::to_markdown(&report);
+    assert!(md.contains("## Coverage warnings"), "{md}");
+    let html = rea_offline::gui::page_html(
+        &rea_offline::gui::Page::new(report.clone(), "sandbox"), "");
+    assert!(html.contains("coverage-incomplete"), "the window must flag it too");
+
+    // The archive is self-consistent, and cannot be edited into a
+    // clean-looking one by flipping a single boolean.
+    rea_offline::report::validate(&report).unwrap();
+    let mut tampered = report.clone();
+    if let Value::Object(map) = &mut tampered {
+        map.insert("coverage".into(), Value::obj(vec![
+            ("complete", Value::Bool(true)),
+            ("issue_count", Value::num(issues.len() as u64)),
+            ("issues", Value::Array(issues)),
+        ]));
+    }
+    let error = rea_offline::report::validate(&tampered).unwrap_err().to_string();
+    assert!(error.contains("did not finish"), "{error}");
 
     std::fs::remove_dir_all(&dir).unwrap();
 }
