@@ -48,6 +48,29 @@ fn issue_line(issue: &Value) -> String {
     format!("{} [{}]: {}", s(issue.get("path")), s(issue.get("stage")), s(issue.get("message")))
 }
 
+/// `containment` as label/value pairs, so the terminal, Markdown and the
+/// window all state the same facts without three copies of the wording.
+pub fn containment_lines(block: &Value) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    out.push((
+        "ran elevated".to_string(),
+        match block.get("elevated") {
+            Some(Value::Bool(true)) =>
+                "yes — writes outside the sandbox tree are not in this report".to_string(),
+            Some(Value::Bool(false)) => "no".to_string(),
+            _ => "unknown".to_string(),
+        },
+    ));
+    if let Some(registry) = block.get("registry") {
+        out.push(("registry hive".to_string(), s(registry.get("status"))));
+    }
+    for (index, limit) in array(block.get("limits")).iter().enumerate() {
+        let label = if index == 0 { "not visible to this method".to_string() } else { String::new() };
+        out.push((label, s(Some(limit))));
+    }
+    out
+}
+
 /// An exit code is only readable next to what it means: a run killed at the
 /// timeout, or one that never reported success, is not "installed".
 fn exit_code_text(exec: &Value) -> String {
@@ -449,6 +472,19 @@ pub fn summary_text(root: &Value) -> String {
     if let Some(warn) = root.get("registry_warning") {
         out.push_str(&format!("{}{}\n", pad("registry warning"), s(Some(warn))));
     }
+    // What the sandbox could not hold is what the reader cannot see here.
+    if let Some(block) = root.get("containment") {
+        out.push_str(&containment_text(block));
+    }
+    out
+}
+
+/// The containment block, as aligned `label value` lines.
+fn containment_text(block: &Value) -> String {
+    let mut out = String::new();
+    for (label, value) in containment_lines(block) {
+        out.push_str(&format!("{}{}\n", pad(&label), value));
+    }
     out
 }
 
@@ -647,6 +683,17 @@ pub fn summary_markdown(root: &Value) -> String {
         out.push_str(&format!("- registry warning: {}\n", s(Some(warn))));
         anything = true;
     }
+    // What the sandbox could not hold is what this report cannot show.
+    if let Some(block) = root.get("containment") {
+        for (label, value) in containment_lines(block) {
+            if label.is_empty() {
+                out.push_str(&format!("    - {}\n", value));
+            } else {
+                out.push_str(&format!("- {}: {}\n", label, value));
+            }
+        }
+        anything = true;
+    }
     if !anything {
         out.push_str("- static inspection only (no execution)\n");
     }
@@ -674,6 +721,19 @@ pub fn doctor_markdown(root: &Value) -> String {
     }
     table.row(["platform", &format!("{} / {}", s(root.get("os")), s(root.get("arch")))]);
     table.row(["Win32 Job Objects", ok(flag(root.get("windows_job_objects")))]);
+    if root.get("elevated").is_some() {
+        // The manual says "run from a standard account"; doctor says whether
+        // this session actually is one, since an elevated run can write past
+        // the sandbox and out of the report.
+        table.row([
+            "running elevated",
+            match root.get("elevated") {
+                Some(Value::Bool(true)) => "yes — sandbox writes may escape the tree",
+                Some(Value::Bool(false)) => "no",
+                _ => "unknown",
+            },
+        ]);
+    }
     table.row(["registry hive mount", &s(root.get("registry_hive_mount"))]);
     table.row(["temp dir", &s(root.get("temp_dir"))]);
     table.row(["sandbox rehearsal", ok(flag(root.get("sandbox_rehearsal_ok")))]);

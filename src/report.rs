@@ -136,12 +136,62 @@ pub fn validate(report: &Value) -> Result<()> {
     if let Some(coverage) = report.get("coverage").filter(|v| !matches!(v, Value::Null)) {
         validate_coverage(coverage, report)?;
     }
+    if let Some(containment) = report.get("containment").filter(|v| !matches!(v, Value::Null)) {
+        validate_containment(containment, report)?;
+    }
     if mode == "sandbox-installer" {
         let execution = report.get("execution")
             .ok_or_else(|| invalid("invalid report: sandbox-installer is missing its execution block"))?;
         validate_execution(execution, report)?;
     }
     Ok(())
+}
+
+/// The `containment` block says what the sandbox could not hold. Flipping
+/// `coverage.complete` while the run admits it was elevated, or that the
+/// registry hive never mounted, is the same lie as hiding an issue — so the
+/// two records are checked against each other.
+fn validate_containment(containment: &Value, report: &Value) -> Result<()> {
+    if !matches!(containment, Value::Object(_)) {
+        return Err(invalid("invalid report: containment must be an object"));
+    }
+    if let Some(elevated) = containment.get("elevated") {
+        if !matches!(elevated, Value::Bool(_) | Value::Null) {
+            return Err(invalid("invalid report: containment.elevated must be a boolean"));
+        }
+    }
+    if let Some(registry) = containment.get("registry").filter(|v| !matches!(v, Value::Null)) {
+        if !matches!(registry, Value::Object(_)) {
+            return Err(invalid("invalid report: containment.registry must be an object"));
+        }
+        if let Some(status) = registry.get("status").and_then(Value::as_str) {
+            if !matches!(status, "mounted" | "unavailable" | "not-applicable") {
+                return Err(invalid(format!(
+                    "invalid report: containment.registry.status is '{status}'"
+                )));
+            }
+        }
+    }
+    if let Some(limits) = containment.get("limits") {
+        if !matches!(limits, Value::Array(_)) {
+            return Err(invalid("invalid report: containment.limits must be an array"));
+        }
+    }
+    let issues = crate::containment::issues(containment);
+    if issues.is_empty() {
+        return Ok(());
+    }
+    let stages = issues
+        .iter()
+        .map(|(stage, _)| stage.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    match report.get("coverage").filter(|v| !matches!(v, Value::Null)) {
+        Some(coverage) if coverage.get("complete") == Some(&Value::Bool(true)) => Err(invalid(format!(
+            "invalid report: coverage claims to be complete but the run was not contained ({stages})"
+        ))),
+        _ => Ok(()),
+    }
 }
 
 /// The `execution` block is the only record of how the run ended, so it is
@@ -496,6 +546,65 @@ mod tests {
             (r#"{"exit_code":-1}"#, "exit_code must be null"),
         ] {
             let error = validate(&with_execution(json, None)).unwrap_err().to_string();
+            assert!(error.contains(expected), "expected {expected:?}, got {error}");
+        }
+    }
+
+    fn with_containment(containment_json: &str, coverage_json: Option<&str>) -> Value {
+        let mut report = sandbox_archive();
+        if let Value::Object(map) = &mut report {
+            map.insert("containment".into(), crate::json::parse(containment_json).unwrap());
+            if let Some(coverage) = coverage_json {
+                map.insert("coverage".into(), crate::json::parse(coverage).unwrap());
+            }
+        }
+        report
+    }
+
+    const CONTAINED: &str = r#"{"elevated":false,"registry":{"mounted":true,"status":"mounted"},
+        "limits":["no runtime telemetry"]}"#;
+
+    #[test]
+    fn a_run_that_could_not_be_contained_cannot_claim_complete_coverage() {
+        let elevated = r#"{"elevated":true,"registry":{"mounted":false,"status":"unavailable",
+            "message":"RegLoadKeyW failed"},"limits":[]}"#;
+        let unknown = r#"{"elevated":null,"registry":{"mounted":true,"status":"mounted"}}"#;
+        for (containment, expected) in [
+            (elevated, "elevated"),
+            (unknown, "elevation-unknown"),
+        ] {
+            let error = validate(&with_containment(containment, Some(CLEAN_COVERAGE)))
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("not contained"), "expected a contradiction, got {error}");
+            assert!(error.contains(expected), "expected stage {expected:?}, got {error}");
+        }
+        // Contained runs are free to claim complete coverage.
+        validate(&with_containment(CONTAINED, Some(CLEAN_COVERAGE))).unwrap();
+    }
+
+    #[test]
+    fn an_uncontained_run_is_readable_when_it_says_so() {
+        // The honest pairing: what escaped, recorded next to the decision.
+        let report = with_containment(
+            r#"{"elevated":true,"registry":{"mounted":false,"status":"unavailable","message":"denied"}}"#,
+            Some(r#"{"complete":false,"issue_count":2,"unverified_count":0,"issues":[
+                {"area":"containment","path":"/tmp/rea_sandbox_x","stage":"elevated","message":"ran as root"},
+                {"area":"containment","path":"/tmp/rea_sandbox_x","stage":"registry","message":"no hive"}]}"#),
+        );
+        validate(&report).unwrap();
+    }
+
+    #[test]
+    fn rejects_a_malformed_containment_block() {
+        for (json, expected) in [
+            ("[]", "containment must be an object"),
+            (r#"{"elevated":"yes"}"#, "elevated must be a boolean"),
+            (r#"{"registry":[]}"#, "registry must be an object"),
+            (r#"{"registry":{"status":"broken"}}"#, "registry.status is 'broken'"),
+            (r#"{"limits":{}}"#, "limits must be an array"),
+        ] {
+            let error = validate(&with_containment(json, None)).unwrap_err().to_string();
             assert!(error.contains(expected), "expected {expected:?}, got {error}");
         }
     }

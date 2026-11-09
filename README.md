@@ -218,6 +218,39 @@ Text and Markdown label a failing exit code next to the number it reports, and
 whose `execution` block says the installer was killed while its `coverage` says
 `complete` is rejected rather than rendered.
 
+### Coverage: what the sandbox could not contain
+
+A Job Object is containment, not a hypervisor, and nothing in a file tree can
+tell you what escaped it. Each sandbox run records that in `containment`:
+
+```json
+"containment": {
+  "elevated": false,
+  "registry": {"mounted": false, "status": "unavailable", "message": "..."},
+  "limits": ["writes outside the sandbox tree are not visible: ..."]
+}
+```
+
+* `elevated` — the run was **elevated** (administrator) or **root**: the
+  installer could write outside the sandbox tree, and anything written there
+  is missing from the delta and from every hash in the report. This is the
+  documented advice ("run untrusted installers from a standard account") made
+  checkable: an elevated run is incomplete coverage, and `doctor` tells you
+  before you start which session you are in.
+* `registry.status` — `mounted` (redirected writes landed in the sandbox
+  file), `unavailable` (a registry exists but the hive would not mount, so
+  installer registry writes were neither redirected nor visible), or
+  `not-applicable` (POSIX: there is no registry to redirect).
+* `limits` — what this **method** can never see, so an archived report can be
+  read without the manual: registry writes (no driver to redirect them),
+  writes outside the sandbox tree, and the absence of any process, network or
+  syscall monitoring. These are true of every run, so they are *not* coverage
+  issues — a warning that is always on is a warning nobody reads.
+
+An archive that claims `coverage: complete` while its `containment` block says
+the run was elevated, or that the hive never mounted, is rejected rather than
+rendered.
+
 `--fail-on-incomplete` makes partial evidence a build failure (exit `3`),
 independently of how calm the verdict is:
 
@@ -344,6 +377,7 @@ and Linux.
 | `src/report.rs` | Archived-report validation and lossless reopening |
 | `src/render.rs`, `src/mdtable.rs` | Text / Markdown rendering |
 | `src/gui/` | WizTree-shaped window: tree, treemap, loopback server |
+| `src/containment.rs` | What a run could not contain (privileges, registry) |
 | `src/cleanup.rs` | Cleanup & zero-residue purge controller |
 | `src/imphash_ordinals.rs` | Frozen pefile ordinal tables (generated, checked in) |
 | `src/sha256.rs`, `src/json.rs` | Std-only SHA-256 / JSON (offline build) |
@@ -367,6 +401,30 @@ Created by Sean Shaffer
 MIT — see [LICENSE](LICENSE).
 
 ## Changelog
+
+### 0.10.0
+- **What the sandbox could not contain is now on the record**: an elevated or
+  root run — or one where the registry hive would not mount — still reported
+  `coverage: complete`, even though the installer could have written outside
+  the sandbox tree where no snapshot looks. New `containment` block covers
+  both, and they fold into coverage when they mean evidence is missing.
+- **`elevated`**: the documented "run from a standard account" advice is now
+  checkable. An elevated run is incomplete coverage (area `containment`,
+  stage `elevated`), and `doctor` reports which session you are in before you
+  trust a run. An elevation the platform will not disclose is recorded as
+  `elevation-unknown` rather than assumed away.
+- **`registry.status`**: `mounted` / `unavailable` / `not-applicable`. POSIX
+  runs now report `not-applicable` instead of claiming a mounted hive, and a
+  failed mount carries the reason into the report.
+- **`containment.limits`**: the method's standing blind spots (registry
+  writes, writes outside the sandbox tree, no runtime telemetry) travel with
+  every report so an archived verdict can be read without the manual. They are
+  deliberately *not* coverage issues — always-on warnings are ignored ones.
+- **Tamper resistance**: an archive claiming `coverage: complete` for a run its
+  own `containment` block admits was not contained is rejected (exit `1`).
+- **Tests**: privilege/registry classification on every platform, an
+  end-to-end run asserting the block against the real environment, archive
+  tampering against both records, `doctor`'s new field, and CI checks.
 
 ### 0.9.0
 - **A run that did not finish is not complete evidence**: an installer killed

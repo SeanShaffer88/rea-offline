@@ -169,6 +169,22 @@ jobs:
             echo "a killed run must not claim complete coverage" >&2; exit 1
           fi
 
+          # 5c-ii. A run that was never contained cannot claim complete
+          #        coverage. (Portable: validates the archive, not a process.)
+          printf '%s' '{"schema_version":3,"mode":"sandbox-installer","verdict":"low","risk_score":0,
+            "coverage":{"complete":true,"issue_count":0,"unverified_count":0,"issues":[]},
+            "containment":{"elevated":true,"registry":{"mounted":false,"status":"unavailable",
+              "message":"RegLoadKeyW failed"},"limits":[]},
+            "execution":{"command":"setup.exe","exit_code":0,"timed_out":false},
+            "report":{"file_count":0,"risk_score":0,"verdict":"low","files":[],"scan_issues":[]}}' > uncontained.json
+          if "$EXE" report uncontained.json --fail-on-incomplete --quiet; then
+            echo "an uncontained run must not claim complete coverage" >&2; exit 1
+          fi
+          # Doctor states whether this session is the standard account the
+          # manual asks for.
+          "$EXE" doctor --output doctor-elev.json
+          grep -q '"elevated"' doctor-elev.json
+
           # 5d. End to end: an installer that stalls reaches exit code 3.
           if [ "${RUNNER_OS:-}" != "Windows" ]; then
             printf '%s\n' '#!/bin/sh' 'mkdir -p "$REASANDBOX_INSTALL"' \
@@ -183,6 +199,9 @@ jobs:
             fi
             grep -q '"timed_out": true' stall.json
             grep -q '"complete": false' stall.json
+            # ...and what the sandbox could not contain is on the record.
+            grep -q '"containment"' stall.json
+            grep -q '"not-applicable"' stall.json
           fi
 
           # 6. Purge guard: refuse an arbitrary directory, then purge a real
