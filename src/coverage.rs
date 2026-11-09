@@ -220,7 +220,7 @@ mod tests {
             "verified_zero_residue":true}"#);
         assert!(recorded_failures(&report).is_empty());
         // A run that kept its sandbox on purpose did not fail to clean up.
-        let kept = envelope(r#","sandbox_kept":true,"sandbox_path":"/tmp/rea_sandbox_x"#);
+        let kept = envelope(r#","sandbox_kept":true,"sandbox_path":"/tmp/rea_sandbox_x""#);
         assert!(recorded_failures(&kept).is_empty());
     }
 
@@ -274,12 +274,21 @@ mod tests {
         assert_eq!(array(&coverage), 1);
         assert_eq!(coverage.get("complete"), Some(&Value::Bool(false)));
 
-        // An unblemished envelope stays complete.
+        // An unblemished envelope has nothing to record, and recording
+        // nothing must not invent a block (or, worse, a claim about one).
         let mut clean = envelope("");
         let failures = recorded_failures(&clean);
         record(&mut clean, failures);
+        assert!(clean.get("coverage").is_none(), "nothing recorded, nothing invented: {clean:?}");
+        // An existing block is left exactly as it was.
+        let mut complete = envelope("");
+        if let Value::Object(map) = &mut complete {
+            map.insert("coverage".to_string(), block(vec![], vec![]));
+        }
+        let failures = recorded_failures(&complete);
+        record(&mut complete, failures);
         assert_eq!(
-            clean.get("coverage").and_then(|c| c.get("complete")),
+            complete.get("coverage").and_then(|c| c.get("complete")),
             Some(&Value::Bool(true))
         );
     }
