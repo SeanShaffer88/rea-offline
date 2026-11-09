@@ -173,6 +173,74 @@ fn a_file_neither_snapshot_could_read_counts_against_the_diff() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// `diff` used to accept any two JSON documents: a report archive loaded as
+/// "a snapshot of nothing", and comparing it to a real tree reported every
+/// file as deleted — while the coverage block claimed the comparison was
+/// complete. The comparison has to be refused, not performed.
+#[test]
+fn a_diff_refuses_documents_that_are_not_manifests() {
+    let dir = tmp_dir("diff-not-a-manifest");
+    let tree = dir.join("tree");
+    std::fs::create_dir_all(&tree).unwrap();
+    std::fs::write(tree.join("payload.exe"), b"MZ").unwrap();
+    let good = dir.join("good.json");
+    Snapshot::capture(&tree).unwrap().save(&good).unwrap();
+
+    for (name, body) in [
+        ("empty.json", "{}"),
+        ("report.json", r#"{"schema_version":3,"mode":"sandbox-installer","report":{"files":[]}}"#),
+    ] {
+        let path = dir.join(name);
+        std::fs::write(&path, body).unwrap();
+        // Refused in both positions: neither side of a delta may be nothing.
+        for (a, b) in [(&path, &good), (&good, &path)] {
+            let error = rea_offline::app::mode_diff(a, b).unwrap_err().to_string();
+            assert!(error.contains("is not a snapshot manifest"), "{name}: {error}");
+        }
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Two snapshots can both be complete and still have nothing to do with each
+/// other. The delta between them has to say so: an installer that wrote to
+/// one directory is not evidence about another.
+#[test]
+fn a_diff_between_two_different_trees_says_which_two() {
+    use rea_offline::json::Value;
+    let dir = tmp_dir("diff-cross-root");
+    let install = dir.join("install");
+    let elsewhere = dir.join("elsewhere");
+    std::fs::create_dir_all(&install).unwrap();
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::fs::write(install.join("app.exe"), b"MZ app").unwrap();
+    std::fs::write(elsewhere.join("unrelated.txt"), b"nothing to do with it").unwrap();
+
+    let before = dir.join("before.json");
+    let after = dir.join("after.json");
+    Snapshot::capture(&install).unwrap().save(&before).unwrap();
+    Snapshot::capture(&elsewhere).unwrap().save(&after).unwrap();
+
+    let diff = rea_offline::app::mode_diff(&before, &after).unwrap();
+    // Both manifests are individually complete; the *comparison* is not.
+    let coverage = diff.get("coverage").expect("coverage record");
+    assert_eq!(coverage.get("complete"), Some(&Value::Bool(false)), "{coverage:?}");
+    let issues = match coverage.get("issues") {
+        Some(Value::Array(items)) => items.clone(),
+        other => panic!("issues array expected, got {other:?}"),
+    };
+    let root_issue = issues.iter()
+        .find(|i| i.get("stage").and_then(Value::as_str) == Some("root"))
+        .unwrap_or_else(|| panic!("a root mismatch is an issue: {issues:?}"));
+    let message = root_issue.get("message").and_then(Value::as_str).unwrap();
+    assert!(message.contains("install") && message.contains("elsewhere"), "{message}");
+    // And the document names both sides, so it can be checked by hand.
+    for (key, want) in [("before_root", "install"), ("after_root", "elsewhere")] {
+        let got = diff.get(key).and_then(Value::as_str).unwrap_or("");
+        assert!(got.contains(want), "{key} = {got}");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 #[test]
 fn native_analyzer_flags_indicators_and_hashes() {
     let dir = tmp_dir("rea");

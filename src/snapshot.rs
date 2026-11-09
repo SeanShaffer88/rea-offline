@@ -221,8 +221,29 @@ impl Snapshot {
     pub fn load(path: &Path) -> Result<Snapshot> {
         let text = std::fs::read_to_string(path)?;
         let value = crate::json::parse(&text)?;
+        // A manifest is only comparable because it says *what* it is a
+        // manifest of. Anything else — a report archive, a truncated file,
+        // an empty object — used to load as "a snapshot of nothing", and a
+        // diff against it reported every real file as added or deleted while
+        // claiming full coverage of a comparison that never happened.
+        let root = value.get("root").and_then(Value::as_str).unwrap_or_default();
+        if root.is_empty() {
+            return Err(Error::InvalidInput(format!(
+                "{} is not a snapshot manifest (no root); expected a file \
+                 written by `rea-offline snapshot`",
+                path.display(),
+            )));
+        }
+        let items = match value.get("entries") {
+            Some(Value::Array(items)) => items,
+            _ => return Err(Error::InvalidInput(format!(
+                "{} is not a snapshot manifest (no entries list); expected a \
+                 file written by `rea-offline snapshot`",
+                path.display(),
+            ))),
+        };
         let mut entries = BTreeMap::new();
-        if let Some(Value::Array(items)) = value.get("entries") {
+        {
             for item in items {
                 let rel = item.get("path").and_then(Value::as_str).unwrap_or_default().to_string();
                 if rel.is_empty() { continue; }
@@ -246,11 +267,56 @@ impl Snapshot {
             }
         }
         Ok(Snapshot {
-            root: PathBuf::from(value.get("root").and_then(Value::as_str).unwrap_or_default()),
+            root: PathBuf::from(root),
             created_unix: match value.get("created_unix") { Some(Value::Number(n)) => *n as u64, _ => 0 },
             entries,
             issues,
         })
+    }
+
+    /// The root as it travels in a manifest: slash-separated, so a tree
+    /// snapshotted on Windows and diffed on a POSIX box still names the same
+    /// directory.
+    pub fn root_label(&self) -> String {
+        path_to_slash_string(&self.root)
+    }
+
+    /// Why two manifests cannot be compared — the reasons a delta between
+    /// them is not evidence. Both are *stated* rather than refused: a
+    /// manifest keeps root-relative paths precisely so it stays comparable
+    /// after the tree is moved, so a different root is a fact to report, not
+    /// an error — but a delta built across two different trees has to say so
+    /// instead of looking like a normal install.
+    pub fn compare_issues(&self, after: &Snapshot) -> Vec<ScanIssue> {
+        let mut issues = Vec::new();
+        let (before_root, after_root) = (self.root_label(), after.root_label());
+        if before_root != after_root {
+            issues.push(ScanIssue::new(
+                after_root.clone(),
+                "root",
+                &format!(
+                    "compared against a snapshot of a different directory: \
+                     before is {before_root}, after is {after_root}",
+                ),
+            ));
+        }
+        // The first argument is "before". An after that predates it means
+        // either swapped arguments or a moved clock, and either way the
+        // added and deleted columns are inverted. A capture time of zero is
+        // a manifest that never recorded one, which says nothing either way.
+        if self.created_unix > 0 && after.created_unix > 0 && after.created_unix < self.created_unix {
+            issues.push(ScanIssue::new(
+                after_root,
+                "order",
+                &format!(
+                    "the 'after' snapshot was taken {}s before the 'before' \
+                     snapshot — the arguments may be swapped, which inverts \
+                     added and deleted",
+                    self.created_unix - after.created_unix,
+                ),
+            ));
+        }
+        issues
     }
 }
 
@@ -375,6 +441,85 @@ mod tests {
         let json = snap.to_json();
         assert_eq!(json.get("complete"), Some(&Value::Bool(true)));
         assert_eq!(json.get("issue_count"), Some(&Value::num(0)));
+    }
+
+    fn manifest_at(root: &str, created_unix: u64,
+                   entries: &[(&str, u64, &str, EntryKind)]) -> Snapshot {
+        let mut snap = manifest(entries);
+        snap.root = PathBuf::from(root);
+        snap.created_unix = created_unix;
+        snap
+    }
+
+    #[test]
+    fn a_document_that_is_not_a_manifest_is_refused_not_diffed() {
+        // A report archive, an empty object, a truncated file: all of them
+        // used to load as "a snapshot of nothing", so a diff against one
+        // reported every file as added or deleted.
+        let dir = std::env::temp_dir().join(format!("rea_load_{}", crate::util::new_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (name, body) in [
+            ("empty.json", "{}"),
+            ("report.json", r#"{"schema_version":3,"mode":"sandbox-installer","report":{"files":[]}}"#),
+            ("noentries.json", r#"{"root":"/virtual"}"#),
+        ] {
+            let path = dir.join(name);
+            std::fs::write(&path, body).unwrap();
+            let error = Snapshot::load(&path).unwrap_err().to_string();
+            assert!(error.contains("is not a snapshot manifest"), "{name}: {error}");
+            assert!(error.contains(&path.display().to_string()), "{name}: {error}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_manifest_of_an_empty_directory_is_still_a_manifest() {
+        let dir = std::env::temp_dir().join(format!("rea_load_{}", crate::util::new_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("empty-tree.json");
+        manifest_at("/virtual", 0, &[]).save(&path).unwrap();
+        let loaded = Snapshot::load(&path).unwrap();
+        assert!(loaded.is_complete(), "an empty tree hid nothing");
+        assert!(loaded.entries.is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn two_manifests_of_the_same_tree_are_comparable() {
+        let before = manifest_at("/virtual", 100, &[("a.txt", 1, "aa", EntryKind::File)]);
+        let after = manifest_at("/virtual", 200, &[("a.txt", 1, "aa", EntryKind::File)]);
+        assert!(before.compare_issues(&after).is_empty());
+        // The same second is not "swapped".
+        let same_instant = manifest_at("/virtual", 100, &[("a.txt", 1, "aa", EntryKind::File)]);
+        assert!(before.compare_issues(&same_instant).is_empty());
+    }
+
+    #[test]
+    fn a_different_root_is_stated_by_the_delta_not_assumed_away() {
+        // Roots are recorded relative and stay comparable after a tree is
+        // moved, so this is a fact to report — not a reason to refuse.
+        let before = manifest_at("/virtual/install", 100, &[("a.txt", 1, "aa", EntryKind::File)]);
+        let after = manifest_at("/virtual", 200, &[("a.txt", 1, "aa", EntryKind::File)]);
+        let issues = before.compare_issues(&after);
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!(issues[0].stage, "root");
+        assert!(issues[0].message.contains("/virtual/install")
+            && issues[0].message.contains("/virtual"), "both sides are named: {}", issues[0].message);
+    }
+
+    #[test]
+    fn an_after_that_predates_the_before_is_reported_as_possibly_swapped() {
+        let before = manifest_at("/virtual", 500, &[("a.txt", 1, "aa", EntryKind::File)]);
+        let after = manifest_at("/virtual", 100, &[("a.txt", 1, "aa", EntryKind::File)]);
+        let issues = before.compare_issues(&after);
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!(issues[0].stage, "order");
+        assert!(issues[0].message.contains("400s"), "{}", issues[0].message);
+
+        // A manifest that never recorded a capture time says nothing about
+        // ordering, so it is not accused of being swapped.
+        let undated = manifest_at("/virtual", 0, &[("a.txt", 1, "aa", EntryKind::File)]);
+        assert!(before.compare_issues(&undated).is_empty());
     }
 
     #[test]

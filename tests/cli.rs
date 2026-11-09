@@ -664,6 +664,66 @@ fn snapshot_and_diff_gate_on_their_own_coverage() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// `diff` on something that is not a manifest is a mistake, not a comparison:
+/// exit 1, and the message says what was expected.
+#[test]
+fn diff_refuses_a_document_that_is_not_a_manifest() {
+    let dir = workdir("diff-refusal");
+    std::fs::write(
+        dir.join("report.json"),
+        r#"{"schema_version":3,"mode":"sandbox-installer","report":{"files":[]}}"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("empty.json"), "{}").unwrap();
+
+    for name in ["report.json", "empty.json"] {
+        let out = run(&dir, &["diff", name, name]);
+        assert_eq!(out.code, 1, "{name} must be refused: {}", out.stderr);
+        assert!(out.stderr.contains("is not a snapshot manifest"), "{name}: {}", out.stderr);
+        assert!(out.stderr.contains(name), "{name}: the file is named: {}", out.stderr);
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Two different trees can each be complete; the delta between them is not.
+#[test]
+fn a_diff_across_two_different_trees_is_incomplete() {
+    use rea_offline::json::Value;
+    let dir = workdir("diff-cross-root");
+    let (a, b) = (dir.join("tree-a"), dir.join("tree-b"));
+    std::fs::create_dir_all(&a).unwrap();
+    std::fs::create_dir_all(&b).unwrap();
+    std::fs::write(a.join("app.exe"), b"MZ app").unwrap();
+    std::fs::write(b.join("other.txt"), b"unrelated").unwrap();
+
+    // Each tree on its own is fully readable — and says so.
+    let snapshot = |name: &str, tree: &Path| {
+        let out = dir.join(name);
+        let result = run(&dir, &["snapshot", tree.to_str().unwrap(), "--output",
+            out.to_str().unwrap(), "--fail-on-incomplete", "--quiet"]);
+        assert_eq!(result.code, 0, "{name}: {}", result.stderr);
+    };
+    snapshot("before.json", &a);
+    snapshot("after.json", &b);
+
+    // Without the gate the delta is still produced — and says it is partial.
+    let plain = run(&dir, &["diff", "before.json", "after.json", "--output", "delta.json", "--quiet"]);
+    assert_eq!(plain.code, 0, "{}", plain.stderr);
+    let delta = rea_offline::json::parse(&std::fs::read_to_string(dir.join("delta.json")).unwrap())
+        .unwrap();
+    assert_eq!(
+        delta.get("coverage").and_then(|c| c.get("complete")),
+        Some(&Value::Bool(false)),
+        "a cross-tree comparison is not complete: {delta:?}"
+    );
+    assert_ne!(delta.get("before_root"), delta.get("after_root"), "{delta:?}");
+
+    // With the gate, exit 3 — the same signal a sandbox run gives.
+    let gated = run(&dir, &["diff", "before.json", "after.json", "--fail-on-incomplete"]);
+    assert_eq!(gated.code, 3, "{}", gated.stderr);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// An archive cannot describe an installer it never analyzed and still claim
 /// it saw everything. Portable: it exercises the validator, not a process.
 #[test]

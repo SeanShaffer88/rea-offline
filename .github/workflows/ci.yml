@@ -150,6 +150,24 @@ jobs:
           grep -q '"complete": true' delta.json
           "$EXE" snapshot tree --fail-on-incomplete --quiet
           "$EXE" diff before.json after.json --fail-on-incomplete --quiet
+          # A delta names both sides, and refuses documents that are not
+          # manifests: a report archive used to load as "a snapshot of
+          # nothing" and report every file as deleted.
+          grep -q '"before_root"' delta.json
+          printf '%s' '{"schema_version":3,"mode":"sandbox-installer","report":{"files":[]}}' > not-a-manifest.json
+          set +e
+          "$EXE" diff not-a-manifest.json after.json --quiet
+          bad=$?
+          set -e
+          if [ "$bad" -ne 1 ]; then
+            echo "expected diff to refuse a non-manifest with exit 1, got $bad" >&2; exit 1
+          fi
+          # Two complete trees can still be incomparable; the delta says so.
+          mkdir -p elsewhere && printf 'unrelated' > elsewhere/other.txt
+          "$EXE" snapshot elsewhere --output elsewhere.json --quiet
+          "$EXE" diff before.json elsewhere.json --output cross.json --quiet
+          grep -q '"complete": false' cross.json
+          grep -q '"stage": "root"' cross.json
 
           # 5a-bis. Blind on one side: the snapshot says so, and so does the
           #         diff built from it — naming which snapshot could not see.

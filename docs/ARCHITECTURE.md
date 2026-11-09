@@ -98,6 +98,17 @@ documents are not validated on load the way an archived report is, the gate
 derives incompleteness from the issues list rather than from the `complete`
 flag: a record claiming completeness while listing blind spots is refused.
 
+Inheriting blindness is only half of it: a delta also has to be *between two
+things that can be compared*. `Snapshot::load` therefore refuses a document
+that is not a manifest at all — no `root`, or no `entries` — rather than
+letting a report archive load as "a snapshot of nothing" and diff into a
+confident "everything was deleted". `Snapshot::compare_issues` then states
+what makes two otherwise-valid manifests incomparable: a different root, or
+an `after` that predates its `before`. Both are coverage issues, not errors,
+because a manifest stores root-relative paths precisely so it stays
+comparable after the tree moves — the gate decides, the document reports, and
+neither assumes.
+
 ## Offline REA
 
 Set `REA_PATH` or pass `--rea C:\path\to\rea` (executable or Node `.js`
