@@ -45,6 +45,36 @@ fn validate_body(body: &Value, label: &str) -> Result<()> {
         if integer(file.get("size")).is_none() {
             return Err(invalid(format!("invalid report: {label}.files[{index}].size must be a non-negative integer")));
         }
+        // Additive fields: old archives remain loadable, but a new scope
+        // must tell a coherent story about exactly which bytes were seen.
+        if let Some(scope) = file.get("analysis_scope") {
+            let size = integer(file.get("size")).unwrap();
+            let content = integer(scope.get("content_bytes"))
+                .ok_or_else(|| invalid("invalid report: analysis_scope.content_bytes must be a non-negative integer"))?;
+            if content > size
+                || scope.get("content_complete") != Some(&Value::Bool(content == size))
+                || integer(scope.get("hash_bytes")) != Some(size)
+                || integer(scope.get("entropy_bytes")) != Some(size)
+            {
+                return Err(invalid("invalid report: analysis_scope disagrees with file size or completeness"));
+            }
+            if content < size {
+                if file.get("imphash").is_some_and(|v| !matches!(v, Value::Null)) {
+                    return Err(invalid("invalid report: partial content must not carry an imphash"));
+                }
+                let path = file.get("path").and_then(Value::as_str);
+                let recorded = match body.get("scan_issues") {
+                    Some(Value::Array(issues)) => issues.iter().any(|issue|
+                        issue.get("path").and_then(Value::as_str) == path
+                        && issue.get("stage").and_then(Value::as_str) == Some("content")),
+                    _ => false,
+                };
+                if !recorded {
+                    return Err(invalid("invalid report: partial content has no matching content coverage issue"));
+                }
+            }
+        }
+
     }
     if let Some(score) = body.get("risk_score") {
         match score {
@@ -643,6 +673,32 @@ mod tests {
             "report":{"file_count":1,"risk_score":41,"verdict":"high",
                 "files":[{"path":"a.exe","size":10}],"scan_issues":[]}
         }"#).unwrap()
+    }
+
+    #[test]
+    fn analysis_scope_is_optional_but_must_be_coherent_when_present() {
+        fn body(scope: &str, issue: bool, imphash: &str) -> Value {
+            crate::json::parse(&format!(r#"{{"file_count":1,"files":[{{
+                "path":"a.exe","size":10,"imphash":{imphash},"analysis_scope":{scope}
+            }}],"scan_issues":{}}}"#, if issue {
+                r#"[{"path":"a.exe","stage":"content","message":"prefix only"}]"#
+            } else { "[]" })).unwrap()
+        }
+        let full = r#"{"content_bytes":10,"content_complete":true,"hash_bytes":10,"entropy_bytes":10}"#;
+        validate_body(&body(full, false, "null"), "report").unwrap();
+        let partial = r#"{"content_bytes":5,"content_complete":false,"hash_bytes":10,"entropy_bytes":10}"#;
+        validate_body(&body(partial, true, "null"), "report").unwrap();
+        assert!(validate_body(&body(partial, false, "null"), "report").is_err());
+        assert!(validate_body(&body(partial, true, "\"partial-hash\""), "report").is_err());
+        for scope in [
+            r#"{"content_bytes":11,"content_complete":true,"hash_bytes":10,"entropy_bytes":10}"#,
+            r#"{"content_bytes":5,"content_complete":true,"hash_bytes":10,"entropy_bytes":10}"#,
+            r#"{"content_bytes":10,"content_complete":true,"hash_bytes":5,"entropy_bytes":10}"#,
+            r#"{"content_bytes":10,"content_complete":true,"hash_bytes":10,"entropy_bytes":5}"#,
+            r#"{"content_bytes":-1}"#, r#"{"content_bytes":1.5}"#, "null",
+        ] {
+            assert!(validate_body(&body(scope, true, "null"), "report").is_err(), "{scope}");
+        }
     }
 
     #[test]

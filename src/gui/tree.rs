@@ -78,6 +78,8 @@ pub struct Artifact {
     pub sha256: String,
     pub md5: String,
     pub imphash: Option<String>,
+    /// None for archives written before explicit analysis scope existed.
+    pub content_bytes: Option<u64>,
     pub format: String,
     pub risk: u64,
     pub tint: Tint,
@@ -436,6 +438,10 @@ pub fn from_report(report: &Value) -> DirNode {
                 sha256: file.get("sha256").and_then(Value::as_str).unwrap_or("").to_string(),
                 md5: file.get("md5").and_then(Value::as_str).unwrap_or("").to_string(),
                 imphash: file.get("imphash").and_then(Value::as_str).map(|s| s.to_string()),
+                content_bytes: match file.get("analysis_scope").and_then(|scope| scope.get("content_bytes")) {
+                    Some(Value::Number(n)) if *n >= 0.0 => Some(*n as u64),
+                    _ => None,
+                },
                 format: file.get("format").and_then(Value::as_str).unwrap_or("").to_string(),
                 risk: match file.get("risk") {
                     Some(Value::Number(x)) => *x as u64,
@@ -783,6 +789,16 @@ pub fn details_text(root: &DirNode, path: &str) -> String {
     out.push_str(&format!("Risk:    {} ({})\n", artifact.risk, artifact.tint.as_str()));
     out.push_str(&format!("SHA-256: {}\n", artifact.sha256));
     out.push_str(&format!("MD5:     {}\n", artifact.md5));
+    if let Some(bytes) = artifact.content_bytes {
+        out.push_str(&format!("Content: {} of {} bytes inspected{}\n", bytes, artifact.size,
+            if bytes < artifact.size { " (prefix only; incomplete)" } else { "" }));
+        out.push_str("Hashes and entropy: full file\n");
+        if bytes < artifact.size {
+            out.push_str("Imports may be partial; imphash withheld. Unseen content is not evidence of safety.\n");
+        }
+    } else {
+        out.push_str("Content scope: not recorded\n");
+    }
     if let Some(imphash) = &artifact.imphash {
         out.push_str(&format!("imphash: {imphash}\n"));
     }

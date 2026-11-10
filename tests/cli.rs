@@ -1000,3 +1000,31 @@ fn scanning_an_unreadable_tree_exits_three() {
             && i.get("stage").and_then(|v| v.as_str()) == Some("traverse")
     }), "{issues:?}");
 }
+
+#[test]
+fn large_file_prefix_analysis_survives_archive_and_gui_round_trip() {
+    let dir = workdir("large-prefix");
+    let path = dir.join("large.exe");
+    assert_eq!(run(&dir, &["sample", path.to_str().unwrap()]).code, 0);
+    let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+    file.set_len(33 * 1024 * 1024).unwrap();
+    drop(file);
+    // Absolute targets must not grow drive-letter folders in the UI.
+    let scan = run(&dir, &["scan", path.to_str().unwrap(), "--output", "report.json", "--quiet"]);
+    assert_eq!(scan.code, 0, "{}", scan.stderr);
+    let archive = rea_offline::report::load(&dir.join("report.json")).unwrap();
+    let page = rea_offline::gui::Page::new(archive, "large.exe");
+    let html = rea_offline::gui::page_html(&page, "");
+    assert!(html.contains("Safety undetermined"));
+    assert!(html.contains("Content: 33554432 of 34603008 bytes inspected (prefix only; incomplete)"));
+    assert!(html.contains("imphash withheld"));
+    assert!(!html.contains("<td>folder</td>"));
+    let gate = run(&dir, &["report", "report.json", "--fail-on-incomplete", "--quiet"]);
+    assert_eq!(gate.code, 3, "{}", gate.stderr);
+    let md = run(&dir, &["report", "report.json", "--format", "markdown"]);
+    assert_eq!(md.code, 0, "{}", md.stderr);
+    assert!(md.stdout.contains("prefix only"));
+    std::fs::remove_file(path).unwrap();
+    assert_eq!(run(&dir, &["report", "report.json", "--quiet"]).code, 0);
+    std::fs::remove_dir_all(dir).unwrap();
+}

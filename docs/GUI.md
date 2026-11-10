@@ -175,3 +175,16 @@ For a single-file target, the grid shows the file itself rather than its
 synthetic folder container. Its details and hashes appear immediately. The map
 labels the file and explains that tile area represents bytes, not safety.
 Filters still apply; an empty map explicitly says no files match.
+
+### Large executable inspection
+
+Native inspection now reads large executables rather than reporting only their
+hashes. The first 32 MiB supply available PE headers, section metadata and string
+indicators; SHA-256, MD5 and entropy still cover the full file. A large installer
+with a small executable stub can therefore show useful findings without loading
+its entire payload into memory. This is not archive extraction or payload
+execution: content after the prefix remains uninspected and coverage remains
+incomplete. Imports may be partial, and imphash is intentionally withheld.
+
+File details show the exact inspected byte count and distinguish it from the
+full-file fingerprints. Older saved reports show `Content scope: not recorded`.

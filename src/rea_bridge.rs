@@ -8,7 +8,7 @@
 //! it when present, it is never required.
 
 use crate::json::Value;
-use crate::sha256::hash_file;
+use std::io::Read;
 use crate::{Error, Result};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -34,7 +34,10 @@ pub struct FileAnalysis {
     /// which SHA-256 is not.
     pub imphash: Option<String>,
     pub format: String,
+    /// Whole-file entropy, accumulated while hashing (not prefix entropy).
     pub entropy: f64,
+    /// Bytes retained for structural and string inspection, starting at offset zero.
+    pub content_bytes: u64,
     pub pe: Option<PeInfo>,
     pub indicators: Vec<Indicator>,
 }
@@ -150,6 +153,12 @@ impl ReaReport {
                 ("imphash", f.imphash.clone().map(Value::str).unwrap_or(Value::Null)),
                 ("format", Value::str(f.format.clone())),
                 ("entropy", Value::Number((f.entropy * 1000.0).round() / 1000.0)),
+                ("analysis_scope", Value::obj(vec![
+                    ("content_bytes", Value::num(f.content_bytes)),
+                    ("content_complete", Value::Bool(f.content_bytes == f.size)),
+                    ("hash_bytes", Value::num(f.size)),
+                    ("entropy_bytes", Value::num(f.size)),
+                ])),
                 ("indicators", Value::Array(f.indicators.iter().map(|i| Value::obj(vec![
                     ("category", Value::str(i.category.clone())),
                     ("matched", Value::str(i.matched.clone())),
@@ -351,7 +360,8 @@ impl ReaBridge {
         let mut scan_issues = Vec::new();
         let meta = std::fs::symlink_metadata(target)?;
         if meta.is_file() {
-            let file = analyze_file(target, target)?;
+            let display = target.file_name().map(Path::new).unwrap_or(target);
+            let file = analyze_file(target, display)?;
             if file.size > MAX_ANALYZE_BYTES {
                 scan_issues.push(content_limit_issue(&file.path, file.size));
             }
@@ -546,7 +556,7 @@ pub(crate) const MAX_ANALYZE_BYTES: u64 = 32 * 1024 * 1024;
 pub(crate) fn content_limit_issue(path: &str, size: u64) -> ScanIssue {
     ScanIssue::new(
         path, "content",
-        format!("file is {size} bytes, above the {} MiB content-analysis limit; hashes cover the full file, but content heuristics do not", MAX_ANALYZE_BYTES / (1024 * 1024)),
+        format!("file is {size} bytes, above the {} MiB content-analysis limit; only the first {} bytes are inspected for structure and strings; hashes and entropy cover the full file; imports may be partial and imphash is withheld", MAX_ANALYZE_BYTES / (1024 * 1024), MAX_ANALYZE_BYTES),
     )
 }
 
@@ -560,38 +570,82 @@ fn display_path(prefix: &str, path: &Path, root: &Path) -> String {
 }
 
 pub fn analyze_file(path: &Path, display: &Path) -> Result<FileAnalysis> {
-    let meta = std::fs::metadata(path)?;
+    let mut file = std::fs::File::open(path)?;
+    let meta = file.metadata()?;
+    if !meta.is_file() {
+        return Err(Error::InvalidInput(format!("not a regular file: {}", path.display())));
+    }
     let size = meta.len();
-    let sha256 = hash_file(path)?;
-    let md5 = crate::md5::hash_file(path)?;
-    let data = if size <= MAX_ANALYZE_BYTES { std::fs::read(path)? } else { Vec::new() };
-    // The size, the two hashes and the analyzed bytes come from four
-    // separate reads. A file rewritten between them would pair one
-    // version's hash with another version's findings, and the verdict
-    // would describe bytes the hashes do not identify. Bracket the reads:
-    // on any movement, refuse the file — the caller records the refusal
-    // as an analysis issue, so the report names what it could not settle
-    // instead of presenting a row assembled from different versions.
-    let after = std::fs::metadata(path)?;
-    if meta.len() != after.len() || meta.modified().ok() != after.modified().ok() {
-        return Err(crate::Error::InvalidInput(format!(
-            "{} changed while it was being analyzed; its size, hashes and findings could come from different versions",
-            path.display()
+    let sample = inspect_stream(&mut file, MAX_ANALYZE_BYTES as usize)?;
+    // Hashes, entropy and prefix now describe the same byte stream. Still
+    // refuse detectable mutation/replacement rather than claim a stable file.
+    let after = file.metadata()?;
+    let path_after = std::fs::metadata(path)?;
+    if sample.size != size || meta.len() != after.len()
+        || meta.modified().ok() != after.modified().ok()
+        || meta.len() != path_after.len() || meta.modified().ok() != path_after.modified().ok()
+    {
+        return Err(Error::InvalidInput(format!(
+            "{} changed while it was being analyzed; no stable file record can be produced", path.display()
         )));
     }
+    let data = sample.prefix;
     let format = detect_format(&data, path);
-    let pe = if format == "PE" { parse_pe(&data) } else { None };
-    let imphash = pe.as_ref().and_then(|p| imphash(&p.imported_functions));
+    let pe = if format == "PE" { parse_pe_with_size(&data, size) } else { None };
+    // A partial import table must not become a comparable family fingerprint.
+    let imphash = if data.len() as u64 == size {
+        pe.as_ref().and_then(|p| imphash(&p.imported_functions))
+    } else { None };
     Ok(FileAnalysis {
         path: crate::util::path_to_slash_string(display),
         size,
-        sha256,
-        md5,
+        sha256: sample.sha256,
+        md5: sample.md5,
         imphash,
         format,
-        entropy: shannon_entropy(&data),
+        entropy: sample.entropy,
+        content_bytes: data.len() as u64,
         indicators: scan_indicators(&data),
         pe,
+    })
+}
+
+/// Bounded memory independent of input length. Full-stream fingerprints and
+/// entropy share exactly the bytes read; only the prefix is retained.
+struct StreamInspection {
+    size: u64,
+    prefix: Vec<u8>,
+    sha256: String,
+    md5: String,
+    entropy: f64,
+}
+
+fn inspect_stream(reader: &mut impl Read, limit: usize) -> std::io::Result<StreamInspection> {
+    let mut sha = crate::sha256::Sha256::new();
+    let mut md5 = crate::md5::Md5::new();
+    let mut counts = [0u64; 256];
+    let mut size = 0u64;
+    let mut prefix = Vec::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = match reader.read(&mut buf) {
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            result => result?,
+        };
+        if n == 0 { break; }
+        size = size.checked_add(n as u64).ok_or_else(||
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "file length overflow"))?;
+        let chunk = &buf[..n];
+        sha.update(chunk);
+        md5.update(chunk);
+        for byte in chunk { counts[*byte as usize] += 1; }
+        let keep = n.min(limit.saturating_sub(prefix.len()));
+        prefix.extend_from_slice(&chunk[..keep]);
+    }
+    Ok(StreamInspection { size, prefix,
+        sha256: crate::sha256::to_hex(&sha.finalize()),
+        md5: crate::sha256::to_hex(&md5.finalize()),
+        entropy: entropy_counts(&counts, size),
     })
 }
 
@@ -677,7 +731,12 @@ pub fn shannon_entropy(data: &[u8]) -> f64 {
     if data.is_empty() { return 0.0; }
     let mut counts = [0u64; 256];
     for b in data { counts[*b as usize] += 1; }
-    let len = data.len() as f64;
+    entropy_counts(&counts, data.len() as u64)
+}
+
+fn entropy_counts(counts: &[u64; 256], size: u64) -> f64 {
+    if size == 0 { return 0.0; }
+    let len = size as f64;
     counts.iter().filter(|&&c| c > 0).map(|&c| {
         let p = c as f64 / len;
         -p * p.log2()
@@ -759,6 +818,10 @@ struct Section {
 pub fn parse_pe_bytes(data: &[u8]) -> Option<PeInfo> { parse_pe(data) }
 
 fn parse_pe(data: &[u8]) -> Option<PeInfo> {
+    parse_pe_with_size(data, data.len() as u64)
+}
+
+fn parse_pe_with_size(data: &[u8], file_len: u64) -> Option<PeInfo> {
     if !data.starts_with(b"MZ") { return None; }
     let pe_off = u32le(data, 0x3c)? as usize;
     if data.get(pe_off..pe_off + 4)? != b"PE\0\0".as_slice() { return None; }
@@ -835,7 +898,6 @@ fn parse_pe(data: &[u8]) -> Option<PeInfo> {
     }
     // Overlay: trailing bytes past the final section, minus the
     // Authenticode blob (which legitimately lives there when signed).
-    let file_len = data.len() as u64;
     let mut overlay_size = file_len.saturating_sub(last_section_end);
     if signed {
         let cert_off = dir_rva(4) as u64;
@@ -913,6 +975,121 @@ fn parse_pe(data: &[u8]) -> Option<PeInfo> {
 mod tests {
     use super::*;
     #[test]
+    fn stream_fingerprints_and_entropy_cover_bytes_beyond_the_prefix() {
+        let data: Vec<u8> = (0..150_003).map(|i| (i % 251) as u8).collect();
+        for limit in [0, 1, 63, 64, 65535, 65536, data.len(), data.len() + 1] {
+            let sample = inspect_stream(&mut std::io::Cursor::new(&data), limit).unwrap();
+            assert_eq!(sample.prefix, data[..limit.min(data.len())]);
+            assert_eq!(sample.size, data.len() as u64);
+            assert_eq!(sample.sha256, crate::sha256::hash_bytes(&data));
+            assert_eq!(sample.md5, crate::md5::hash_bytes(&data));
+            assert!((sample.entropy - shannon_entropy(&data)).abs() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn stream_handles_short_reads_interruptions_and_errors() {
+        struct Short { data: std::io::Cursor<Vec<u8>>, interrupted: bool }
+        impl Read for Short {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if !self.interrupted {
+                    self.interrupted = true;
+                    return Err(std::io::ErrorKind::Interrupted.into());
+                }
+                let len = buf.len().min(3);
+                self.data.read(&mut buf[..len])
+            }
+        }
+        let data = b"abcdefghijklmnopqrstuvwxyz".to_vec();
+        let sample = inspect_stream(&mut Short { data: std::io::Cursor::new(data.clone()), interrupted: false }, 7).unwrap();
+        assert_eq!(sample.prefix, &data[..7]);
+        assert_eq!(sample.sha256, crate::sha256::hash_bytes(&data));
+        assert_eq!(sample.md5, crate::md5::hash_bytes(&data));
+        struct Broken;
+        impl Read for Broken {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::PermissionDenied.into())
+            }
+        }
+        assert!(inspect_stream(&mut Broken, 16).is_err());
+        let empty = inspect_stream(&mut std::io::empty(), 16).unwrap();
+        assert_eq!(empty.entropy, 0.0);
+        assert_eq!(empty.md5, crate::md5::hash_bytes(b""));
+    }
+
+    #[test]
+    fn oversized_pe_keeps_headers_findings_and_full_file_fingerprints() {
+        use std::io::{Seek, SeekFrom, Write};
+        let dir = std::env::temp_dir().join(format!("rea_prefix_{}", crate::util::new_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("large.exe");
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.write_all(&synthetic_pe()).unwrap();
+        file.set_len(MAX_ANALYZE_BYTES + 4096).unwrap();
+        file.seek(SeekFrom::End(-32)).unwrap();
+        file.write_all(b"https://outside-prefix.invalid").unwrap();
+        drop(file);
+        let bridge = ReaBridge::new(ReaConfig::default());
+        let report = bridge.analyze_native(&path).unwrap();
+        let analysis = &report.files[0];
+        assert_eq!(analysis.path, "large.exe");
+        assert_eq!(analysis.format, "PE");
+        assert_eq!(analysis.content_bytes, MAX_ANALYZE_BYTES);
+        assert_eq!(analysis.sha256, crate::sha256::hash_file(&path).unwrap());
+        assert_eq!(analysis.md5, crate::md5::hash_file(&path).unwrap());
+        assert!(analysis.pe.as_ref().unwrap().imported_functions.iter().any(|s| s.contains("CreateRemoteThread")));
+        assert_eq!(analysis.pe.as_ref().unwrap().overlay_size, analysis.size - 0x400);
+        assert!(analysis.imphash.is_none());
+        assert!(!analysis.indicators.iter().any(|s| s.category == "network"));
+        assert_eq!(report.scan_issues.len(), 1);
+        assert!(report.scan_issues[0].message.contains("only the first"));
+        let json = report.to_json();
+        let scope = match json.get("files").unwrap() {
+            Value::Array(files) => files[0].get("analysis_scope").unwrap(),
+            _ => panic!("files array"),
+        };
+        assert_eq!(scope.get("content_complete"), Some(&Value::Bool(false)));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn full_small_pe_retains_imphash_and_complete_scope() {
+        let dir = std::env::temp_dir().join(format!("rea_full_{}", crate::util::new_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("small.exe");
+        let data = synthetic_pe();
+        std::fs::write(&path, &data).unwrap();
+        let analysis = analyze_file(&path, Path::new("small.exe")).unwrap();
+        assert_eq!(analysis.content_bytes, data.len() as u64);
+        assert_eq!(analysis.sha256, crate::sha256::hash_bytes(&data));
+        assert_eq!(analysis.md5, crate::md5::hash_bytes(&data));
+        assert!(analysis.imphash.is_some());
+        assert!((analysis.entropy - shannon_entropy(&data)).abs() < 1e-10);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn identical_prefixes_do_not_make_full_file_fingerprints_identical() {
+        let a = vec![0u8; 256];
+        let mut b = a.clone();
+        for (i, byte) in b[64..].iter_mut().enumerate() { *byte = i as u8; }
+        let first = inspect_stream(&mut std::io::Cursor::new(a), 64).unwrap();
+        let second = inspect_stream(&mut std::io::Cursor::new(b), 64).unwrap();
+        assert_eq!(first.prefix, second.prefix);
+        assert_ne!(first.sha256, second.sha256);
+        assert_ne!(first.md5, second.md5);
+        assert!(second.entropy > first.entropy);
+    }
+
+    #[test]
+    fn pe_overlay_uses_full_length_not_retained_prefix_length() {
+        let bytes = synthetic_pe();
+        let pe = parse_pe_with_size(&bytes, 100_000_000).unwrap();
+        assert_eq!(pe.overlay_size, 100_000_000 - 0x400);
+        assert_eq!(pe.section_details[0].raw_size, 0x200);
+    }
+
+    #[test]
     fn a_file_growing_during_analysis_is_refused_not_mixed() {
         use std::io::Write;
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -920,9 +1097,8 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("growing.bin");
         std::fs::write(&file, vec![3u8; 48 * 1024 * 1024]).unwrap();
-        // Keep appending for the whole analysis, so the file provably
-        // moves between the four separate reads (stat, two hash passes,
-        // content read) the analysis is built from.
+        // Keep appending for the whole analysis, so the file moves between
+        // the metadata checks that bracket the streaming read.
         let stop = std::sync::Arc::new(AtomicBool::new(false));
         let writer = {
             let stop = stop.clone();

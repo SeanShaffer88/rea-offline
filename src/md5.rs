@@ -67,30 +67,62 @@ fn compress(state: &mut [u32; 4], block: &[u8]) {
     state[3] = state[3].wrapping_add(d);
 }
 
+/// Incremental MD5 fingerprint; never used as an integrity guarantee.
+#[derive(Clone)]
+pub struct Md5 {
+    state: [u32; 4],
+    buffer: [u8; 64],
+    used: usize,
+    total: u64,
+}
+
+impl Md5 {
+    pub fn new() -> Self {
+        Self { state: [0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476],
+            buffer: [0; 64], used: 0, total: 0 }
+    }
+
+    pub fn update(&mut self, mut data: &[u8]) {
+        self.total = self.total.wrapping_add(data.len() as u64);
+        if self.used > 0 {
+            let take = (64 - self.used).min(data.len());
+            self.buffer[self.used..self.used + take].copy_from_slice(&data[..take]);
+            self.used += take;
+            data = &data[take..];
+            if self.used < 64 { return; }
+            compress(&mut self.state, &self.buffer);
+            self.used = 0;
+        }
+        while data.len() >= 64 {
+            compress(&mut self.state, &data[..64]);
+            data = &data[64..];
+        }
+        self.buffer[..data.len()].copy_from_slice(data);
+        self.used = data.len();
+    }
+
+    pub fn finalize(mut self) -> [u8; 16] {
+        let bits = self.total.wrapping_mul(8);
+        self.update(&[0x80]);
+        while self.used != 56 { self.update(&[0]); }
+        self.update(&bits.to_le_bytes());
+        let mut out = [0u8; 16];
+        for (i, word) in self.state.iter().enumerate() {
+            out[i * 4..i * 4 + 4].copy_from_slice(&word.to_le_bytes());
+        }
+        out
+    }
+}
+
+impl Default for Md5 {
+    fn default() -> Self { Self::new() }
+}
+
 /// Raw 16-byte MD5 digest.
 pub fn digest(data: &[u8]) -> [u8; 16] {
-    let mut state: [u32; 4] = [0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476];
-    let mut chunks = data.chunks_exact(64);
-    for block in &mut chunks {
-        compress(&mut state, block);
-    }
-    // Padding: 0x80, zeros, then the 64-bit little-endian bit length.
-    let rest = chunks.remainder();
-    let mut tail = Vec::with_capacity(128);
-    tail.extend_from_slice(rest);
-    tail.push(0x80);
-    while tail.len() % 64 != 56 {
-        tail.push(0);
-    }
-    tail.extend_from_slice(&((data.len() as u64).wrapping_mul(8)).to_le_bytes());
-    for block in tail.chunks_exact(64) {
-        compress(&mut state, block);
-    }
-    let mut out = [0u8; 16];
-    for (i, word) in state.iter().enumerate() {
-        out[i * 4..i * 4 + 4].copy_from_slice(&word.to_le_bytes());
-    }
-    out
+    let mut hash = Md5::new();
+    hash.update(data);
+    hash.finalize()
 }
 
 /// Lowercase hex MD5 of a byte slice.
@@ -107,41 +139,36 @@ pub fn hash_bytes(data: &[u8]) -> String {
 pub fn hash_file(path: &Path) -> std::io::Result<String> {
     let mut file = std::fs::File::open(path)?;
     let mut buf = vec![0u8; 64 * 1024];
-    let mut pending: Vec<u8> = Vec::new();
-    let mut state: [u32; 4] = [0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476];
-    let mut total: u64 = 0;
+    let mut hash = Md5::new();
     loop {
         let read = file.read(&mut buf)?;
         if read == 0 { break; }
-        total += read as u64;
-        pending.extend_from_slice(&buf[..read]);
-        let usable = pending.len() - pending.len() % 64;
-        for block in pending[..usable].chunks_exact(64) {
-            compress(&mut state, block);
-        }
-        pending.drain(..usable);
+        hash.update(&buf[..read]);
     }
-    pending.push(0x80);
-    while pending.len() % 64 != 56 {
-        pending.push(0);
-    }
-    pending.extend_from_slice(&total.wrapping_mul(8).to_le_bytes());
-    for block in pending.chunks_exact(64) {
-        compress(&mut state, block);
-    }
-    let mut out = String::with_capacity(32);
-    for word in state {
-        for byte in word.to_le_bytes() {
-            out.push(char::from_digit((byte >> 4) as u32, 16).unwrap_or('0'));
-            out.push(char::from_digit((byte & 0x0f) as u32, 16).unwrap_or('0'));
-        }
-    }
-    Ok(out)
+    Ok(crate::sha256::to_hex(&hash.finalize()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn incremental_chunks_and_padding_boundaries_match_vectors() {
+        for len in [0, 1, 55, 56, 63, 64, 65, 119, 120, 127, 128, 129, 1000] {
+            let data: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
+            for chunk in [1, 3, 7, 63, 64, 65, 129] {
+                let mut hash = Md5::new();
+                for bytes in data.chunks(chunk) {
+                    hash.update(bytes);
+                    hash.update(&[]);
+                }
+                assert_eq!(hash.finalize(), digest(&data), "len {len}, chunk {chunk}");
+            }
+        }
+        let mut hash = Md5::new();
+        for _ in 0..1000 { hash.update(&[b'a'; 1000]); }
+        assert_eq!(crate::sha256::to_hex(&hash.finalize()), "7707d6ae4e027c70eea2a935c2296f21");
+    }
 
     #[test]
     fn rfc1321_vectors() {

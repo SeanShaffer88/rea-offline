@@ -216,12 +216,17 @@ fn files_table(files: &[Value]) -> Option<String> {
     if files.is_empty() {
         return None;
     }
-    let mut table = Table::new(["path", "size", "format", "sha256", "md5", "imphash"]);
+    let mut table = Table::new(["path", "size", "format", "content inspected", "sha256", "md5", "imphash"]);
     for f in files.iter().take(MAX_ROWS) {
         table.row([
             s(f.get("path")),
             human_bytes(n(f.get("size"))),
             s(f.get("format")),
+            match f.get("analysis_scope").and_then(|scope| scope.get("content_bytes")) {
+                Some(bytes) => format!("{} / {}{}", human_bytes(n(Some(bytes))), human_bytes(n(f.get("size"))),
+                    if n(Some(bytes)) < n(f.get("size")) { " (prefix only)" } else { "" }),
+                None => "not recorded".into(),
+            },
             s(f.get("sha256")),
             s(f.get("md5")),
             s(f.get("imphash")),

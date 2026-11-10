@@ -197,7 +197,12 @@ Directory scans disclose unreadable files/directories, failed external REA runs,
 and the 32 MiB per-file content-analysis limit in `report.scan_issues` (also
 summarized by `summary.complete` and `summary.scan_issue_count`). Text, Markdown,
 and the window surface incomplete coverage; these operational issues do not
-inflate the risk score. Files are analyzed without following symlinks — and a
+inflate the risk score. For every native file, SHA-256, MD5 and entropy cover
+all bytes in one streaming pass. Structure and string checks retain only the
+first 32 MiB; larger files still get useful prefix evidence but remain incomplete.
+Their import lists may be partial, so imphash is withheld. `analysis_scope` records
+`content_bytes`, `content_complete`, `hash_bytes` and `entropy_bytes`; GUI file
+details and Markdown expose the content scope. Files are analyzed without following symlinks — and a
 link a scan does not follow is named in `scan_issues` (stage `symlink`), as is
 anything that is not a regular file or directory (stage `special`), so a tree
 whose links were never looked behind does not read as completely scanned.
@@ -491,6 +496,22 @@ Created by Sean Shaffer
 MIT — see [LICENSE](LICENSE).
 
 ## Changelog
+
+### 0.27.0
+
+- **Large files receive bounded content inspection instead of hashes alone.**
+  The native analyzer retains the first 32 MiB for PE parsing and string
+  indicators, while streaming SHA-256, MD5 and whole-file entropy over every
+  byte in one pass. Larger files remain explicitly incomplete, imports may be
+  partial, and their imphash is withheld rather than fingerprinting a partial
+  import table. PE overlay sizes use the full file length, not the prefix.
+- **Analysis scope travels with the evidence.** Each native file's JSON records
+  content, hash and entropy byte counts. Archived scope is validated for
+  consistency; Markdown tables and file details show how much content was
+  inspected. Old archives remain readable with scope marked not recorded.
+- **Absolute single-file targets stay single files.** Native reports use the
+  basename as the file record path, avoiding artificial drive-letter folders
+  when the picker receives an absolute Windows path.
 
 ### 0.26.0
 

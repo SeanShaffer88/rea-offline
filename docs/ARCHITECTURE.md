@@ -140,8 +140,15 @@ JSON report while stderr is also noisy.
 
 Native directory analysis records operational limitations in
 `report.scan_issues`: unreadable directories/files, external REA failures, and
-files above the 32 MiB content-analysis limit (full-file hashes are still
-computed). `summary.complete` is false when any issue exists. These fields are
+files above the 32 MiB retained-content limit. SHA-256, MD5 and a byte histogram
+for whole-file entropy are accumulated from a single open stream. The first
+32 MiB are retained for structural and string analysis even on larger inputs;
+memory does not scale with total file size. PE overlay arithmetic uses actual
+file length. Imports may be partial and imphash is withheld for partial inputs;
+a PE header outside the prefix does not trigger the malformed-header rule.
+Per-file `analysis_scope` records exact content/hash/entropy byte counts, and
+archive validation rejects contradictory scopes or missing content-limit issues.
+Old archives without scope remain supported. `summary.complete` is false when any issue exists. These fields are
 additive within schema 3 and are shown by text, Markdown, and the GUI. They do
 not add risk points: an access-denied error is not evidence of malice. Symlinks
 are never followed by static directory analysis.
