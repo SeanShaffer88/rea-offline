@@ -94,6 +94,16 @@ impl Page {
         }
     }
 
+    /// A file target has a synthetic directory container in the size model.
+    /// Do not mistake a real directory containing one file for a file target.
+    fn single_file(&self) -> Option<&tree::Artifact> {
+        if self.tree.children.is_empty() && self.tree.files.len() == 1 {
+            let file = &self.tree.files[0];
+            if file.path == self.tree.name { return Some(file); }
+        }
+        None
+    }
+
     pub fn summary_text(&self) -> String {
         crate::render::summary_text(&self.report)
     }
@@ -348,10 +358,18 @@ fn html_escape(text: &str) -> String {
 /// have scripting disabled by policy.
 pub fn page_html(page: &Page, query: &str) -> String {
     let parsed = parse_query(query);
-    let view = view_from(&parsed);
+    let mut view = view_from(&parsed);
+    let single_file = page.single_file();
+    if single_file.is_some() {
+        view.expanded.push(page.tree.name.clone());
+    }
     // Only nodes that are open *and currently visible* count as state;
     // anything else is history and would just make every URL longer.
-    let rows = tree::rows(&page.tree, &view);
+    let mut rows = tree::rows(&page.tree, &view);
+    if single_file.is_some() {
+        rows.retain(|row| !row.is_dir);
+        for row in &mut rows { row.depth = 0; }
+    }
     let visible_dirs: Vec<String> = rows
         .iter()
         .filter(|r| r.is_dir)
@@ -381,7 +399,10 @@ pub fn page_html(page: &Page, query: &str) -> String {
     // The SVG uses a 0..100 viewBox, so the layout runs in "percent" units
     // and the browser scales it to the pane: no JS, no resize handling.
     let banner = tree::treemap(&page.tree, 100.0, 100.0, &view, 1.2);
-    let selected = view.selected.clone().unwrap_or_default();
+    let selected = view.selected.clone().unwrap_or_else(|| {
+        single_file.filter(|file| rows.iter().any(|row| row.path == file.path))
+            .map(|file| file.path.clone()).unwrap_or_default()
+    });
 
     let mut body = String::new();
     body.push_str("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">");
@@ -397,26 +418,33 @@ pub fn page_html(page: &Page, query: &str) -> String {
     body.push_str("<header><div class=\"title\"><span class=\"logo\">rea-offline</span>");
     body.push_str(&format!("<span class=\"path\">{}</span></div>", html_escape(&page.root_name)));
     body.push_str("<div class=\"chips\">");
-    body.push_str(&format!(
-        "<span class=\"chip verdict-{}\">{} — {}/100</span>",
-        html_escape(&page.verdict()),
-        html_escape(&page.verdict().to_uppercase()),
-        page.score()
-    ));
     let issue_count: usize = match page.report.get("coverage").and_then(|c| c.get("issues")) {
         Some(issues) => array(Some(issues)).len(),
         None => ["report", "installer_report", "drops_report"].iter()
             .map(|key| array(page.report.get(key).and_then(|r| r.get("scan_issues"))).len())
             .sum(),
     };
+    let coverage_complete = issue_count == 0
+        && page.report.get("coverage").and_then(|c| c.get("complete")) == Some(&Value::Bool(true));
+    // Missing evidence must not turn a low observed score into a green light.
+    let verdict_class = if !coverage_complete && page.verdict() == "low" {
+        "coverage-incomplete".to_string()
+    } else { format!("verdict-{}", html_escape(&page.verdict())) };
+    body.push_str(&format!(
+        "<span class=\"chip {verdict_class}\">Observed risk: {} — {}/100</span>",
+        html_escape(&page.verdict().to_uppercase()), page.score()
+    ));
     if issue_count > 0 {
         body.push_str(&format!(
             "<span class=\"chip coverage-incomplete\">incomplete coverage — {issue_count} issue(s)</span>"
         ));
-    } else if page.report.get("coverage").is_none() {
+    } else if !coverage_complete {
         // Archives that predate coverage records carry no block at all;
         // no chip would read as "complete".
-        body.push_str("<span class=\"chip coverage-incomplete\">coverage not recorded</span>");
+        let label = if page.report.get("coverage").is_some() {
+            "incomplete coverage"
+        } else { "coverage not recorded" };
+        body.push_str(&format!("<span class=\"chip coverage-incomplete\">{label}</span>"));
     }
     body.push_str(&format!(
         "<span class=\"chip\">{} files · {}</span>",
@@ -424,6 +452,30 @@ pub fn page_html(page: &Page, query: &str) -> String {
         human_bytes(page.tree.size)
     ));
     body.push_str("</div></header>");
+    if !coverage_complete {
+        body.push_str("<aside class=\"coverage-warning\" role=\"note\"><strong>Safety undetermined — analysis is incomplete or coverage is unknown.</strong> \
+            The score reflects observed findings only. A low score does not mean this file is safe. \
+            Some contents may not have been inspected; hashes alone do not establish safety.");
+        let issues = page.report.get("coverage").and_then(|c| c.get("issues"));
+        let fallback: Vec<&Value> = ["report", "installer_report", "drops_report"].iter()
+            .flat_map(|key| array(page.report.get(key).and_then(|r| r.get("scan_issues"))).iter())
+            .collect();
+        let warnings: Vec<&Value> = match issues {
+            Some(Value::Array(items)) => items.iter().collect(),
+            _ => fallback,
+        };
+        if !warnings.is_empty() {
+            body.push_str("<details open><summary>Inspection limitations</summary><ul>");
+            for issue in warnings {
+                let path = issue.get("path").and_then(Value::as_str).unwrap_or("");
+                let message = issue.get("message").and_then(Value::as_str).unwrap_or("Inspection unavailable");
+                body.push_str(&format!("<li>{}: {}</li>", html_escape(path), html_escape(message)));
+            }
+            body.push_str("</ul></details>");
+        }
+        body.push_str("</aside>");
+    }
+
 
     body.push_str("<div class=\"toolbar\">");
     body.push_str(&format!(
@@ -587,7 +639,15 @@ pub fn page_html(page: &Page, query: &str) -> String {
             tile.risk
         ));
     }
-    body.push_str("</svg></section></main>");
+    body.push_str("</svg>");
+    if let Some(file) = single_file.filter(|_| !banner.is_empty()) {
+        body.push_str(&format!("<div class=\"map-caption\"><strong>{}</strong><br>{} · {}<br>One file — tile area represents size, not safety. Select the tile for file details.</div>",
+            html_escape(&file.path), human_bytes(file.size), html_escape(&file.format)));
+    }
+    if banner.is_empty() {
+        body.push_str("<div class=\"map-caption\">No files match the current filters.</div>");
+    }
+    body.push_str("</section></main>");
 
     // Details pane: the evidence for whatever is selected. `selected` is a
     // report path (what `details_text` looks up), so a selected *folder*
@@ -687,7 +747,11 @@ tr.selected{background:#182534}
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:middle}
 tr.tint-critical td.name{color:#feb2b2}
 tr.tint-high td.name{color:#fbd38d}
-.map{background:#080b0f;overflow:hidden}
+.coverage-warning{padding:12px 14px;background:#33290f;color:#fbd38d;border-bottom:2px solid var(--medium);max-height:30vh;overflow:auto;flex-shrink:0}
+.coverage-warning strong{display:block}.coverage-warning ul{margin:6px 0;padding-left:22px;overflow-wrap:anywhere}
+.map{background:#080b0f;overflow:hidden;position:relative}
+.map-caption{position:absolute;left:16px;right:16px;top:16px;padding:12px;background:#0e141bee;border:1px solid var(--line);border-radius:6px;pointer-events:none;overflow-wrap:anywhere}
+header{flex-wrap:wrap}.chips{flex-wrap:wrap}
 .map svg{width:100%;height:100%;display:block}
 .map rect:hover{stroke:#e5edf5;stroke-width:.3;fill-opacity:1}
 footer{background:var(--panel);border-top:1px solid var(--line);padding:8px 14px;max-height:32vh;overflow:auto}
@@ -1265,6 +1329,73 @@ mod tests {
         )
         .unwrap();
         Page::new(report, "C:/demo")
+    }
+
+    fn single_file_sample(complete: bool) -> Page {
+        let mut report = crate::json::parse(r#"{
+            "verdict":"low","risk_score":0,
+            "coverage":{"complete":false,"issues":[{"path":"setup.exe","message":"above the 32 MiB content-analysis limit <untrusted>"}]},
+            "report":{"target":"C:/Downloads/setup.exe","files":[
+                {"path":"setup.exe","size":112193483,"format":"PE","sha256":"abc","md5":"def"}
+            ]}}
+        "#).unwrap();
+        if complete {
+            if let Value::Object(map) = &mut report {
+                map.insert("coverage".into(), crate::json::parse(r#"{"complete":true,"issues":[]}"#).unwrap());
+            }
+        }
+        Page::new(report, "C:/Downloads/setup.exe")
+    }
+
+    #[test]
+    fn limited_analysis_is_not_a_green_safety_verdict() {
+        let html = page_html(&single_file_sample(false), "");
+        assert!(html.contains("Safety undetermined"));
+        assert!(html.contains("Observed risk: LOW — 0/100"));
+        assert!(!html.contains("chip verdict-low"));
+        assert!(html.contains("above the 32 MiB content-analysis limit &lt;untrusted&gt;"));
+        assert!(!html.contains("limit <untrusted>"));
+    }
+
+    #[test]
+    fn limited_coverage_does_not_hide_high_risk_findings() {
+        let mut page = single_file_sample(false);
+        if let Value::Object(map) = &mut page.report {
+            map.insert("verdict".into(), Value::String("high".into()));
+            map.insert("risk_score".into(), Value::Number(70.0));
+        }
+        let html = page_html(&page, "");
+        assert!(html.contains("chip verdict-high"));
+        assert!(html.contains("Observed risk: HIGH — 70/100"));
+        assert!(html.contains("Safety undetermined"));
+    }
+
+    #[test]
+    fn complete_coverage_keeps_the_observed_verdict() {
+        let html = page_html(&single_file_sample(true), "");
+        assert!(html.contains("chip verdict-low"));
+        assert!(!html.contains("Safety undetermined"));
+    }
+
+    #[test]
+    fn single_file_shows_file_type_details_and_map_explanation() {
+        let page = single_file_sample(false);
+        let html = page_html(&page, "");
+        assert!(!html.contains("<td>folder</td>"));
+        assert!(html.contains("<td>PE</td>"));
+        assert!(html.contains("SHA-256: abc"));
+        assert!(html.contains("tile area represents size, not safety"));
+        let filtered = page_html(&page, "hide_clean=1");
+        assert!(!filtered.contains("SHA-256: abc"));
+        assert!(filtered.contains("No files match the current filters"));
+    }
+
+    #[test]
+    fn a_directory_with_one_file_is_still_a_directory() {
+        let mut page = single_file_sample(true);
+        page.tree.name = "Downloads".into();
+        assert!(page.single_file().is_none());
+        assert!(page_html(&page, "").contains("<td>folder</td>"));
     }
 
     /// A sandbox report with an absolute Windows installer path, a file in

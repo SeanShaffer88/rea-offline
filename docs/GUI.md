@@ -162,3 +162,16 @@ When the envelope carries a `containment` block (sandbox runs), the compact
 summary also states the facts the tree cannot show: whether the run was
 elevated/root, and whether the registry hive mounted. Like the chip, it never
 changes the score — it says which writes may have escaped the snapshot.
+
+### Reading limited and single-file reports
+
+The score is labelled **Observed risk**: it describes findings, not proof of
+safety. When coverage is incomplete or not recorded, a prominent warning above
+the grid lists available inspection limitations (including content-analysis
+size limits). A low observed score is amber rather than green in that case.
+This does not change the underlying score or lift analysis resource limits.
+
+For a single-file target, the grid shows the file itself rather than its
+synthetic folder container. Its details and hashes appear immediately. The map
+labels the file and explains that tile area represents bytes, not safety.
+Filters still apply; an empty map explicitly says no files match.

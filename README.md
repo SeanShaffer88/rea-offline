@@ -494,6 +494,13 @@ MIT — see [LICENSE](LICENSE).
 
 ### 0.26.0
 
+- **Limited inspection is not a safety verdict.** The browser report prominently
+  explains incomplete or unknown coverage, displays the recorded limitations,
+  and labels the score as observed risk rather than a safety claim. Low scores
+  without complete coverage no longer get a green badge. A single-file target
+  opens directly as a file row with hashes and details, plus a labelled map
+  explaining that tile area measures size, not safety.
+
 - **Release notes now come from the changelog, not the PR list.** The tag-driven
   release workflow used `--generate-notes`, which only lists pull requests and
   hides the version sections a grouped release ships together. A new
