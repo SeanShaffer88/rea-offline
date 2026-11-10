@@ -497,6 +497,17 @@ Created by Sean Shaffer
 
 MIT — see [LICENSE](LICENSE).
 
+### Optional PE differential checks
+
+After building, run `python3 -m pip install -r scripts/requirements-pe-tests.txt`
+and `python3 scripts/check_pe_differential.py --binary target/release/rea-offline`
+(use `target/release/rea-offline.exe` on Windows). This is a development-only
+validation tool, not part of the offline runtime or release packaging. It uses
+synthetic static fixtures rather than downloaded malware or licensed binaries.
+pefile is an independent implementation, not a proof of Windows-loader behavior:
+these checks cover the explicit supported fixture matrix, not arbitrary malformed
+inputs or signature trust. Existing Rust adversarial-input tests remain necessary.
+
 ## Changelog
 
 ### 0.31.0
@@ -983,14 +994,3 @@ MIT — see [LICENSE](LICENSE).
 - Mode B also analyzes the installer binary itself (`installer_report`).
 - Job Object active-process ceiling (`--max-processes`, default 32).
 - New `doctor` preflight command (platform, sandbox create/purge rehearsal, REA discovery).
-
-### Optional PE differential checks
-
-After building, run `python3 -m pip install -r scripts/requirements-pe-tests.txt`
-and `python3 scripts/check_pe_differential.py --binary target/release/rea-offline`
-(use `target/release/rea-offline.exe` on Windows). This is a development-only
-validation tool, not part of the offline runtime or release packaging. It uses
-synthetic static fixtures rather than downloaded malware or licensed binaries.
-pefile is an independent implementation, not a proof of Windows-loader behavior:
-these checks cover the explicit supported fixture matrix, not arbitrary malformed
-inputs or signature trust. Existing Rust adversarial-input tests remain necessary.
