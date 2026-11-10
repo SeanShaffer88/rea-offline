@@ -499,6 +499,12 @@ MIT — see [LICENSE](LICENSE).
 
 ### 0.27.0
 
+- **PE optional headers define their own bounds.** The parser rejects unknown
+  optional-header magic and truncated declared headers, and reads data-directory
+  entries only when both the declared header size and directory count permit
+  them. Header-based import RVAs use `SizeOfHeaders`, not the section-table
+  start, so valid header imports work without reading undeclared directories.
+
 - **PE parsing resists hostile address ranges.** Import RVA arithmetic is
   widened and bounded to retained file-backed section bytes, never virtual
   zero-fill. Certificate-table presence requires a range inside the actual

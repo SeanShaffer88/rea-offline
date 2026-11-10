@@ -825,14 +825,21 @@ fn parse_pe(data: &[u8]) -> Option<PeInfo> {
 fn parse_pe_with_size(data: &[u8], file_len: u64) -> Option<PeInfo> {
     if !data.starts_with(b"MZ") { return None; }
     let pe_off = u32le(data, 0x3c)? as usize;
-    if data.get(pe_off..pe_off + 4)? != b"PE\0\0".as_slice() { return None; }
+    if data.get(pe_off..pe_off.checked_add(4)?)? != b"PE\0\0".as_slice() { return None; }
     let coff = pe_off + 4;
     let machine_raw = u16le(data, coff)?;
     let num_sections = u16le(data, coff + 2)? as usize;
     let opt_size = u16le(data, coff + 16)? as usize;
     let opt = coff + 20;
-    let magic = u16le(data, opt)?;
-    let is_64bit = magic == 0x20b;
+    // The optional header is a declared structure, not permission to read
+    // arbitrary bytes from the section table or payload as header fields.
+    let optional = data.get(opt..opt.checked_add(opt_size)?)?;
+    let magic = u16le(optional, 0)?;
+    let is_64bit = match magic { 0x10b => false, 0x20b => true, _ => return None };
+    let directory_base = if is_64bit { 112 } else { 96 };
+    if optional.len() < directory_base { return None; }
+    let directory_count = u32le(optional, directory_base - 4)? as usize;
+    let headers_size = u32le(optional, 60)? as usize;
     let timestamp = u32le(data, coff + 4).unwrap_or(0);
     let entry_point_rva = u32le(data, opt + 16).unwrap_or(0);
     let subsystem_raw = u16le(data, opt + 68)?; // same offset in PE32 and PE32+
@@ -856,9 +863,16 @@ fn parse_pe_with_size(data: &[u8], file_len: u64) -> Option<PeInfo> {
     };
     // Data directories start at opt+96 (PE32) / opt+112 (PE32+); import = #1,
     // certificate (Authenticode) = #4 and is a *file offset*, not an RVA.
-    let dd_base = opt + if is_64bit { 112 } else { 96 };
-    let dir_rva = |idx: usize| u32le(data, dd_base + idx * 8).unwrap_or(0);
-    let dir_size = |idx: usize| u32le(data, dd_base + idx * 8 + 4).unwrap_or(0);
+    let directory = |idx: usize| -> (u32, u32) {
+        if idx >= directory_count { return (0, 0); }
+        let off = directory_base + idx * 8;
+        match (u32le(optional, off), u32le(optional, off + 4)) {
+            (Some(address), Some(size)) => (address, size),
+            _ => (0, 0),
+        }
+    };
+    let dir_rva = |idx: usize| directory(idx).0;
+    let dir_size = |idx: usize| directory(idx).1;
     let import_rva = dir_rva(1);
     let cert_off = dir_rva(4) as u64;
     let cert_size = dir_size(4) as u64;
@@ -920,8 +934,8 @@ fn parse_pe_with_size(data: &[u8], file_len: u64) -> Option<PeInfo> {
             }
         }
         // RVAs outside sections may point into headers, not arbitrary raw
-        // section contents. The section table bounds this fallback.
-        if (rva as usize) < sec_base && (rva as usize) < data.len() { Some(rva as usize) } else { None }
+        // section contents. SizeOfHeaders bounds this fallback.
+        if (rva as usize) < headers_size && (rva as usize) < data.len() { Some(rva as usize) } else { None }
     };
 
     let read_c_string = |off: usize| -> String {
@@ -1155,6 +1169,7 @@ mod tests {
         let opt = coff + 20;
         d[opt..opt + 2].copy_from_slice(&0x20bu16.to_le_bytes()); // PE32+
         d[opt + 16..opt + 20].copy_from_slice(&0x1000u32.to_le_bytes()); // entry point
+        d[opt + 60..opt + 64].copy_from_slice(&0x200u32.to_le_bytes()); // SizeOfHeaders
         d[opt + 68..opt + 70].copy_from_slice(&3u16.to_le_bytes()); // subsystem: console
         // DllCharacteristics: high_entropy_va | dynamic_base | nx_compat | guard_cf
         d[opt + 70..opt + 72].copy_from_slice(&0x4160u16.to_le_bytes());
@@ -1187,6 +1202,74 @@ mod tests {
         let directory = 0x98 + 112 + 4 * 8;
         data[directory..directory + 4].copy_from_slice(&offset.to_le_bytes());
         data[directory + 4..directory + 8].copy_from_slice(&size.to_le_bytes());
+    }
+
+    #[test]
+    fn optional_header_magic_size_and_presence_are_validated() {
+        let original = synthetic_pe();
+        for magic in [0u16, 0x107, 0xffff] {
+            let mut bytes = original.clone();
+            bytes[0x98..0x9a].copy_from_slice(&magic.to_le_bytes());
+            assert!(parse_pe(&bytes).is_none());
+        }
+        for size in [0u16, 2, 70, 111, 0xffff] {
+            let mut bytes = original.clone();
+            bytes[0x94..0x96].copy_from_slice(&size.to_le_bytes());
+            assert!(parse_pe(&bytes).is_none(), "optional size {size}");
+        }
+        assert!(parse_pe(&original[..0x180]).is_none());
+    }
+
+    #[test]
+    fn undeclared_directories_are_not_interpreted_as_imports_or_certificates() {
+        for count in [0u32, 1] {
+            let mut bytes = synthetic_pe();
+            set_certificate(&mut bytes, 0x400, 0x40);
+            bytes[0x98 + 108..0x98 + 112].copy_from_slice(&count.to_le_bytes());
+            let pe = parse_pe(&bytes).unwrap();
+            assert!(pe.imports.is_empty());
+            assert!(!pe.signed);
+            assert_eq!(pe.overlay_size, 0x40);
+        }
+    }
+
+    #[test]
+    fn directories_cannot_escape_the_declared_optional_header() {
+        let mut bytes = synthetic_pe();
+        // No sections, optional header ends exactly where directories begin.
+        // Stale import/certificate bytes remain in the backing buffer.
+        bytes[0x86..0x88].copy_from_slice(&0u16.to_le_bytes());
+        bytes[0x94..0x96].copy_from_slice(&112u16.to_le_bytes());
+        set_certificate(&mut bytes, 0x400, 0x40);
+        let pe = parse_pe(&bytes).unwrap();
+        assert!(pe.imports.is_empty());
+        assert!(!pe.signed);
+    }
+
+    #[test]
+    fn pe32_directory_layout_is_supported() {
+        let mut bytes = synthetic_pe();
+        bytes[0x98..0x9a].copy_from_slice(&0x10bu16.to_le_bytes());
+        bytes[0x98 + 92..0x98 + 96].copy_from_slice(&0u32.to_le_bytes());
+        let pe = parse_pe(&bytes).unwrap();
+        assert!(!pe.is_64bit);
+        assert!(pe.imports.is_empty());
+        assert!(!pe.signed);
+    }
+
+    #[test]
+    fn header_imports_use_size_of_headers_not_section_table_start() {
+        let mut bytes = synthetic_pe();
+        let dd = 0x98 + 112;
+        bytes[dd + 8..dd + 12].copy_from_slice(&0x1b0u32.to_le_bytes());
+        bytes[0x1b0..0x200].fill(0);
+        bytes[0x1b0..0x1b4].copy_from_slice(&0x1e0u32.to_le_bytes());
+        bytes[0x1bc..0x1c0].copy_from_slice(&0x1f0u32.to_le_bytes());
+        bytes[0x1e0..0x1e8].copy_from_slice(&(0x8000_0000_0000_0000u64 | 42).to_le_bytes());
+        bytes[0x1f0..0x1fd].copy_from_slice(b"KERNEL32.dll\0");
+        assert_eq!(parse_pe(&bytes).unwrap().imports, vec!["KERNEL32.dll"]);
+        bytes[0x98 + 60..0x98 + 64].copy_from_slice(&0x1b0u32.to_le_bytes());
+        assert!(parse_pe(&bytes).unwrap().imports.is_empty());
     }
 
     #[test]
