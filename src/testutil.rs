@@ -105,6 +105,7 @@ impl PeBuilder {
         d[opt + 16..opt + 20].copy_from_slice(&self.entry_point.to_le_bytes());
         d[opt + 68..opt + 70].copy_from_slice(&self.subsystem.to_le_bytes());
         d[opt + 70..opt + 72].copy_from_slice(&self.dll_characteristics.to_le_bytes());
+        d[opt + 60..opt + 64].copy_from_slice(&0x200u32.to_le_bytes()); // SizeOfHeaders
         d[opt + 108..opt + 112].copy_from_slice(&16u32.to_le_bytes()); // NumRvaAndSizes
         let dd = opt + 112;
 
