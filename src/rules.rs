@@ -315,14 +315,14 @@ pub fn evaluate_file(file: &FileAnalysis, t: &Thresholds) -> Vec<Finding> {
                     format!("section characteristics include code|write ({} bytes)", s.raw_size),
                 );
             }
-            if s.raw_size >= t.min_section_bytes && s.entropy > t.packed_entropy {
+            if let Some(entropy) = s.entropy.filter(|e| s.raw_size >= t.min_section_bytes && *e > t.packed_entropy) {
                 add(&mut out, file,
                     "PE110",
                     format!("High-entropy section '{}'", s.name),
                     Severity::Medium,
                     "packing",
                     12,
-                    format!("entropy {:.2} over {} raw bytes (packed or encrypted)", s.entropy, s.raw_size),
+                    format!("entropy {:.2} over {} raw bytes (packed or encrypted)", entropy, s.raw_size),
                 );
             }
         }
@@ -623,9 +623,9 @@ mod tests {
             sections: vec![".text".into(), ".rdata".into()],
             section_details: vec![
                 PeSection { name: ".text".into(), virtual_size: 0x1000, raw_size: 0x1000,
-                            entropy: 6.1, executable: true, writable: false },
+                            entropy: Some(6.1), executable: true, writable: false },
                 PeSection { name: ".rdata".into(), virtual_size: 0x1000, raw_size: 0x1000,
-                            entropy: 4.0, executable: false, writable: false },
+                            entropy: Some(4.0), executable: false, writable: false },
             ],
             imports: vec!["KERNEL32.dll".into()],
             imported_functions: vec!["KERNEL32.dll!Sleep".into()],
@@ -672,7 +672,7 @@ mod tests {
         pe.sections = vec!["UPX0".into(), "UPX1".into()];
         pe.section_details = vec![PeSection {
             name: "UPX1".into(), virtual_size: 0x4000, raw_size: 0x4000,
-            entropy: 7.8, executable: true, writable: true,
+            entropy: Some(7.8), executable: true, writable: true,
         }];
         pe.executable_sections = vec!["UPX1".into()];
         pe.overlay_size = 20_000;
@@ -730,6 +730,14 @@ mod tests {
         f.format = "ELF".into();
         let findings = evaluate_file(&f, &Thresholds::default());
         assert!(!findings.iter().any(|x| x.rule == "FMT001" || x.rule == "FMT002"), "{findings:?}");
+    }
+
+    #[test]
+    fn unknown_section_entropy_does_not_trigger_a_packing_finding() {
+        let mut pe = clean_pe();
+        pe.section_details[0].entropy = None;
+        let file = file_with(Some(pe));
+        assert!(!evaluate_file(&file, &Thresholds::default()).iter().any(|f| f.rule == "PE110"));
     }
 
     #[test]
