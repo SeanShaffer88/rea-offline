@@ -494,6 +494,12 @@ MIT — see [LICENSE](LICENSE).
 
 ### 0.26.0
 
+- **Coverage warnings retain source failures.** The browser combines coverage
+  diagnostics with scan issues from current and older report shapes, avoids
+  counting summarized copies twice, and never treats an empty coverage summary
+  as permission to hide a recorded scan failure. The compact summary also
+  flags explicitly incomplete coverage even when no diagnostic details exist.
+
 - **Limited inspection is not a safety verdict.** The browser report prominently
   explains incomplete or unknown coverage, displays the recorded limitations,
   and labels the score as observed risk rather than a safety claim. Low scores

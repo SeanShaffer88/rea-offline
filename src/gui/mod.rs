@@ -316,6 +316,33 @@ fn array(value: Option<&Value>) -> &[Value] {
     match value { Some(Value::Array(items)) => items, _ => &[] }
 }
 
+/// Treat the coverage block as a summary, not permission to ignore source
+/// failures. Older reports may have only scan_issues; partially assembled
+/// reports can have both. Compare diagnostic fields so summarized copies do
+/// not appear twice merely because the summary adds an `area` label.
+fn coverage_warnings(report: &Value) -> Vec<&Value> {
+    let mut warnings = Vec::new();
+    let sources = std::iter::once(report).chain(
+        ["report", "installer_report", "drops_report"].into_iter()
+            .filter_map(|key| report.get(key))
+    );
+    for issue in array(report.get("coverage").and_then(|c| c.get("issues"))).iter()
+        .chain(sources.flat_map(|source| array(source.get("scan_issues")).iter()))
+    {
+        let duplicate = warnings.iter().any(|existing: &&Value| {
+            ["path", "stage", "message"].iter()
+                .all(|key| existing.get(key) == issue.get(key))
+        });
+        if !duplicate { warnings.push(issue); }
+    }
+    warnings
+}
+
+fn coverage_is_complete(report: &Value, warnings: &[&Value]) -> bool {
+    warnings.is_empty()
+        && report.get("coverage").and_then(|c| c.get("complete")) == Some(&Value::Bool(true))
+}
+
 fn human_bytes(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
     let mut value = bytes as f64;
@@ -418,14 +445,9 @@ pub fn page_html(page: &Page, query: &str) -> String {
     body.push_str("<header><div class=\"title\"><span class=\"logo\">rea-offline</span>");
     body.push_str(&format!("<span class=\"path\">{}</span></div>", html_escape(&page.root_name)));
     body.push_str("<div class=\"chips\">");
-    let issue_count: usize = match page.report.get("coverage").and_then(|c| c.get("issues")) {
-        Some(issues) => array(Some(issues)).len(),
-        None => ["report", "installer_report", "drops_report"].iter()
-            .map(|key| array(page.report.get(key).and_then(|r| r.get("scan_issues"))).len())
-            .sum(),
-    };
-    let coverage_complete = issue_count == 0
-        && page.report.get("coverage").and_then(|c| c.get("complete")) == Some(&Value::Bool(true));
+    let warnings = coverage_warnings(&page.report);
+    let issue_count = warnings.len();
+    let coverage_complete = coverage_is_complete(&page.report, &warnings);
     // Missing evidence must not turn a low observed score into a green light.
     let verdict_class = if !coverage_complete && page.verdict() == "low" {
         "coverage-incomplete".to_string()
@@ -456,17 +478,9 @@ pub fn page_html(page: &Page, query: &str) -> String {
         body.push_str("<aside class=\"coverage-warning\" role=\"note\"><strong>Safety undetermined — analysis is incomplete or coverage is unknown.</strong> \
             The score reflects observed findings only. A low score does not mean this file is safe. \
             Some contents may not have been inspected; hashes alone do not establish safety.");
-        let issues = page.report.get("coverage").and_then(|c| c.get("issues"));
-        let fallback: Vec<&Value> = ["report", "installer_report", "drops_report"].iter()
-            .flat_map(|key| array(page.report.get(key).and_then(|r| r.get("scan_issues"))).iter())
-            .collect();
-        let warnings: Vec<&Value> = match issues {
-            Some(Value::Array(items)) => items.iter().collect(),
-            _ => fallback,
-        };
         if !warnings.is_empty() {
             body.push_str("<details open><summary>Inspection limitations</summary><ul>");
-            for issue in warnings {
+            for issue in &warnings {
                 let path = issue.get("path").and_then(Value::as_str).unwrap_or("");
                 let message = issue.get("message").and_then(Value::as_str).unwrap_or("Inspection unavailable");
                 body.push_str(&format!("<li>{}: {}</li>", html_escape(path), html_escape(message)));
@@ -670,28 +684,16 @@ fn compact_summary(page: &Page) -> String {
     // summary: coverage warnings are appended even when the cutoff hit first.
     let mut lines: Vec<String> = text.lines().take(18).map(str::to_string).collect();
     if text.lines().count() > lines.len() { lines.push("…".into()); }
-    if let Some(issues) = page.report.get("coverage").and_then(|c| c.get("issues")) {
-        let count = array(Some(issues)).len();
-        if count > 0 {
-            let heading = format!("coverage: INCOMPLETE ({count} issue(s))");
-            if !lines.contains(&heading) { lines.push(heading); }
-        }
-    } else {
-        for (label, key) in [("", "report"), ("installer ", "installer_report"), ("dropped files ", "drops_report")] {
-            let issues = array(page.report.get(key).and_then(|r| r.get("scan_issues")));
-            if issues.is_empty() { continue; }
-            let heading = format!("{label}coverage: INCOMPLETE ({} issue(s))", issues.len());
-            if !lines.contains(&heading) {
-                lines.push(heading);
-            }
-        }
-    }
-    if page.report.get("coverage").is_none() {
-        // An archive with no coverage block and no recorded issues must not
-        // read as complete in the glance view either.
-        let heading = "coverage: NOT RECORDED (this archive predates coverage records; what the inspection could not see is unknown)".to_string();
-        let any_incomplete = lines.iter().any(|l| l.contains("coverage: INCOMPLETE"));
-        if !any_incomplete && !lines.contains(&heading) { lines.push(heading); }
+    let warnings = coverage_warnings(&page.report);
+    if !coverage_is_complete(&page.report, &warnings) {
+        let heading = if !warnings.is_empty() {
+            format!("coverage: INCOMPLETE ({} issue(s))", warnings.len())
+        } else if page.report.get("coverage").is_none() {
+            "coverage: NOT RECORDED (what the inspection could not see is unknown)".to_string()
+        } else {
+            "coverage: INCOMPLETE (no diagnostic details recorded)".to_string()
+        };
+        if !lines.contains(&heading) { lines.push(heading); }
     }
     // What the sandbox could not contain is what is missing from this tree:
     // an elevated installer writes where the snapshot never looks.
@@ -1345,6 +1347,59 @@ mod tests {
             }
         }
         Page::new(report, "C:/Downloads/setup.exe")
+    }
+
+    #[test]
+    fn source_failures_override_an_empty_complete_summary() {
+        let report = crate::json::parse(r#"{
+            "verdict":"low", "coverage":{"complete":true,"issues":[]},
+            "report":{"files":[],"scan_issues":[
+                {"path":"big.exe","stage":"content","message":"content skipped"}]}}
+        "#).unwrap();
+        let page = Page::new(report, "test");
+        let html = page_html(&page, "");
+        assert!(html.contains("content skipped"));
+        assert!(html.contains("incomplete coverage — 1 issue(s)"));
+        assert!(!html.contains("chip verdict-low"));
+        assert!(compact_summary(&page).contains("coverage: INCOMPLETE (1 issue(s))"));
+    }
+
+    #[test]
+    fn legacy_bare_report_failures_are_visible_and_escaped() {
+        let report = crate::json::parse(r#"{
+            "target":"big.exe","files":[],"scan_issues":[
+                {"path":"<file>","stage":"content","message":"<skipped>"}]}
+        "#).unwrap();
+        let page = Page::new(report, "test");
+        let html = page_html(&page, "");
+        assert!(html.contains("&lt;file&gt;: &lt;skipped&gt;"));
+        assert!(html.contains("incomplete coverage — 1 issue(s)"));
+        assert!(compact_summary(&page).contains("coverage: INCOMPLETE (1 issue(s))"));
+    }
+
+    #[test]
+    fn coverage_summary_and_source_copies_are_not_counted_twice() {
+        let report = crate::json::parse(r#"{
+            "coverage":{"complete":false,"issues":[
+                {"area":"analysis","path":"big.exe","stage":"content","message":"skipped"}]},
+            "report":{"scan_issues":[
+                {"path":"big.exe","stage":"content","message":"skipped"}]},
+            "drops_report":{"scan_issues":[
+                {"path":"other.exe","stage":"content","message":"skipped"}]}}
+        "#).unwrap();
+        let warnings = coverage_warnings(&report);
+        assert_eq!(warnings.len(), 2);
+        assert!(!coverage_is_complete(&report, &warnings));
+    }
+
+    #[test]
+    fn explicit_incomplete_coverage_without_details_still_warns_in_summary() {
+        let report = crate::json::parse(r#"{
+            "coverage":{"complete":false,"issues":[]},"files":[]}
+        "#).unwrap();
+        let page = Page::new(report, "test");
+        assert!(page_html(&page, "").contains("Safety undetermined"));
+        assert!(compact_summary(&page).contains("coverage: INCOMPLETE (no diagnostic details recorded)"));
     }
 
     #[test]
