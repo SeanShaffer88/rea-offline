@@ -483,7 +483,12 @@ pub fn page_html(page: &Page, query: &str) -> String {
             for issue in &warnings {
                 let path = issue.get("path").and_then(Value::as_str).unwrap_or("");
                 let message = issue.get("message").and_then(Value::as_str).unwrap_or("Inspection unavailable");
-                body.push_str(&format!("<li>{}: {}</li>", html_escape(path), html_escape(message)));
+                let stage = issue.get("stage").and_then(Value::as_str).unwrap_or("");
+                if stage == "rea-external" {
+                    body.push_str(&format!("<li><strong>External REA analyzer unavailable</strong> — {}: {}</li>", html_escape(path), html_escape(message)));
+                } else {
+                    body.push_str(&format!("<li>{}: {}</li>", html_escape(path), html_escape(message)));
+                }
             }
             body.push_str("</ul></details>");
         }
@@ -1347,6 +1352,18 @@ mod tests {
             }
         }
         Page::new(report, "C:/Downloads/setup.exe")
+    }
+
+    #[test]
+    fn external_analyzer_failures_have_a_distinct_escaped_label() {
+        let report = crate::json::parse(r#"{
+            "coverage":{"complete":false,"issues":[{
+                "stage":"rea-external","path":"target.exe","message":"launcher <rea.cmd> failed; native analysis completed"}]},
+            "report":{"files":[]}}
+        "#).unwrap();
+        let html = page_html(&Page::new(report, "test"), "");
+        assert!(html.contains("External REA analyzer unavailable"));
+        assert!(html.contains("&lt;rea.cmd&gt;"));
     }
 
     #[test]
