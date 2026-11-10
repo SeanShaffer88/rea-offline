@@ -224,3 +224,27 @@ the picker page. GET requests and invalid tokens never open dialogs. Responses
 are not CORS-enabled and cannot be framed. Native dialogs are not automated in
 CI; Windows compilation and HTTP authorization are tested, while interactive
 file/folder selection still needs a Windows desktop smoke test.
+
+### Selected-file evidence inspector
+
+Click a file row or map tile to inspect its recorded evidence below the map.
+Single-file targets select themselves automatically. The original hash/scope
+summary remains visible, followed by native HTML disclosure panels (no JavaScript
+needed) for:
+
+- rule IDs, severity, recorded point contributions, category and evidence;
+- machine, subsystem, entry point, raw timestamp and declared mitigation flags;
+- certificate-table presence, **not cryptographic signature verification**;
+- overlay byte count excluding the certificate; offsets/ranges are not recorded
+  by the current schema and are not invented in the view;
+- PE section sizes, writable/executable flags, and entropy (unknown when omitted);
+- imported libraries/functions and recorded string indicators.
+
+These are static observations, not runtime traces or safety verdicts. Import
+lists may be partial and a capability name does not establish execution. Missing
+legacy fields are explicitly not recorded. Each list shows up to 128 entries,
+with an omission count and a pointer to JSON for the full recorded data. All
+report strings are escaped before HTML rendering. File evidence follows the
+same rewritten paths as the merged sandbox tree, preventing findings from one
+artifact being attached to another. Archived rendering does not read target
+files, launch backends or access the network.

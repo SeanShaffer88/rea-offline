@@ -499,6 +499,17 @@ MIT — see [LICENSE](LICENSE).
 
 ## Changelog
 
+### 0.30.0
+
+- **Recorded evidence is readable in the GUI.** Selecting a file now shows
+  expandable findings with evidence text and recorded points, PE headers and
+  mitigation flags, section sizes and entropy, import libraries/functions and
+  string indicators. Missing facts stay unknown; certificate-table presence is
+  explicitly not signature verification, and overlays are not treated as proof
+  of malicious payloads. Lists are bounded with omission counts and full JSON
+  remains available. Evidence is retained when viewing archived or merged
+  sandbox reports; rendering does not rescan or launch analysis tools.
+
 ### 0.29.0
 
 - **Release notes stay UTF-8 on Windows.** The generator explicitly reads and

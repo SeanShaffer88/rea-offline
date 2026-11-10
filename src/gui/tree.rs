@@ -85,6 +85,9 @@ pub struct Artifact {
     pub tint: Tint,
     /// Rule ids that fired for this file, strongest first.
     pub findings: Vec<(String, String, Severity)>,
+    /// Original evidence retained for selected-file inspection, including archives.
+    pub record: Value,
+    pub rule_details: Vec<Value>,
 }
 
 /// A directory node in the size tree. Sizes are inclusive of children.
@@ -395,6 +398,7 @@ pub fn from_report(report: &Value) -> DirNode {
     // file path → (artifact)
     let mut artifacts: Vec<Artifact> = Vec::new();
     // Findings by file, so each artifact knows why it is coloured.
+    let mut details_by_file: BTreeMap<String, Vec<Value>> = BTreeMap::new();
     let mut findings_by_file: BTreeMap<String, Vec<(String, String, Severity)>> = BTreeMap::new();
     if let Some(rules) = report.get("rules") {
         if let Some(Value::Array(items)) = rules.get("findings") {
@@ -405,6 +409,7 @@ pub fn from_report(report: &Value) -> DirNode {
                 let severity = severity_from(
                     item.get("severity").and_then(Value::as_str).unwrap_or("info"),
                 );
+                details_by_file.entry(file.clone()).or_default().push(item.clone());
                 findings_by_file.entry(file).or_default().push((rule, title, severity));
             }
         }
@@ -432,7 +437,10 @@ pub fn from_report(report: &Value) -> DirNode {
             findings.sort_by(|a, b| b.2.cmp(&a.2).then(a.0.cmp(&b.0)));
             let worst = findings.iter().map(|f| f.2).max();
             let tint = worst.map(Tint::from_severity).unwrap_or(Tint::Clean);
+            let rule_details = details_by_file.remove(&path).unwrap_or_default();
             artifacts.push(Artifact {
+                record: file.clone(),
+                rule_details,
                 path,
                 size,
                 sha256: file.get("sha256").and_then(Value::as_str).unwrap_or("").to_string(),
@@ -813,7 +821,7 @@ pub fn details_text(root: &DirNode, path: &str) -> String {
     out
 }
 
-fn find_file<'a>(node: &'a DirNode, path: &str) -> Option<&'a Artifact> {
+pub(super) fn find_file<'a>(node: &'a DirNode, path: &str) -> Option<&'a Artifact> {
     let mut stack: Vec<(&DirNode, String)> = vec![(node, String::new())];
     while let Some((current, prefix)) = stack.pop() {
         for file in &current.files {
