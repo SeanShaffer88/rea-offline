@@ -1,0 +1,51 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Validate release tag
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: .\scripts\package-release.ps1 -Tag $env:RELEASE_TAG
+
+      - name: Build Windows x64 executable
+        run: cargo build --release --locked
+
+      - name: Package executable and checksum
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: .\scripts\package-release.ps1 -Tag $env:RELEASE_TAG -BinaryPath .\target\release\rea-offline.exe -OutputDirectory .\dist
+
+      - name: Publish GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          $assets = @(
+            Get-ChildItem -LiteralPath .\dist -File |
+              Select-Object -ExpandProperty FullName
+          )
+          gh release create $env:RELEASE_TAG @assets --verify-tag --generate-notes --title "rea-offline $env:RELEASE_TAG" --repo $env:GITHUB_REPOSITORY
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not publish release assets for $env:RELEASE_TAG."
+          }
