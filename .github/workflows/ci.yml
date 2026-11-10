@@ -421,3 +421,22 @@ jobs:
           mkdir -p "$SANDBOX_DIR/install"
           "$EXE" purge "$SANDBOX_DIR" --quiet
           test ! -d "$SANDBOX_DIR"
+
+          # 7. The release-notes generator reproduces the grouped v0.25.0
+          #    notes from the README changelog, and refuses a tag with no
+          #    changelog section of its own.
+          python3 scripts/release-notes.py --tag v0.25.0 --since v0.16.0 --output release-notes.md
+          grep -q 'Grouped release covering 0.17.0 through 0.25.0' release-notes.md
+          grep -q '^### 0.25.0' release-notes.md
+          grep -q '^### 0.17.0' release-notes.md
+          ! grep -q '^### 0.16.0' release-notes.md
+          if python3 scripts/release-notes.py --tag v9.9.9 --since v0.16.0 --output missing.md; then
+            echo "a release with no changelog section must be refused" >&2
+            exit 1
+          fi
+          test ! -e missing.md
+          python3 scripts/release-notes.py --tag v0.26.0 --since v0.25.0 --output next-notes.md
+          grep -q 'Release notes for 0.26.0' next-notes.md
+          grep -q '^### 0.26.0' next-notes.md
+          ! grep -q '^### 0.25.0' next-notes.md
+          rm -f release-notes.md next-notes.md

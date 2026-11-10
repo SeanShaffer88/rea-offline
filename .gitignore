@@ -23,3 +23,10 @@ snapshot-*.json
 /blind.json
 /tree/
 /not_a_sandbox/
+
+# Python helper bytecode and release-notes smoke outputs
+__pycache__/
+*.pyc
+/release-notes.md
+/next-notes.md
+/missing.md

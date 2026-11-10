@@ -436,6 +436,12 @@ annotations and kept as artifacts, so a failure can be read without the job
 log. Builds are published as artifacts (`rea-offline-<os>`) on every green
 run.
 
+Releases are cut by pushing an annotated `vX.Y.Z` tag whose version matches
+`Cargo.toml`. `.github/workflows/release.yml` validates the tag, builds the
+Windows x64 binary, generates grouped notes from the README changelog with
+`scripts/release-notes.py`, and publishes the executable plus its SHA-256
+sidecar. `--since` lets CI exercise the note generator without fetching tags.
+
 ## Build (air-gapped)
 
 ```bat
@@ -463,6 +469,8 @@ and Linux.
 | `src/cleanup.rs` | Cleanup & zero-residue purge controller |
 | `src/imphash_ordinals.rs` | Frozen pefile ordinal tables (generated, checked in) |
 | `src/sha256.rs`, `src/json.rs` | Std-only SHA-256 / JSON (offline build) |
+| `scripts/release-notes.py` | Grouped release notes from the README changelog |
+| `.github/workflows/release.yml` | Tag-driven Windows build + GitHub release |
 | `docs/ARCHITECTURE.md` | Design, security model, honest limitations |
 
 ## Security note
@@ -483,6 +491,16 @@ Created by Sean Shaffer
 MIT — see [LICENSE](LICENSE).
 
 ## Changelog
+
+### 0.26.0
+
+- **Release notes now come from the changelog, not the PR list.** The tag-driven
+  release workflow used `--generate-notes`, which only lists pull requests and
+  hides the version sections a grouped release ships together. A new
+  `scripts/release-notes.py` collects every `### x.y.z` section newer than the
+  previous published tag, writes the grouped body, and the release workflow
+  passes it to `gh release create --notes-file`. CI verifies that it reproduces
+  the v0.25.0 notes and refuses a tag with no changelog section.
 
 ### 0.25.0
 
