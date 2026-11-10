@@ -9,6 +9,25 @@ fn tmp_dir(tag: &str) -> PathBuf {
     dir
 }
 
+/// Write an executable fixture script atomically: create it under a
+/// temporary name, flush it to disk, set the executable bit, then rename
+/// it into place. Executing a script that was written under its final
+/// name intermittently fails with ETXTBSY ("text file busy") — the
+/// renamed file was never open for writing under the name it runs by,
+/// so the spawn race disappears.
+#[cfg(unix)]
+fn write_script(path: &std::path::Path, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = path.with_extension("part");
+    let mut file = std::fs::File::create(&tmp)?;
+    file.write_all(contents.as_ref())?;
+    file.sync_all()?;
+    drop(file);
+    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
+    std::fs::rename(&tmp, path)
+}
+
 #[test]
 fn snapshot_save_load_diff_roundtrip() {
     let dir = tmp_dir("snap");
@@ -277,9 +296,7 @@ fn sandbox_delta_catches_drops_outside_install_dir() {
     let script = dir.join("fake_installer.sh");
     // Installers commonly write into the (redirected) user profile, not
     // the install dir — the whole-sandbox delta must surface that.
-    std::fs::write(&script, "#!/bin/sh\nprintf 'profile payload' > \"$REASANDBOX/profile_drop.txt\"\nprintf 'scratch' > \"$REASANDBOX/tmp/scratch.txt\"\n").unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    write_script(&script, "#!/bin/sh\nprintf 'profile payload' > \"$REASANDBOX/profile_drop.txt\"\nprintf 'scratch' > \"$REASANDBOX/tmp/scratch.txt\"\n").unwrap();
     let root = std::env::temp_dir().join(format!("rea_sandbox_{}", rea_offline::util::new_id()));
     let mut config = SandboxConfig::default();
     config.root = Some(root.clone());
@@ -315,16 +332,14 @@ fn a_payload_staged_in_the_installers_temp_is_analyzed_as_a_drop() {
     use rea_offline::app::{mode_sandbox, SandboxOptions};
     use rea_offline::json::Value;
     use rea_offline::universal_sandbox::SandboxConfig;
-    use std::os::unix::fs::PermissionsExt;
 
     let dir = tmp_dir("tmpdrop");
     let script = dir.join("staging_installer.sh");
-    std::fs::write(
+    write_script(
         &script,
         "#!/bin/sh\nprintf 'MZ staged' > \"$TMPDIR/staged.exe\"\nprintf 'MZ cwd' > ./cwd-drop.exe\n",
     )
     .unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     let report = mode_sandbox(SandboxOptions {
         installer: script,
@@ -359,9 +374,7 @@ fn sandbox_captures_installer_output_and_exit_code() {
     use rea_offline::universal_sandbox::SandboxConfig;
     let dir = tmp_dir("outcap");
     let script = dir.join("noisy_installer.sh");
-    std::fs::write(&script, "#!/bin/sh\necho 'installing widgets...'\necho 'warning: widget quota low' >&2\nexit 3\n").unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    write_script(&script, "#!/bin/sh\necho 'installing widgets...'\necho 'warning: widget quota low' >&2\nexit 3\n").unwrap();
     let root = std::env::temp_dir().join(format!("rea_sandbox_{}", rea_offline::util::new_id()));
     let mut config = SandboxConfig::default();
     config.root = Some(root.clone());
@@ -403,9 +416,7 @@ fn sandbox_runs_harmless_program_and_captures_delta() {
     // A tiny shell script acts as a stand-in "installer" on POSIX dev boxes.
     let dir = tmp_dir("installer");
     let script = dir.join("fake_installer.sh");
-    std::fs::write(&script, "#!/bin/sh\nmkdir -p \"$REASANDBOX_INSTALL\"\nprintf 'MZ dropped' > \"$REASANDBOX_INSTALL/dropped.exe\"\n").unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    write_script(&script, "#!/bin/sh\nmkdir -p \"$REASANDBOX_INSTALL\"\nprintf 'MZ dropped' > \"$REASANDBOX_INSTALL/dropped.exe\"\n").unwrap();
     let root = std::env::temp_dir().join(format!("rea_sandbox_{}", rea_offline::util::new_id()));
     let mut config = SandboxConfig::default();
     config.root = Some(root.clone());
@@ -479,19 +490,17 @@ fn directory_analysis_does_not_follow_symlinks_outside_the_target() {
 #[cfg(unix)]
 #[test]
 fn external_rea_large_json_is_merged_without_pipe_deadlock() {
-    use std::os::unix::fs::PermissionsExt;
     let dir = tmp_dir("rea-large");
     let target = dir.join("sample.txt");
     std::fs::write(&target, b"CreateRemoteThread").unwrap();
     // A fake REA that emits well over a pipe buffer of JSON on stdout and
     // diagnostics on stderr. The bridge must drain both while the child runs.
     let rea = dir.join("large-rea.sh");
-    std::fs::write(
+    write_script(
         &rea,
         "#!/bin/sh\nprintf '{\"note\":\"'\nhead -c 200000 /dev/zero | tr '\\0' x\nprintf '\"}'\nprintf 'diagnostic noise\\n' >&2\n",
     )
     .unwrap();
-    std::fs::set_permissions(&rea, std::fs::Permissions::from_mode(0o755)).unwrap();
     let bridge = ReaBridge::new(ReaConfig {
         rea_path: Some(rea),
         timeout: Some(std::time::Duration::from_secs(30)),
@@ -535,7 +544,6 @@ fn hostile_payload() -> Vec<u8> {
 fn a_payload_dropped_outside_the_install_tree_decides_the_verdict() {
     use rea_offline::app::{mode_sandbox, SandboxOptions};
     use rea_offline::universal_sandbox::SandboxConfig;
-    use std::os::unix::fs::PermissionsExt;
 
     let dir = tmp_dir("drop-verdict");
     let payload = dir.join("payload.bin");
@@ -543,7 +551,7 @@ fn a_payload_dropped_outside_the_install_tree_decides_the_verdict() {
     // Nothing is written into install\ — the whole payload lands in the
     // redirected profile, which the install-tree analysis never sees.
     let script = dir.join("dropper.sh");
-    std::fs::write(
+    write_script(
         &script,
         format!(
             "#!/bin/sh\nmkdir -p \"$REASANDBOX/AppData/Roaming\"\ncp '{}' \"$REASANDBOX/AppData/Roaming/payload.exe\"\n",
@@ -551,7 +559,6 @@ fn a_payload_dropped_outside_the_install_tree_decides_the_verdict() {
         ),
     )
     .unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     let report = mode_sandbox(SandboxOptions {
         installer: script,
@@ -625,12 +632,10 @@ fn a_run_records_what_the_sandbox_could_not_contain() {
     use rea_offline::app::{mode_sandbox, SandboxOptions};
     use rea_offline::json::Value;
     use rea_offline::universal_sandbox::SandboxConfig;
-    use std::os::unix::fs::PermissionsExt;
 
     let dir = tmp_dir("containment");
     let script = dir.join("installer.sh");
-    std::fs::write(&script, "#!/bin/sh\nprintf 'MZ' > \"$REASANDBOX_INSTALL/app.exe\"\n").unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    write_script(&script, "#!/bin/sh\nprintf 'MZ' > \"$REASANDBOX_INSTALL/app.exe\"\n").unwrap();
     let elevated = rea_offline::containment::elevation();
 
     let report = mode_sandbox(SandboxOptions {
@@ -699,16 +704,14 @@ fn an_installer_that_erases_itself_leaves_a_hole_in_the_record() {
     use rea_offline::app::{mode_sandbox, SandboxOptions};
     use rea_offline::json::Value;
     use rea_offline::universal_sandbox::SandboxConfig;
-    use std::os::unix::fs::PermissionsExt;
 
     let dir = tmp_dir("self-delete");
     let script = dir.join("dropper.sh");
-    std::fs::write(
+    write_script(
         &script,
         "#!/bin/sh\nprintf 'MZ' > \"$REASANDBOX_INSTALL/app.exe\"\nrm -f \"$0\"\n",
     )
     .unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     let report = mode_sandbox(SandboxOptions {
         installer: script.clone(),
@@ -779,17 +782,15 @@ fn an_installer_killed_at_the_timeout_makes_the_run_incomplete() {
     use rea_offline::app::{mode_sandbox, SandboxOptions};
     use rea_offline::json::Value;
     use rea_offline::universal_sandbox::SandboxConfig;
-    use std::os::unix::fs::PermissionsExt;
 
     let dir = tmp_dir("timeout");
     let script = dir.join("slow_installer.sh");
     // Writes a decoy payload and then stalls: what a hung or deliberately
     // slow installer looks like from inside the sandbox.
-    std::fs::write(
+    write_script(
         &script,
         "#!/bin/sh\nmkdir -p \"$REASANDBOX_INSTALL\"\nprintf 'MZ half' > \"$REASANDBOX_INSTALL/partial.exe\"\nsleep 30\n",
     ).unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     let report = mode_sandbox(SandboxOptions {
         installer: script,
@@ -865,14 +866,13 @@ fn an_unreadable_drop_makes_the_run_incomplete_not_clean() {
     // The installer hides its payload in a directory it then locks. The
     // payload never enters the install tree and cannot be read afterwards.
     let script = dir.join("dropper.sh");
-    std::fs::write(
+    write_script(
         &script,
         format!(
             "#!/bin/sh\nmkdir -p \"$REASANDBOX/AppData/hidden\"\ncp '{}' \"$REASANDBOX/AppData/hidden/payload.exe\"\nchmod 000 \"$REASANDBOX/AppData/hidden\"\n",
             payload.display()
         ),
     ).unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     let report = mode_sandbox(SandboxOptions {
         installer: script,
