@@ -252,4 +252,9 @@ banded), and the writer derives it with `rules::risk` every time — so
 verdict, finding count or severity counts disagree, a verdict outside its
 own score's band, or a scan envelope whose score differs from its body's.
 Findings are never re-derived from files at load time; the archive is
-judged against its own evidence, which is all a gate ever has.
+judged against its own evidence, which is all a gate ever has. The one
+combination the envelope legitimately makes — a sandbox run's
+`verdict_sources` — is checked against the bodies the entries were
+copied from, and each body's reader-facing `summary` against the body,
+so no restatement of a verdict anywhere in the file can be calmer than
+the verdict it restates.
