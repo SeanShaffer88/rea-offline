@@ -261,7 +261,9 @@ fn purge_refuses_arbitrary_directories() {
     assert!(refused.stderr.contains("refused"), "{}", refused.stderr);
     assert!(victim.exists(), "guard must not delete anything");
 
-    let sandbox = dir.join(format!("rea_sandbox_{}", std::process::id()));
+    // A real sandbox shape: named rea_sandbox_* directly inside temp,
+    // the only place the tool creates them.
+    let sandbox = std::env::temp_dir().join(format!("rea_sandbox_cli_{}", std::process::id()));
     std::fs::create_dir_all(sandbox.join("install")).unwrap();
     let purged = run(&dir, &["purge", sandbox.to_str().unwrap()]);
     assert_eq!(purged.code, 0, "{}", purged.stderr);

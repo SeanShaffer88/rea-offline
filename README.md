@@ -46,7 +46,9 @@ How Mode B works (blueprint workflow):
 
 Utilities: `report <report.json>` (render/gate an archived inspection without
 rescanning), `snapshot <dir>`, `diff <before.json> <after.json>`, and
-`purge <rea_sandbox_dir>` (refuses non-sandbox paths without `--force`).
+`purge <rea_sandbox_dir>` (without `--force`, only a `rea_sandbox_*`
+directory directly inside the temp folder; a filesystem root and the
+temp folder itself are refused even with `--force`).
 
 `snapshot` / `diff` are the workflow for a machine where the sandbox cannot
 run: snapshot, install for real, then diff. That delta is only as trustworthy
@@ -473,6 +475,19 @@ Created by Sean Shaffer
 MIT — see [LICENSE](LICENSE).
 
 ## Changelog
+
+### 0.21.0
+
+- **The purge guard now refuses what it says it refuses.** The root
+  check used to live inside the no-force branch, so `purge --force`
+  would attempt a filesystem root; a root and the temp folder itself
+  are now refused no matter what flags are passed. The temp-parent
+  rule was dead logic that reduced to the name alone — without
+  `--force`, a target must now be a `rea_sandbox_*` directory
+  *directly inside* the temp folder, which is the only place sandboxes
+  are created. The path is canonicalized before any rule is applied,
+  so symlinks and `..` spellings cannot dress a target up as something
+  it is not, and deletion acts on the resolved path.
 
 ### 0.20.0
 

@@ -364,12 +364,15 @@ jobs:
           fi
 
           # 6. Purge guard: refuse an arbitrary directory, then purge a real
-          #    sandbox layout and verify zero residue.
+          #    sandbox layout — named rea_sandbox_* directly inside the OS
+          #    temp folder, the only place sandboxes are created — and
+          #    verify zero residue.
           mkdir -p not_a_sandbox
           if "$EXE" purge not_a_sandbox 2>/dev/null; then
             echo "purge guard failed to refuse" >&2; exit 1
           fi
           test -d not_a_sandbox
-          mkdir -p "rea_sandbox_ci/install"
-          "$EXE" purge rea_sandbox_ci --quiet
-          test ! -d rea_sandbox_ci
+          SANDBOX_DIR="$(python3 -c 'import tempfile, os; print(os.path.join(tempfile.gettempdir(), "rea_sandbox_ci"))')"
+          mkdir -p "$SANDBOX_DIR/install"
+          "$EXE" purge "$SANDBOX_DIR" --quiet
+          test ! -d "$SANDBOX_DIR"
