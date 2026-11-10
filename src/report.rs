@@ -252,6 +252,9 @@ pub fn validate(report: &Value) -> Result<()> {
         Some(_) => return Err(invalid("invalid report: verdict_sources is only valid for sandbox-installer")),
         None => false,
     };
+    if mode == "sandbox-installer" {
+        validate_sandbox_delta(report)?;
+    }
     if let Some(verdict) = report.get("verdict") {
         if !verdict.as_str().is_some_and(known_verdict) {
             return Err(invalid("invalid report: verdict is not a recognized severity"));
@@ -447,6 +450,87 @@ fn validate_coverage(coverage: &Value, report: &Value) -> Result<()> {
                     items.len()
                 )));
             }
+        }
+    }
+    Ok(())
+}
+
+/// A sandbox archive carries the raw whole-sandbox delta the drops
+/// report was built from: every file the delta lists as added or
+/// modified was either analyzed into `drops_report` or named in its
+/// `scan_issues`. The two blocks are written from the same evidence, so
+/// a disagreement means one of them was edited after the fact — most
+/// usefully, a drop quietly removed from the report while the delta
+/// still shows it landing.
+fn validate_sandbox_delta(report: &Value) -> Result<()> {
+    let Some(delta) = report.get("sandbox_delta").filter(|v| !matches!(v, Value::Null)) else {
+        return Ok(());
+    };
+    if !matches!(delta, Value::Object(_)) {
+        return Err(invalid("invalid report: sandbox_delta must be an object"));
+    }
+    let list = |key: &str| -> Result<Vec<&Value>> {
+        match delta.get(key) {
+            None | Some(Value::Null) => Ok(Vec::new()),
+            Some(Value::Array(items)) => Ok(items.iter().collect()),
+            Some(_) => Err(invalid(format!("invalid report: sandbox_delta.{key} must be an array"))),
+        }
+    };
+    let mut seen: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+    let mut changed: Vec<&str> = Vec::new();
+    for (key, is_change) in [("added", true), ("modified", true), ("deleted", false), ("unverified", false)] {
+        for entry in list(key)? {
+            let path = entry.get("path").and_then(Value::as_str).ok_or_else(|| {
+                invalid(format!("invalid report: sandbox_delta.{key} entries must carry a string path"))
+            })?;
+            if let Some(previous) = seen.insert(path, key) {
+                return Err(invalid(format!(
+                    "invalid report: sandbox_delta lists '{path}' as both {previous} and {key}"
+                )));
+            }
+            // Only regular files are drops-analyzed. An entry with no
+            // kind at all predates the field and is read as a file.
+            let kind = entry.get("kind").and_then(Value::as_str);
+            if is_change && (kind.is_none() || kind == Some("file")) {
+                changed.push(path);
+            }
+        }
+    }
+    if let Some(count) = delta.get("unverified_count") {
+        if integer(Some(count)) != Some(list("unverified")?.len() as u64) {
+            return Err(invalid(
+                "invalid report: sandbox_delta.unverified_count does not match the unverified list",
+            ));
+        }
+    }
+    let Some(drops) = report.get("drops_report").filter(|v| !matches!(v, Value::Null)) else {
+        return Ok(());
+    };
+    fn paths_of<'a>(body: &'a Value, key: &str) -> Vec<&'a str> {
+        match body.get(key) {
+            Some(Value::Array(items)) => items
+                .iter()
+                .filter_map(|item| item.get("path").and_then(Value::as_str))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+    let analyzed = paths_of(drops, "files");
+    let mut accounted: std::collections::HashSet<&str> = analyzed.iter().copied().collect();
+    accounted.extend(paths_of(drops, "scan_issues"));
+    for path in &changed {
+        if !accounted.contains(path) {
+            return Err(invalid(format!(
+                "invalid report: sandbox_delta lists changed file '{path}' that drops_report does not account for"
+            )));
+        }
+    }
+    let changed_set: std::collections::HashSet<&str> = changed.iter().copied().collect();
+    for path in &analyzed {
+        if !changed_set.contains(path) {
+            return Err(invalid(format!(
+                "invalid report: drops_report analyzes '{path}' which sandbox_delta does not list as changed"
+            )));
         }
     }
     Ok(())
@@ -720,6 +804,36 @@ mod tests {
         }
         let error = validate(&report).unwrap_err().to_string();
         assert!(error.contains("no drops_report body"), "{error}");
+    }
+
+    #[test]
+    fn the_sandbox_delta_must_agree_with_the_drops_report() {
+        let mut report = sandbox_archive();
+        if let Value::Object(map) = &mut report {
+            map.insert("sandbox_delta".into(), crate::json::parse(r#"{
+                "added":[{"path":"AppData/Roaming/payload.exe","size":20,"sha256":"","kind":"file"}],
+                "modified":[],"deleted":[],"unverified":[],"unverified_count":0,"unchanged_count":3
+            }"#).unwrap());
+        }
+        validate(&report).unwrap();
+        // Remove the drop from the report: the delta still shows it landing.
+        if let Value::Object(map) = &mut report {
+            if let Some(Value::Object(drops)) = map.get_mut("drops_report") {
+                drops.insert("files".into(), Value::Array(vec![]));
+                drops.insert("file_count".into(), Value::num(0));
+            }
+        }
+        let error = validate(&report).unwrap_err().to_string();
+        assert!(error.contains("does not account for"), "{error}");
+        // And the reverse: an analyzed drop the delta never saw change.
+        let mut report = sandbox_archive();
+        if let Value::Object(map) = &mut report {
+            map.insert("sandbox_delta".into(), crate::json::parse(r#"{
+                "added":[],"modified":[],"deleted":[],"unverified":[],"unverified_count":0,"unchanged_count":3
+            }"#).unwrap());
+        }
+        let error = validate(&report).unwrap_err().to_string();
+        assert!(error.contains("does not list as changed"), "{error}");
     }
 
     #[test]
