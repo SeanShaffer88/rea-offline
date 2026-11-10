@@ -333,7 +333,10 @@ flipping `complete` to `true` is rejected. The verdict gets the same
 treatment: a body's score and verdict are recomputed from the findings
 the archive itself carries, and a verdict that does not match its own
 score's band — or an envelope that calms its body down — is refused too,
-so relabeling every field consistently still fails.
+so relabeling every field consistently still fails. A sandbox envelope
+is a combination of its parts, so each `verdict_sources` entry is
+checked against the body it summarizes, and each body's `summary`
+against the body itself.
 
 ### imphash compatibility
 
@@ -470,6 +473,19 @@ Created by Sean Shaffer
 MIT — see [LICENSE](LICENSE).
 
 ## Changelog
+
+### 0.20.0
+
+- **Sandbox verdict sources are checked against their bodies.**
+  Validation already verified the envelope against `verdict_sources`,
+  and (since 0.19.0) each body against its own findings — but the
+  sources themselves were never compared with the bodies they
+  summarize, so calming a source and the envelope together passed
+  while the drops body still said critical. Each source entry must now
+  equal its body's recorded score and verdict, a null source is only
+  accepted when the body is absent too, and a source with no body is
+  refused. Each body's `summary` repeats its score and verdict for
+  readers and must agree with the body as well.
 
 ### 0.19.0
 
