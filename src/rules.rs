@@ -448,7 +448,7 @@ pub fn evaluate_file(file: &FileAnalysis, t: &Thresholds) -> Vec<Finding> {
     // FMT001 is about a *broken* PE, not about other executable formats:
     // an ELF file legitimately has no PE header, and claiming its "magic
     // bytes disagree" was both wrong and noisy on Linux trees.
-    if file.pe.is_none() && file.format == "PE" {
+    if file.pe.is_none() && file.format == "PE" && file.content_bytes == file.size {
         add(&mut out, file,
             "FMT001",
             "PE header could not be parsed".into(),
@@ -649,6 +649,7 @@ mod tests {
             imphash: Some("0".repeat(32)),
             format: "PE".into(),
             entropy: 6.0,
+            content_bytes: 40_960,
             pe,
             indicators: vec![],
         }
@@ -729,6 +730,13 @@ mod tests {
         f.format = "ELF".into();
         let findings = evaluate_file(&f, &Thresholds::default());
         assert!(!findings.iter().any(|x| x.rule == "FMT001" || x.rule == "FMT002"), "{findings:?}");
+    }
+
+    #[test]
+    fn a_prefix_limit_is_not_evidence_of_a_broken_pe_header() {
+        let mut file = file_with(None);
+        file.content_bytes = 64;
+        assert!(!evaluate_file(&file, &Thresholds::default()).iter().any(|f| f.rule == "FMT001"));
     }
 
     #[test]
