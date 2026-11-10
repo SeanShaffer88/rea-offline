@@ -476,6 +476,16 @@ MIT — see [LICENSE](LICENSE).
 
 ## Changelog
 
+### 0.23.0
+
+- **Archive validation now checks the summary's completeness claims
+  too.** Each report body's summary restates how many scan issues the
+  run hit and whether the scan was complete; validation already
+  compared its restated score and verdict against the body, and now
+  compares the issue count and the completeness flag against the
+  body's own issue list as well. A summary claiming zero issues and
+  "complete" over a body that still lists unreadable files is refused.
+
 ### 0.22.0
 
 - **A just-written installer no longer fails the run for a moment's

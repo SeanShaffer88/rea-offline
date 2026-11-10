@@ -255,6 +255,6 @@ Findings are never re-derived from files at load time; the archive is
 judged against its own evidence, which is all a gate ever has. The one
 combination the envelope legitimately makes — a sandbox run's
 `verdict_sources` — is checked against the bodies the entries were
-copied from, and each body's reader-facing `summary` against the body,
-so no restatement of a verdict anywhere in the file can be calmer than
-the verdict it restates.
+copied from, and each body's reader-facing `summary` against the body
+(score, verdict, issue count, and completeness alike), so no
+restatement anywhere in the file can be calmer than what it restates.
