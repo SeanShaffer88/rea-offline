@@ -235,9 +235,9 @@ needed) for:
 - rule IDs, severity, recorded point contributions, category and evidence;
 - machine, subsystem, entry point, raw timestamp and declared mitigation flags;
 - certificate-table presence, **not cryptographic signature verification**;
-- overlay byte count excluding the certificate; offsets/ranges are not recorded
-  by the current schema and are not invented in the view;
-- PE section sizes, writable/executable flags, and entropy (unknown when omitted);
+- overlay byte count excluding the certificate, plus recorded half-open file
+  ranges before/after the certificate and the certificate range itself;
+- PE section raw offsets, RVAs, sizes, writable/executable flags, and entropy (unknown when omitted);
 - imported libraries/functions and recorded string indicators.
 
 These are static observations, not runtime traces or safety verdicts. Import
@@ -248,3 +248,11 @@ report strings are escaped before HTML rendering. File evidence follows the
 same rewritten paths as the merged sandbox tree, preventing findings from one
 artifact being attached to another. Archived rendering does not read target
 files, launch backends or access the network.
+
+File locations are shown in hexadecimal and decimal. A range `[start, end)`
+includes `start` and excludes `end`; these are file offsets, not runtime memory
+addresses. Certificate ranges express table presence, not signature verification.
+Ranges describe full-file geometry even when only a prefix was retained. Legacy
+archives without location fields remain readable with offsets marked not recorded.
+New archived range lists must fit the file, be sorted/disjoint, exclude any
+recorded certificate and sum to the recorded overlay byte count.

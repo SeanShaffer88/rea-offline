@@ -622,9 +622,9 @@ mod tests {
             subsystem: "windows-console".into(),
             sections: vec![".text".into(), ".rdata".into()],
             section_details: vec![
-                PeSection { name: ".text".into(), virtual_size: 0x1000, raw_size: 0x1000,
+                PeSection { name: ".text".into(), virtual_size: 0x1000, raw_size: 0x1000, raw_offset: 0x200, virtual_address: 0x1000,
                             entropy: Some(6.1), executable: true, writable: false },
-                PeSection { name: ".rdata".into(), virtual_size: 0x1000, raw_size: 0x1000,
+                PeSection { name: ".rdata".into(), virtual_size: 0x1000, raw_size: 0x1000, raw_offset: 0x200, virtual_address: 0x1000,
                             entropy: Some(4.0), executable: false, writable: false },
             ],
             imports: vec!["KERNEL32.dll".into()],
@@ -637,6 +637,8 @@ mod tests {
                                        no_seh: false, high_entropy_va: true },
             signed: true,
             overlay_size: 0,
+            overlay_ranges: vec![],
+            certificate_range: None,
         }
     }
 
@@ -671,7 +673,7 @@ mod tests {
         pe.signed = false;
         pe.sections = vec!["UPX0".into(), "UPX1".into()];
         pe.section_details = vec![PeSection {
-            name: "UPX1".into(), virtual_size: 0x4000, raw_size: 0x4000,
+            name: "UPX1".into(), virtual_size: 0x4000, raw_size: 0x4000, raw_offset: 0x200, virtual_address: 0x1000,
             entropy: Some(7.8), executable: true, writable: true,
         }];
         pe.executable_sections = vec!["UPX1".into()];

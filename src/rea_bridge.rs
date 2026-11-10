@@ -47,10 +47,21 @@ pub struct PeSection {
     pub name: String,
     pub virtual_size: u32,
     pub raw_size: u32,
+    pub raw_offset: u32,
+    pub virtual_address: u32,
     /// Unknown when the entire raw section is not retained for inspection.
     pub entropy: Option<f64>,
     pub executable: bool,
     pub writable: bool,
+}
+
+/// A half-open file interval [offset, offset + size), never an RVA.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileRange { pub offset: u64, pub size: u64 }
+impl FileRange {
+    fn to_json(&self) -> Value {
+        Value::obj(vec![("offset", Value::num(self.offset)), ("size", Value::num(self.size))])
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -75,6 +86,8 @@ pub struct PeInfo {
     pub signed: bool,
     /// Bytes appended after the last section (classic dropper/packer sign).
     pub overlay_size: u64,
+    pub overlay_ranges: Vec<FileRange>,
+    pub certificate_range: Option<FileRange>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -178,6 +191,8 @@ impl ReaReport {
                         ("name", Value::str(s.name.clone())),
                         ("virtual_size", Value::num(s.virtual_size as u64)),
                         ("raw_size", Value::num(s.raw_size as u64)),
+                        ("raw_offset", Value::num(s.raw_offset as u64)),
+                        ("virtual_address", Value::num(s.virtual_address as u64)),
                         ("entropy", s.entropy.map(|e| Value::Number((e * 1000.0).round() / 1000.0)).unwrap_or(Value::Null)),
                         ("executable", Value::Bool(s.executable)),
                         ("writable", Value::Bool(s.writable)),
@@ -195,6 +210,8 @@ impl ReaReport {
                     ])),
                     ("signed", Value::Bool(pe.signed)),
                     ("overlay_size", Value::num(pe.overlay_size)),
+                    ("overlay_ranges", Value::Array(pe.overlay_ranges.iter().map(FileRange::to_json).collect())),
+                    ("certificate_range", pe.certificate_range.as_ref().map(FileRange::to_json).unwrap_or(Value::Null)),
                 ])));
             }
             Value::obj(pairs)
@@ -921,6 +938,8 @@ fn parse_pe_with_size(data: &[u8], file_len: u64) -> Option<PeInfo> {
             name: name.clone(),
             virtual_size: u32le(data, off + 8).unwrap_or(0),
             raw_size,
+            raw_offset: raw_ptr,
+            virtual_address: u32le(data, off + 12).unwrap_or(0),
             entropy: raw.map(shannon_entropy),
             executable,
             writable,
@@ -935,10 +954,20 @@ fn parse_pe_with_size(data: &[u8], file_len: u64) -> Option<PeInfo> {
     }
     // Presence only, not cryptographic trust. A table pointing outside the
     // actual file or into a section is not an on-disk certificate table.
-    let signed = certificate_in_file && cert_off >= last_section_end;
-    // Exclude only the certificate itself, not bytes hidden after it.
-    let overlay_size = file_len.saturating_sub(last_section_end)
-        .saturating_sub(if signed { cert_size } else { 0 });
+    let signed = certificate_in_file && cert_off >= last_section_end.max(headers_size as u64);
+    // Record exact disjoint file intervals, excluding certificate bytes but
+    // retaining payloads on either side. Headers are not overlay data.
+    let start = last_section_end.max(headers_size as u64).min(file_len);
+    let certificate_range = if signed { Some(FileRange { offset: cert_off, size: cert_size }) } else { None };
+    let mut overlay_ranges = Vec::new();
+    if signed {
+        if start < cert_off { overlay_ranges.push(FileRange { offset: start, size: cert_off - start }); }
+        let end = cert_off + cert_size;
+        if end < file_len { overlay_ranges.push(FileRange { offset: end, size: file_len - end }); }
+    } else if start < file_len {
+        overlay_ranges.push(FileRange { offset: start, size: file_len - start });
+    }
+    let overlay_size = overlay_ranges.iter().map(|range| range.size).sum();
 
     let rva_to_offset = |rva: u32| -> Option<usize> {
         for s in &parsed_sections {
@@ -1020,7 +1049,7 @@ fn parse_pe_with_size(data: &[u8], file_len: u64) -> Option<PeInfo> {
         is_64bit,
         subsystem: match subsystem_raw { 2 => "windows-gui", 3 => "windows-console", 1 => "native", _ => "other" }.to_string(),
         sections, section_details, imports, imported_functions, executable_sections,
-        timestamp, entry_point_rva, dll_characteristics, mitigations, signed, overlay_size,
+        timestamp, entry_point_rva, dll_characteristics, mitigations, signed, overlay_size, overlay_ranges, certificate_range,
     })
 }
 
@@ -1366,6 +1395,39 @@ mod tests {
         let pe = parse_pe(&data).unwrap();
         assert!(pe.signed);
         assert_eq!(pe.overlay_size, 0);
+    }
+
+    #[test]
+    fn file_layout_records_sections_and_disjoint_overlay_intervals() {
+        let mut data = synthetic_pe();
+        data.resize(0x500, 0);
+        set_certificate(&mut data, 0x420, 0x20);
+        let pe = parse_pe(&data).unwrap();
+        assert_eq!(pe.section_details[0].raw_offset, 0x200);
+        assert_eq!(pe.section_details[0].virtual_address, 0x1000);
+        assert_eq!(pe.certificate_range, Some(FileRange { offset: 0x420, size: 0x20 }));
+        assert_eq!(pe.overlay_ranges, vec![FileRange { offset: 0x400, size: 0x20 }, FileRange { offset: 0x440, size: 0xc0 }]);
+        assert_eq!(pe.overlay_ranges.iter().map(|r| r.size).sum::<u64>(), pe.overlay_size);
+        let prefix = parse_pe_with_size(&data[..0x400], data.len() as u64).unwrap();
+        assert_eq!(prefix.overlay_ranges, pe.overlay_ranges);
+        assert_eq!(prefix.certificate_range, pe.certificate_range);
+    }
+
+    #[test]
+    fn invalid_certificate_is_not_excluded_from_overlay_ranges() {
+        let mut data = synthetic_pe();
+        set_certificate(&mut data, 0xffff_fff0, 0x40);
+        let pe = parse_pe(&data).unwrap();
+        assert!(pe.certificate_range.is_none());
+        assert_eq!(pe.overlay_ranges, vec![FileRange { offset: 0x400, size: 0x40 }]);
+    }
+
+    #[test]
+    fn declared_headers_are_not_misclassified_as_overlay() {
+        let mut data = synthetic_pe();
+        data[0x86..0x88].copy_from_slice(&0u16.to_le_bytes());
+        let pe = parse_pe(&data).unwrap();
+        assert_eq!(pe.overlay_ranges, vec![FileRange { offset: 0x200, size: 0x240 }]);
     }
 
     #[test]

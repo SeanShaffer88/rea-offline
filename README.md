@@ -499,6 +499,15 @@ MIT — see [LICENSE](LICENSE).
 
 ## Changelog
 
+### 0.31.0
+
+- **PE evidence now includes file locations.** Native reports record section raw
+  offsets and RVAs, certificate-table bounds and disjoint overlay ranges before
+  and after the certificate. The inspector displays hexadecimal and decimal
+  locations with explicit end-exclusive bounds. Headers are not counted as
+  overlay. Archive validation rejects out-of-file, overlapping or inconsistent
+  ranges; older reports keep their offsets explicitly unknown.
+
 ### 0.30.0
 
 - **Recorded evidence is readable in the GUI.** Selecting a file now shows

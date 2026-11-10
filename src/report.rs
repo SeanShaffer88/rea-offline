@@ -25,6 +25,45 @@ fn known_verdict(value: &str) -> bool {
     matches!(value, "info" | "low" | "medium" | "high" | "critical")
 }
 
+fn validate_file_ranges(pe: &Value, file_size: u64) -> Result<()> {
+    let read_range = |range: &Value| -> Result<(u64, u64)> {
+        let offset = integer(range.get("offset")).ok_or_else(|| invalid("invalid report: file range offset is not an integer"))?;
+        let size = integer(range.get("size")).filter(|n| *n > 0).ok_or_else(|| invalid("invalid report: file range size must be positive"))?;
+        let end = offset.checked_add(size).filter(|end| *end <= file_size)
+            .ok_or_else(|| invalid("invalid report: file range exceeds file size"))?;
+        Ok((offset, end))
+    };
+    let certificate = match pe.get("certificate_range") {
+        None | Some(Value::Null) => None,
+        Some(range) => {
+            if pe.get("signed") != Some(&Value::Bool(true)) {
+                return Err(invalid("invalid report: certificate range requires certificate-table presence"));
+            }
+            Some(read_range(range)?)
+        }
+    };
+    if let Some(value) = pe.get("overlay_ranges") {
+        let ranges = match value {
+            Value::Array(ranges) => ranges,
+            _ => return Err(invalid("invalid report: overlay_ranges must be an array")),
+        };
+        let mut previous_end = 0;
+        let mut total = 0u64;
+        for range in ranges {
+            let (start, end) = read_range(range)?;
+            if start < previous_end || certificate.is_some_and(|(a, b)| start < b && end > a) {
+                return Err(invalid("invalid report: overlay ranges overlap, are unsorted or include certificate bytes"));
+            }
+            total = total.checked_add(end - start).ok_or_else(|| invalid("invalid report: overlay byte count overflow"))?;
+            previous_end = end;
+        }
+        if integer(pe.get("overlay_size")) != Some(total) {
+            return Err(invalid("invalid report: overlay_size disagrees with recorded ranges"));
+        }
+    }
+    Ok(())
+}
+
 fn validate_body(body: &Value, label: &str) -> Result<()> {
     let files = body.get("files").and_then(|v| match v {
         Value::Array(items) => Some(items),
@@ -44,6 +83,9 @@ fn validate_body(body: &Value, label: &str) -> Result<()> {
         }
         if integer(file.get("size")).is_none() {
             return Err(invalid(format!("invalid report: {label}.files[{index}].size must be a non-negative integer")));
+        }
+        if let Some(pe) = file.get("pe") {
+            validate_file_ranges(pe, integer(file.get("size")).unwrap())?;
         }
         // Additive fields: old archives remain loadable, but a new scope
         // must tell a coherent story about exactly which bytes were seen.
@@ -673,6 +715,30 @@ mod tests {
             "report":{"file_count":1,"risk_score":41,"verdict":"high",
                 "files":[{"path":"a.exe","size":10}],"scan_issues":[]}
         }"#).unwrap()
+    }
+
+    #[test]
+    fn recorded_file_ranges_are_bounded_disjoint_and_arithmetically_consistent() {
+        for valid in [
+            r#"{}"#,
+            r#"{"overlay_size":0,"overlay_ranges":[]}"#,
+            r#"{"signed":true,"certificate_range":{"offset":40,"size":20},"overlay_size":30,"overlay_ranges":[{"offset":30,"size":10},{"offset":60,"size":20}]}"#,
+        ] {
+            validate_file_ranges(&crate::json::parse(valid).unwrap(), 100).unwrap();
+        }
+        for invalid_json in [
+            r#"{"overlay_size":2,"overlay_ranges":[]}"#,
+            r#"{"overlay_size":2,"overlay_ranges":[{"offset":99,"size":2}]}"#,
+            r#"{"overlay_size":0,"overlay_ranges":[{"offset":1,"size":0}]}"#,
+            r#"{"overlay_size":2,"overlay_ranges":[{"offset":-1,"size":2}]}"#,
+            r#"{"overlay_size":4,"overlay_ranges":[{"offset":10,"size":2},{"offset":11,"size":2}]}"#,
+            r#"{"overlay_size":4,"overlay_ranges":[{"offset":10,"size":2},{"offset":1,"size":2}]}"#,
+            r#"{"signed":true,"certificate_range":{"offset":10,"size":10},"overlay_size":5,"overlay_ranges":[{"offset":15,"size":5}]}"#,
+            r#"{"signed":false,"certificate_range":{"offset":10,"size":10}}"#,
+            r#"{"overlay_ranges":null}"#,
+        ] {
+            assert!(validate_file_ranges(&crate::json::parse(invalid_json).unwrap(), 100).is_err(), "{invalid_json}");
+        }
     }
 
     #[test]
