@@ -329,7 +329,11 @@ records no coverage at all is refused by this gate rather than assumed
 complete. Archives cannot be edited into looking clean either: `coverage`
 is validated against the issues it lists, the per-report `scan_issues` that
 produced it, and the `execution` block that says how the run ended, so
-flipping `complete` to `true` is rejected.
+flipping `complete` to `true` is rejected. The verdict gets the same
+treatment: a body's score and verdict are recomputed from the findings
+the archive itself carries, and a verdict that does not match its own
+score's band — or an envelope that calms its body down — is refused too,
+so relabeling every field consistently still fails.
 
 ### imphash compatibility
 
@@ -466,6 +470,20 @@ Created by Sean Shaffer
 MIT — see [LICENSE](LICENSE).
 
 ## Changelog
+
+### 0.19.0
+
+- **Archive verdicts are recomputed, not trusted.** A report's score and
+  verdict are fixed arithmetic over its findings, so validation now does
+  that arithmetic: for every body, the recorded score, verdict, finding
+  count and severity counts must match what the findings in the same file
+  give, a verdict must match its own score's band, and a scan's envelope
+  score must equal its body's. An archive relabeled calmer — every field
+  edited consistently, findings untouched — is refused (exit `1`) instead
+  of passing gates as its calmer self. A finding without a usable
+  severity or score makes the verdict unverifiable and is refused too.
+  Archives that predate the rules block keep loading, with the band and
+  envelope checks still applied.
 
 ### 0.18.0
 
