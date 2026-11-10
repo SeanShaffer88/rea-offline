@@ -16,6 +16,40 @@ fn text(value: Option<&Value>) -> String {
 fn fact(out: &mut String, label: &str, value: Option<&Value>) {
     out.push_str(&format!("<dt>{}</dt><dd>{}</dd>", html_escape(label), text(value)));
 }
+fn location(value: Option<&Value>) -> Option<u64> {
+    match value {
+        Some(Value::Number(n)) if n.is_finite() && *n >= 0.0 && *n < u64::MAX as f64 && n.fract() == 0.0 => Some(*n as u64),
+        _ => None,
+    }
+}
+fn range_text(range: &Value, file_size: u64) -> String {
+    match (location(range.get("offset")), location(range.get("size"))) {
+        (Some(offset), Some(size)) => match offset.checked_add(size).filter(|end| *end <= file_size) {
+            Some(end) => format!("[0x{offset:X}, 0x{end:X}) — offset {offset}, {size} bytes; end exclusive"),
+            None => "invalid recorded range (outside file bounds)".into(),
+        },
+        _ => "range not recorded or invalid".into(),
+    }
+}
+fn file_ranges(out: &mut String, pe: &Value, file_size: u64) {
+    out.push_str("<details open><summary>File layout and overlay ranges</summary><p>Ranges are half-open file offsets, not memory addresses or RVAs. Metadata does not establish payload execution or signature validity.</p>");
+    match pe.get("certificate_range") {
+        Some(Value::Null) => out.push_str("<p>Certificate range: none recorded.</p>"),
+        Some(range) => out.push_str(&format!("<p>Certificate range: {}</p>", range_text(range, file_size))),
+        None => out.push_str("<p>Certificate offsets not recorded in this report.</p>"),
+    }
+    match pe.get("overlay_ranges") {
+        Some(Value::Array(ranges)) => {
+            if ranges.is_empty() { out.push_str("<p>No overlay ranges recorded.</p>"); }
+            out.push_str("<ul>");
+            for range in ranges.iter().take(LIMIT) { out.push_str(&format!("<li>{}</li>", range_text(range, file_size))); }
+            out.push_str("</ul>");
+            omitted(out, ranges.len());
+        }
+        _ => out.push_str("<p>Overlay offsets not recorded in this report.</p>"),
+    }
+    out.push_str("</details>");
+}
 fn omitted(out: &mut String, count: usize) {
     if count > LIMIT {
         out.push_str(&format!("<p>{} additional entries omitted from this view; use JSON for the full recorded list.</p>", count - LIMIT));
@@ -62,20 +96,23 @@ pub(super) fn render(file: &Artifact) -> String {
                 Some(Value::Bool(false)) => "not present according to this parser",
                 _ => "not recorded — signature validity unknown",
             };
-            out.push_str(&format!("<dt>Certificate table</dt><dd>{certificate}</dd></dl><p>Certificate-table presence is not publisher trust. Overlay bytes may be legitimate installer payloads; their location is not recorded by this schema.</p><dl>"));
+            out.push_str(&format!("<dt>Certificate table</dt><dd>{certificate}</dd></dl><p>Certificate-table presence is not publisher trust. Overlay bytes may be legitimate installer payloads.</p><dl>"));
             for (label, key) in [("ASLR (DYNAMIC_BASE)", "aslr_dynamic_base"), ("DEP (NX_COMPAT)", "nx_compat"), ("Control Flow Guard", "guard_cf"), ("NO_SEH", "no_seh"), ("High entropy VA", "high_entropy_va")] {
                 fact(&mut out, label, pe.get("mitigations").and_then(|m| m.get(key)));
             }
             out.push_str("</dl><p>Header flags describe declared settings, not verified runtime protection.</p></details>");
-            out.push_str("<details open><summary>PE sections</summary>");
+            file_ranges(&mut out, pe, file.size);
+            out.push_str("<details open><summary>PE sections</summary><p>Section geometry is declared by headers and may be malformed; offsets are not proof that all section bytes were inspected.</p>");
             match pe.get("section_details") {
                 Some(Value::Array(sections)) if !sections.is_empty() => {
-                    out.push_str("<table><thead><tr><th>Name</th><th>Raw bytes</th><th>Virtual bytes</th><th>Entropy</th><th>Executable</th><th>Writable</th></tr></thead><tbody>");
+                    out.push_str("<table><thead><tr><th>Name</th><th>Raw offset</th><th>Raw bytes</th><th>RVA</th><th>Virtual bytes</th><th>Entropy</th><th>Executable</th><th>Writable</th></tr></thead><tbody>");
                     for section in sections.iter().take(LIMIT) {
                         out.push_str("<tr>");
-                        for key in ["name", "raw_size", "virtual_size", "entropy", "executable", "writable"] {
+                        for key in ["name", "raw_offset", "raw_size", "virtual_address", "virtual_size", "entropy", "executable", "writable"] {
                             let value = if key == "entropy" && matches!(section.get(key), None | Some(Value::Null)) {
                                 "unknown — not fully inspected".into()
+                            } else if key == "raw_offset" || key == "virtual_address" {
+                                location(section.get(key)).map(|n| format!("0x{n:X} ({n})")).unwrap_or_else(|| "not recorded".into())
                             } else { text(section.get(key)) };
                             out.push_str(&format!("<td>{value}</td>"));
                         }
@@ -125,6 +162,21 @@ mod tests {
         let tree = super::super::tree::from_report(report);
         render(super::super::tree::find_file(&tree, "sample.exe").unwrap())
     }
+    #[test]
+    fn file_ranges_render_hex_bounds_and_legacy_unknowns() {
+        let pe = crate::json::parse(r#"{"certificate_range":{"offset":64,"size":16},"overlay_ranges":[{"offset":80,"size":32}]}"#).unwrap();
+        let mut out = String::new();
+        file_ranges(&mut out, &pe, 128);
+        assert!(out.contains("[0x40, 0x50)"));
+        assert!(out.contains("[0x50, 0x70)"));
+        assert!(out.contains("end exclusive"));
+        let mut old = String::new();
+        file_ranges(&mut old, &Value::Null, 128);
+        assert!(old.contains("Overlay offsets not recorded"));
+        let invalid = crate::json::parse(r#"{"offset":120,"size":32}"#).unwrap();
+        assert!(range_text(&invalid, 128).contains("invalid recorded range"));
+    }
+
     #[test]
     fn structured_view_explains_findings_and_declared_pe_facts() {
         let out = html(&report());
