@@ -124,6 +124,12 @@ pub(super) fn render(file: &Artifact) -> String {
                 _ => out.push_str("<p>Section details not recorded. See JSON for any legacy section-name list.</p>"),
             }
             out.push_str("</details><p>Import lists can be partial because of parser limits or incomplete content coverage. A capability name does not establish that it was executed.</p>");
+            let status = match pe.get("imports_complete") {
+                Some(Value::Bool(true)) => "Import table traversal completed within parser bounds (not a completeness claim for all possible runtime imports).",
+                Some(Value::Bool(false)) => "Import parsing INCOMPLETE — lists are partial and imphash is withheld.",
+                _ => "Import parsing completeness not recorded in this report.",
+            };
+            out.push_str(&format!("<p>{status}</p>"));
             names(&mut out, "Imported libraries", pe.get("imports"));
             names(&mut out, "Imported functions", pe.get("imported_functions"));
         }
@@ -162,6 +168,12 @@ mod tests {
         let tree = super::super::tree::from_report(report);
         render(super::super::tree::find_file(&tree, "sample.exe").unwrap())
     }
+    #[test]
+    fn partial_import_flag_is_visible_in_the_evidence_view() {
+        let report = crate::json::parse(r#"{"files":[{"path":"sample.exe","size":1,"pe":{"imports_complete":false}}]}"#).unwrap();
+        assert!(html(&report).contains("Import parsing INCOMPLETE"));
+    }
+
     #[test]
     fn file_ranges_render_hex_bounds_and_legacy_unknowns() {
         let pe = crate::json::parse(r#"{"certificate_range":{"offset":64,"size":16},"overlay_ranges":[{"offset":80,"size":32}]}"#).unwrap();

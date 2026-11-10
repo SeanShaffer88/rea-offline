@@ -629,6 +629,7 @@ mod tests {
             ],
             imports: vec!["KERNEL32.dll".into()],
             imported_functions: vec!["KERNEL32.dll!Sleep".into()],
+            imports_complete: true,
             executable_sections: vec![".text".into()],
             timestamp: 1_700_000_000,
             entry_point_rva: 0x1000,

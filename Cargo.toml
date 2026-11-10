@@ -1,6 +1,6 @@
 [package]
 name = "rea-offline"
-version = "0.31.0"
+version = "0.32.0"
 edition = "2021"
 description = "Universal offline Windows client & REA analysis engine (no Hyper-V / Sandbox required)"
 license = "MIT"

@@ -510,6 +510,15 @@ inputs or signature trust. Existing Rust adversarial-input tests remain necessar
 
 ## Changelog
 
+### 0.32.0
+
+- **Partial imports cannot masquerade as complete fingerprints.** Native PE
+  reports explicitly record import traversal completeness. Malformed/unreadable
+  entries, missing terminators and parser limits retain observed imports but
+  withhold imphash and add an `imports` coverage issue in single-file, directory
+  and sandbox-delta scans. The evidence view explains partial results; archived
+  partial imports require matching coverage and cannot carry an imphash.
+
 ### 0.31.0
 
 - **Native PE parsing is checked against pefile.** A pinned development-only

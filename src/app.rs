@@ -264,7 +264,7 @@ fn run_sandbox_inner(opts: &SandboxOptions, sandbox: &Sandbox, install_dir: &Pat
 /// The native analyzer covers exactly the changed set instead.
 fn analyze_drops(root: &Path, delta: &crate::snapshot::Delta) -> crate::rea_bridge::ReaReport {
     use crate::rea_bridge::{
-        analyze_file, content_limit_issue, ReaReport, ScanIssue, MAX_ANALYZE_BYTES,
+        analyze_file, content_limit_issue, import_limit_issue, ReaReport, ScanIssue, MAX_ANALYZE_BYTES,
     };
     let mut files = Vec::new();
     let mut scan_issues = Vec::new();
@@ -290,6 +290,7 @@ fn analyze_drops(root: &Path, delta: &crate::snapshot::Delta) -> crate::rea_brid
                 if file.size > MAX_ANALYZE_BYTES {
                     scan_issues.push(content_limit_issue(&entry.path, file.size));
                 }
+                if let Some(issue) = import_limit_issue(&file) { scan_issues.push(issue); }
                 files.push(file);
             }
             Err(e) => scan_issues.push(ScanIssue::new(entry.path.clone(), "analysis", e.to_string())),
