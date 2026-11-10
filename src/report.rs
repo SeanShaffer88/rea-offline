@@ -107,6 +107,27 @@ fn validate_body(body: &Value, label: &str) -> Result<()> {
                 )));
             }
         }
+        // The summary also repeats the scan's completeness — its issue
+        // count and its complete flag both derive from the body's
+        // scan_issues list, so they must agree with that list: a summary
+        // claiming zero issues and complete over a body that still lists
+        // unreadable files was calmed after the fact.
+        if let Some(Value::Array(issues)) = body.get("scan_issues") {
+            if let Some(recorded) = summary.get("scan_issue_count") {
+                if integer(Some(recorded)) != Some(issues.len() as u64) {
+                    return Err(invalid(format!(
+                        "invalid report: {label}.summary.scan_issue_count does not match the length of {label}.scan_issues"
+                    )));
+                }
+            }
+            if let Some(recorded) = summary.get("complete").and_then(Value::as_bool) {
+                if recorded != issues.is_empty() {
+                    return Err(invalid(format!(
+                        "invalid report: {label}.summary.complete does not match {label}.scan_issues"
+                    )));
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -711,6 +732,18 @@ mod tests {
             r#"{"risk_score":0,"verdict":"low"}"#).unwrap());
         let error = validate(&report).unwrap_err().to_string();
         assert!(error.contains("summary.risk_score"), "{error}");
+        // The summary's completeness claims must agree with the body's
+        // scan_issues list: a calmed count/flag over a body that still
+        // lists an unreadable file is refused.
+        set_body(&mut report, "scan_issues", crate::json::parse(
+            r#"[{"path":"locked.bin","stage":"read","message":"permission denied"}]"#).unwrap());
+        set_body(&mut report, "summary", crate::json::parse(
+            r#"{"risk_score":30,"verdict":"high","scan_issue_count":1,"complete":false}"#).unwrap());
+        validate(&report).unwrap();
+        set_body(&mut report, "summary", crate::json::parse(
+            r#"{"risk_score":30,"verdict":"high","scan_issue_count":0,"complete":true}"#).unwrap());
+        let error = validate(&report).unwrap_err().to_string();
+        assert!(error.contains("summary.scan_issue_count"), "{error}");
     }
 
     fn with_execution(execution_json: &str, coverage_json: Option<&str>) -> Value {
