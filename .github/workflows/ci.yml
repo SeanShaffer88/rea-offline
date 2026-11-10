@@ -197,6 +197,29 @@ jobs:
           curl -s "http://127.0.0.1:8899/inspect?path=sample.exe" | grep -q 'Inspect something else'
           kill $picker_pid || true
 
+          # 4d. A busy preferred port must not produce a dead URL: the banner
+          # and the browser both use the port the listener actually bound.
+          rm -f holder.ready picker-fallback.log
+          python3 -c "import socket,time,pathlib; s=socket.socket(); s.bind(('127.0.0.1',8900)); s.listen(); pathlib.Path('holder.ready').touch(); time.sleep(30)" &
+          holder_pid=$!
+          for i in {1..20}; do
+            [ -f holder.ready ] && break
+            sleep 0.2
+          done
+          test -f holder.ready
+          "$EXE" gui --port 8900 --no-open 2> picker-fallback.log &
+          picker_pid=$!
+          for i in {1..20}; do
+            grep -q 'Window open:' picker-fallback.log && break
+            sleep 0.2
+          done
+          url=$(grep -o 'http://127.0.0.1:[0-9][0-9]*/' picker-fallback.log | head -1)
+          test -n "$url"
+          test "$url" != "http://127.0.0.1:8900/"
+          grep -q 'Leave this window open' picker-fallback.log
+          curl -s "$url" | grep -q 'action="/inspect"'
+          kill $picker_pid $holder_pid || true
+
           # 5. Snapshot + diff round trip.
           mkdir -p tree && printf 'one' > tree/a.txt
           "$EXE" snapshot tree --output before.json --quiet

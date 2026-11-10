@@ -14,6 +14,25 @@ exits, so the no-command help text could never be read there. A launch
 whose console belongs to the process alone (no terminal behind it) opens
 the picker window instead; in a terminal, no command still prints help.
 
+The launch order matters. The loopback listener is bound **first**, then the
+default browser is handed the URL of the port actually bound. If the preferred
+port is taken, the server walks forward to the next free one (up to 40 ports)
+and opens that port — the banner and the browser can never disagree, and the
+browser can never arrive before the server exists. A console window titled
+`rea-offline - window open (close to stop)` stays behind the browser: leave it
+open while using the window and close it when done. If the browser cannot be
+started, the URL is printed and a foreground dialog shows it; if the server
+cannot start at all, a dialog shows the error instead of a console that flashes
+and closes.
+
+### If no browser tab appears
+
+The server is already running at that point: read the URL in the console (or
+the dialog) and paste it into a browser. `gui --port 9100 --no-open` starts the
+same server without trying to launch a browser, which is useful on locked-down
+hosts where shell URL associations are blocked. A second copy of the app uses
+the next free port; the URL printed by that copy is the one to open.
+
 The GUI is a **single window with a treemap on the right and a size grid on
 the left** — the layout WizTree made familiar — retargeted from "what is
 using my disk" to "what did this installer bring, and how bad is it".
@@ -40,9 +59,14 @@ A browser is a window manager every supported Windows edition already ships.
 So `rea-offline gui`:
 
 1. binds **`127.0.0.1` only** (nothing is exposed to the network — this tool
-   is for air-gapped hosts),
-2. serves one self-contained page (inline CSS and SVG, **no JavaScript**),
-3. opens your default browser at it.
+   is for air-gapped hosts), walking forward to the next free port if the
+   preferred one is taken,
+2. prints the URL of the port it actually bound and names the console window,
+3. opens your default browser at that same URL (`ShellExecuteW` on Windows,
+   `open` / `xdg-open` elsewhere), with a fallback if the shell refuses,
+4. serves one self-contained page (inline CSS and SVG, **no JavaScript**) on
+   a thread per connection, so a browser's speculative preconnect cannot
+   hold the real request hostage.
 
 Everything the page shows is also reachable without a browser:
 `--output window.html` writes the same HTML to a file, and `/json`, `/text`
@@ -122,8 +146,8 @@ nothing to merge, paths stay exactly as the report recorded them.
 * The treemap draws down to tiles of ~1% of the pane; smaller files are still
   in the grid and in the JSON, just not visible as rectangles.
 * The loopback port is not authenticated. It binds `127.0.0.1`, so only local
-  processes can reach it — on a shared machine, stop the server when done
-  (`Ctrl+C`).
+  processes can reach it — on a shared machine, stop the server when done by
+  closing the console window or pressing `Ctrl+C`.
 
 ## Coverage warnings
 

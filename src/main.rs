@@ -50,11 +50,16 @@ SANDBOX OPTIONS:
   --keep                Keep sandbox files afterwards (hive still unmounts)
 
 GUI OPTIONS:
-  --port <n>            Loopback port to serve the window on (default 8787)
+  --port <n>            Preferred loopback port (default 8787); the next free
+                        port is used if it is taken, and that port is opened
   --no-open             Do not launch a browser; just print the URL
   --output <file>       Write the rendered page to a file and exit
                         (shareable, JavaScript-free snapshot of the window)
   --from-report         Treat <path> as a report.json written by a previous run
+
+DOUBLE-CLICK:
+  Opens the picker window. The server binds before the browser is launched;
+  leave the console window open while using the browser tab. Close it to stop.
 
 EXAMPLES:
   rea-offline scan "C:\Program Files\SomeApp" --output report.json
@@ -74,6 +79,16 @@ fn main() -> ExitCode {
         Ok(code) => ExitCode::from(code),
         Err(e) => {
             eprintln!("[rea-offline] error: {e}");
+            // A double-clicked console closes the instant the process exits,
+            // so a startup failure there would otherwise flash and vanish —
+            // the same "nothing happens" the picker was added to fix. A
+            // dialog stays until it is read.
+            if rea_offline::gui::launched_without_console() {
+                rea_offline::gui::show_message(
+                    "rea-offline — could not start",
+                    &format!("The window could not start:\n\n{e}\n\nRun the .exe from a terminal for the full error text."),
+                );
+            }
             ExitCode::FAILURE
         }
     }
@@ -374,7 +389,7 @@ fn run(args: &[String]) -> rea_offline::Result<u8> {
         // the moment the process exits — the help text would flash and be
         // gone, which reads as "the file does nothing". Open the picker
         // window instead. In a terminal, no command means help, as before.
-        if launched_without_console() {
+        if rea_offline::gui::launched_without_console() {
             let p = parse("gui", &[])?;
             return gui_picker(&p);
         }
@@ -482,10 +497,9 @@ fn run(args: &[String]) -> rea_offline::Result<u8> {
                 return Ok(0);
             }
             let port = gui_port(&p)?;
-            if !p.has("no-open") {
-                open_browser(&format!("http://127.0.0.1:{port}/"));
-            }
-            rea_offline::gui::serve(page, port)?;
+            // The server binds first, then opens the browser on the port it
+            // actually got — never before, never on a stale preferred port.
+            rea_offline::gui::serve(page, port, !p.has("no-open"))?;
             Ok(0)
         }
         "sample" => {
@@ -528,49 +542,8 @@ fn gui_picker(p: &Parsed) -> rea_offline::Result<u8> {
         ));
     }
     let port = gui_port(p)?;
-    if !p.has("no-open") {
-        open_browser(&format!("http://127.0.0.1:{port}/"));
-    }
-    rea_offline::gui::serve_picker(port)?;
+    rea_offline::gui::serve_picker(port, !p.has("no-open"))?;
     Ok(0)
-}
-
-/// Whether the process has no terminal of the user's to talk to. On
-/// Windows, a process started from a terminal shares that console (the
-/// console's process list has the shell in it too); a double-clicked
-/// process is alone in a fresh console, or has none. Elsewhere, a bare
-/// launch is assumed to be a terminal asking for help.
-#[cfg(windows)]
-fn launched_without_console() -> bool {
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn GetConsoleProcessList(process_list: *mut u32, count: u32) -> u32;
-    }
-    let mut pids = [0u32; 2];
-    let attached = unsafe { GetConsoleProcessList(pids.as_mut_ptr(), pids.len() as u32) };
-    attached <= 1
-}
-
-#[cfg(not(windows))]
-fn launched_without_console() -> bool {
-    false
-}
-
-/// Best-effort: hand the URL to the platform's default browser. Failure is
-/// not an error — the URL is printed either way and can be pasted manually.
-fn open_browser(url: &str) {
-    #[cfg(target_os = "windows")]
-    let (program, args) = ("cmd", vec!["/C", "start", "", url]);
-    #[cfg(target_os = "macos")]
-    let (program, args) = ("open", vec![url]);
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let (program, args) = ("xdg-open", vec![url]);
-    let _ = std::process::Command::new(program)
-        .args(args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
 }
 
 #[cfg(test)]
