@@ -373,15 +373,7 @@ jobs:
             # the analyzed drop (keeping the body's own counts
             # consistent) is refused because the delta still shows the
             # file landing.
-            python3 - <<'PY'
-            import json
-            with open("stage.json") as fh:
-                data = json.load(fh)
-            data["drops_report"]["files"] = []
-            data["drops_report"]["file_count"] = 0
-            with open("drop-erased.json", "w") as fh:
-                json.dump(data, fh)
-            PY
+            python3 -c 'import json; d = json.load(open("stage.json")); d["drops_report"]["files"] = []; d["drops_report"]["file_count"] = 0; json.dump(d, open("drop-erased.json", "w"))'
             if "$EXE" report drop-erased.json --quiet; then
               echo "drop-erased archive must be refused" >&2; exit 1
             fi
