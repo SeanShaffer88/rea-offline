@@ -499,6 +499,11 @@ MIT — see [LICENSE](LICENSE).
 
 ### 0.27.0
 
+- **Malformed import names are not invented.** PE32+ name thunks with reserved
+  high address bits no longer wrap to unrelated 32-bit RVAs. Import names must
+  be NUL-terminated within the bounded read and contain printable ASCII rather
+  than truncated text, control characters or lossy Unicode replacements.
+
 - **PE optional headers define their own bounds.** The parser rejects unknown
   optional-header magic and truncated declared headers, and reads data-directory
   entries only when both the declared header size and directory count permit

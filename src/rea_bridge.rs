@@ -938,13 +938,14 @@ fn parse_pe_with_size(data: &[u8], file_len: u64) -> Option<PeInfo> {
         if (rva as usize) < headers_size && (rva as usize) < data.len() { Some(rva as usize) } else { None }
     };
 
-    let read_c_string = |off: usize| -> String {
-        // Clamp the window to EOF: `get(off..off + 512)` returns None when
-        // the range runs past the end, silently dropping strings that sit
-        // in the last 512 bytes of the file.
-        let slice = data.get(off..(off + 512).min(data.len())).unwrap_or(&[]);
-        let end = slice.iter().position(|&b| b == 0).unwrap_or(slice.len());
-        String::from_utf8_lossy(&slice[..end]).to_string()
+    let read_c_string = |off: usize| -> Option<String> {
+        // Do not invent an import name from an unterminated prefix or
+        // replace invalid bytes with Unicode replacement characters.
+        let slice = data.get(off..off.saturating_add(512).min(data.len()))?;
+        let end = slice.iter().position(|&b| b == 0)?;
+        let name = std::str::from_utf8(&slice[..end]).ok()?;
+        if name.is_empty() || !name.bytes().all(|b| b.is_ascii_graphic() || b == b' ') { return None; }
+        Some(name.to_string())
     };
 
     let mut imports = Vec::new();
@@ -956,7 +957,7 @@ fn parse_pe_with_size(data: &[u8], file_len: u64) -> Option<PeInfo> {
                 let name_rva = u32le(data, desc + 12).unwrap_or(0);
                 let ft_rva = u32le(data, desc + 16).unwrap_or(0);   // FirstThunk
                 if oft_rva == 0 && name_rva == 0 && ft_rva == 0 { break; }
-                let dll = rva_to_offset(name_rva).map(&read_c_string).unwrap_or_default();
+                let dll = rva_to_offset(name_rva).and_then(&read_c_string).unwrap_or_default();
                 if !dll.is_empty() { imports.push(dll.clone()); }
                 // Walk the lookup table for per-function names/ordinals.
                 let thunk_rva = if oft_rva != 0 { oft_rva } else { ft_rva };
@@ -972,10 +973,17 @@ fn parse_pe_with_size(data: &[u8], file_len: u64) -> Option<PeInfo> {
                             let ordinal_flag: u64 = if is_64bit { 0x8000_0000_0000_0000 } else { 0x8000_0000 };
                             if entry & ordinal_flag != 0 {
                                 imported_functions.push(format!("{dll}!#{}", entry & 0xffff));
-                            } else if let Some(hn) = rva_to_offset(entry as u32) {
-                                // IMAGE_IMPORT_BY_NAME: u16 hint, then the name.
-                                let name = read_c_string(hn + 2);
-                                if !name.is_empty() { imported_functions.push(format!("{dll}!{name}")); }
+                            } else if let Ok(rva) = u32::try_from(entry) {
+                                // PE32+ name thunks still contain a 32-bit
+                                // RVA. Never wrap reserved high bits into
+                                // an unrelated valid name in the prefix.
+                                if let Some(hn) = rva_to_offset(rva) {
+                                    if u16le(data, hn).is_some() {
+                                        if let Some(name) = read_c_string(hn.saturating_add(2)) {
+                                            imported_functions.push(format!("{dll}!{name}"));
+                                        }
+                                    }
+                                }
                             }
                             thunk += step;
                             if imported_functions.len() >= 4096 { break; }
@@ -1339,6 +1347,47 @@ mod tests {
         assert_eq!(u16le(&[], usize::MAX), None);
         assert_eq!(u32le(&[], usize::MAX), None);
         assert_eq!(u64le(&[], usize::MAX), None);
+    }
+
+    #[test]
+    fn pe64_name_thunks_cannot_wrap_reserved_high_bits_into_an_rva() {
+        let mut bytes = synthetic_pe();
+        bytes[0x340..0x348].copy_from_slice(&0x0000_0001_0000_1190u64.to_le_bytes());
+        let pe = parse_pe(&bytes).unwrap();
+        assert!(!pe.imported_functions.iter().any(|s| s.contains("CreateRemoteThread")));
+        assert!(pe.imported_functions.iter().any(|s| s.ends_with("!#42")));
+    }
+
+    #[test]
+    fn unterminated_import_names_are_not_fabricated_at_eof() {
+        let mut bytes = synthetic_pe();
+        // Point the DLL name to the final 16 file bytes, without a NUL.
+        bytes[0x30c..0x310].copy_from_slice(&0x1230u32.to_le_bytes());
+        bytes[0x430..].fill(b'A');
+        // Extend the file-backed section so the EOF name is addressable.
+        let sec = 0x98 + 240;
+        bytes[sec + 16..sec + 20].copy_from_slice(&0x240u32.to_le_bytes());
+        assert!(parse_pe(&bytes).unwrap().imports.is_empty());
+    }
+
+    #[test]
+    fn invalid_import_name_bytes_are_not_lossily_normalized() {
+        for value in [0xffu8, b'\n', 0x7f] {
+            let mut bytes = synthetic_pe();
+            bytes[0x392] = value;
+            let pe = parse_pe(&bytes).unwrap();
+            assert!(!pe.imported_functions.iter().any(|s| s.contains("RemoteThread")));
+            assert!(pe.imported_functions.iter().any(|s| s.ends_with("!#42")));
+        }
+    }
+
+    #[test]
+    fn truncated_function_names_are_not_accepted_as_complete_imports() {
+        let mut bytes = synthetic_pe();
+        bytes[0x340..0x348].copy_from_slice(&0x11f0u64.to_le_bytes());
+        bytes[0x3f2..].fill(b'X');
+        let pe = parse_pe(&bytes).unwrap();
+        assert!(!pe.imported_functions.iter().any(|s| s.contains("!XXX")));
     }
 
     #[test]
