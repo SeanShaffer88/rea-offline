@@ -476,6 +476,17 @@ MIT — see [LICENSE](LICENSE).
 
 ## Changelog
 
+### 0.24.0
+
+- **Archive validation now cross-checks the sandbox evidence against
+  the drops report.** A sandbox archive carries the raw whole-sandbox
+  change list alongside the report built from it; every file the list
+  shows as added or modified must be accounted for by the drops report
+  (analyzed, or named in its issues), and every analyzed drop must
+  appear in the list. Quietly erasing a drop from the report — with
+  every other block kept consistent — is now refused, because the
+  evidence in the same file still shows it landing.
+
 ### 0.23.0
 
 - **Archive validation now checks the summary's completeness claims
