@@ -501,6 +501,12 @@ MIT — see [LICENSE](LICENSE).
 
 ### 0.29.0
 
+- **Release notes stay UTF-8 on Windows.** The generator explicitly reads and
+  writes UTF-8 with LF endings, so punctuation and non-English text survive
+  legacy Windows code pages. Its byte count now measures encoded bytes rather
+  than characters. Ten stdlib-only regression tests run on both CI platforms,
+  covering encoding, grouped notes, tag selection and validation failures.
+
 - **Browse instead of typing paths.** Windows picker controls open native file,
   folder and saved-report dialogs and fill in the selected local path without
   uploading or executing it. Saved-report selection switches modes automatically.

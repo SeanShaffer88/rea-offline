@@ -13,6 +13,9 @@ jobs:
         with:
           components: clippy, rustfmt
 
+      - name: Release notes unit tests
+        run: python3 -m unittest discover -s scripts -p "test_*.py" -v
+
       # Advisory: printed for reviewers, not build-blocking.
       - name: rustfmt (advisory)
         continue-on-error: true
