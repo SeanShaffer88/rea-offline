@@ -467,6 +467,11 @@ MIT — see [LICENSE](LICENSE).
 
 ## Changelog
 
+### 0.18.0
+
+- **A scan can no longer mix two versions of one file into a single row.** Analyzing a file read it four separate times — a stat for the size, a pass for each hash, and a content read for the format check, PE parsing, entropy and indicators. A file rewritten between those reads paired one version's hash with another version's findings, and the verdict described bytes the hashes do not identify. Analysis is now bracketed by before/after stats: on any movement the file is refused with a "changed while it was being analyzed" issue in the coverage record, the same treatment snapshots give a file that moves mid-capture.
+- **A manifest's blindness record is validated like its entries.** Since 0.14.0 a malformed entry refuses the load, but the `issues` block — the record of what the snapshot could not see — was read loosely: a present-but-not-a-list block loaded as "no issues", so the manifest claimed complete coverage, and garbled entries became blank issues. A present block must now be a list of objects with string `path`/`stage`/`message`, or the load is refused naming the problem. A *missing* block stays allowed: pre-coverage manifests legitimately have none.
+
 ### 0.17.0
 
 - **Double-clicking the .exe now opens the window.** The program is a console tool: run with no command it printed the help text and exited — and a console opened by a double-click closes the moment the program exits, so the release read as "the file does nothing". A launch with no console of the user's (the double-click signature) now opens the GUI picker instead: a page asking what to inspect — a file, folder or installer, or a report saved earlier — which then shows that inspection's window, with a link back to pick something else. `gui` with no path opens the same picker from a terminal. In a terminal, running with no command still prints help, and every command behaves exactly as before.

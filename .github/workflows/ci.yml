@@ -185,6 +185,16 @@ jobs:
           if [ "$dup" -ne 1 ]; then
             echo "expected diff to refuse a duplicate-entry manifest with exit 1, got $dup" >&2; exit 1
           fi
+          # The blindness record is evidence too: a malformed issues block
+          # must be refused, not read as "no issues" (complete coverage).
+          printf '%s' '{"root":"tree","entries":[],"issues":"none"}' > bad-issues.json
+          set +e
+          "$EXE" diff bad-issues.json after.json --quiet
+          iss=$?
+          set -e
+          if [ "$iss" -ne 1 ]; then
+            echo "expected diff to refuse a malformed-issues manifest with exit 1, got $iss" >&2; exit 1
+          fi
           # Two complete trees can still be incomparable; the delta says so.
           mkdir -p elsewhere && printf 'unrelated' > elsewhere/other.txt
           "$EXE" snapshot elsewhere --output elsewhere.json --quiet

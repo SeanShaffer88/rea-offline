@@ -565,6 +565,20 @@ pub fn analyze_file(path: &Path, display: &Path) -> Result<FileAnalysis> {
     let sha256 = hash_file(path)?;
     let md5 = crate::md5::hash_file(path)?;
     let data = if size <= MAX_ANALYZE_BYTES { std::fs::read(path)? } else { Vec::new() };
+    // The size, the two hashes and the analyzed bytes come from four
+    // separate reads. A file rewritten between them would pair one
+    // version's hash with another version's findings, and the verdict
+    // would describe bytes the hashes do not identify. Bracket the reads:
+    // on any movement, refuse the file — the caller records the refusal
+    // as an analysis issue, so the report names what it could not settle
+    // instead of presenting a row assembled from different versions.
+    let after = std::fs::metadata(path)?;
+    if meta.len() != after.len() || meta.modified().ok() != after.modified().ok() {
+        return Err(crate::Error::InvalidInput(format!(
+            "{} changed while it was being analyzed; its size, hashes and findings could come from different versions",
+            path.display()
+        )));
+    }
     let format = detect_format(&data, path);
     let pe = if format == "PE" { parse_pe(&data) } else { None };
     let imphash = pe.as_ref().and_then(|p| imphash(&p.imported_functions));
@@ -898,6 +912,37 @@ fn parse_pe(data: &[u8]) -> Option<PeInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_file_growing_during_analysis_is_refused_not_mixed() {
+        use std::io::Write;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let dir = std::env::temp_dir().join(format!("rea_bridge_test_{}", crate::util::new_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("growing.bin");
+        std::fs::write(&file, vec![3u8; 48 * 1024 * 1024]).unwrap();
+        // Keep appending for the whole analysis, so the file provably
+        // moves between the four separate reads (stat, two hash passes,
+        // content read) the analysis is built from.
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let writer = {
+            let stop = stop.clone();
+            let file = file.clone();
+            std::thread::spawn(move || {
+                let mut f = std::fs::OpenOptions::new().append(true).open(&file).unwrap();
+                while !stop.load(Ordering::Relaxed) {
+                    let _ = f.write_all(&[1u8; 4096]);
+                    std::thread::sleep(std::time::Duration::from_micros(200));
+                }
+            })
+        };
+        let result = analyze_file(&file, Path::new("growing.bin"));
+        stop.store(true, Ordering::Relaxed);
+        writer.join().unwrap();
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("changed while it was being analyzed"), "{error}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn entropy_and_format() {
         assert_eq!(shannon_entropy(&[]), 0.0);

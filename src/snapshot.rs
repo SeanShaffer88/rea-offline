@@ -330,11 +330,26 @@ impl Snapshot {
         // Manifests written before coverage was recorded carry no issues
         // block. They are still readable; files they could not hash have an
         // empty digest and therefore diff as `unverified`, not `unchanged`.
+        // A block that is present is held to the entries' standard: it is
+        // the record of what the snapshot could not see, so reading a
+        // malformed one loosely — a non-list as "no issues", a garbled
+        // entry as a blank issue — would let a manifest claim complete
+        // coverage its own file contradicts. Refuse instead.
         let mut issues = Vec::new();
-        if let Some(Value::Array(items)) = value.get("issues") {
-            for item in items {
-                let field = |k: &str| item.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
-                issues.push(ScanIssue::new(field("path"), field("stage"), field("message")));
+        if let Some(raw) = value.get("issues") {
+            let items = match raw {
+                Value::Array(items) => items,
+                _ => return Err(malformed("'issues' is not a list".to_string())),
+            };
+            for (index, item) in items.iter().enumerate() {
+                if !matches!(item, Value::Object(_)) {
+                    return Err(malformed(format!("issue {index} is not an object")));
+                }
+                let field = |k: &str| match item.get(k) {
+                    Some(Value::String(s)) => Ok(s.clone()),
+                    _ => Err(malformed(format!("issue {index} has no usable '{k}'"))),
+                };
+                issues.push(ScanIssue::new(field("path")?, field("stage")?, field("message")?));
             }
         }
         Ok(Snapshot {
@@ -570,6 +585,40 @@ mod tests {
             assert!(error.contains("is not a snapshot manifest"), "{name}: {error}");
             assert!(error.contains(reason), "{name}: {error}");
         }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_malformed_issues_block_is_refused_not_read_as_complete() {
+        // The issues block is the record of what the snapshot could not
+        // see. Each of these used to load anyway: a non-list became "no
+        // issues" (complete coverage from a file that says otherwise),
+        // and garbled entries became blank issues.
+        let dir = std::env::temp_dir().join(format!("rea_load_{}", crate::util::new_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = r#"[{"path":"a.txt","size":1,"sha256":"aa","kind":"file"}]"#;
+        for (name, issues, reason) in [
+            ("str.json", r#""none""#, "'issues' is not a list"),
+            ("obj.json", r#"{"count":1}"#, "'issues' is not a list"),
+            ("bare.json", r#"[42]"#, "issue 0 is not an object"),
+            ("nofield.json", r#"[{"path":"x","stage":"hash"}]"#, "issue 0 has no usable 'message'"),
+            ("numfield.json", r#"[{"path":"x","stage":7,"message":"m"}]"#, "issue 0 has no usable 'stage'"),
+        ] {
+            let path = dir.join(name);
+            std::fs::write(&path, format!(r#"{{"root":"/virtual","entries":{entry},"issues":{issues}}}"#)).unwrap();
+            let error = Snapshot::load(&path).unwrap_err().to_string();
+            assert!(error.contains("is not a snapshot manifest"), "{name}: {error}");
+            assert!(error.contains(reason), "{name}: {error}");
+        }
+        // A well-formed block loads and keeps the manifest incomplete.
+        let path = dir.join("good.json");
+        std::fs::write(&path, format!(
+            r#"{{"root":"/virtual","entries":{entry},"issues":[{{"path":"b.bin","stage":"hash","message":"denied"}}]}}"#
+        )).unwrap();
+        let loaded = Snapshot::load(&path).unwrap();
+        assert!(!loaded.is_complete());
+        assert_eq!(loaded.issues.len(), 1);
+        assert_eq!(loaded.issues[0].stage, "hash");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
