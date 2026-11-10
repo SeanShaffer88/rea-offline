@@ -501,6 +501,12 @@ MIT — see [LICENSE](LICENSE).
 
 ### 0.31.0
 
+- **Native PE parsing is checked against pefile.** A pinned development-only
+  oracle compares PE32/PE32+ headers, sections, imports, imphash, mitigation flags,
+  full-file hashes and certificate-excluded overlay ranges on twelve generated
+  fixtures. No binaries are downloaded or executed. The check runs on Windows
+  and Ubuntu; the shipped Rust executable still has zero external dependencies.
+
 - **PE evidence now includes file locations.** Native reports record section raw
   offsets and RVAs, certificate-table bounds and disjoint overlay ranges before
   and after the certificate. The inspector displays hexadecimal and decimal
@@ -977,3 +983,14 @@ MIT — see [LICENSE](LICENSE).
 - Mode B also analyzes the installer binary itself (`installer_report`).
 - Job Object active-process ceiling (`--max-processes`, default 32).
 - New `doctor` preflight command (platform, sandbox create/purge rehearsal, REA discovery).
+
+### Optional PE differential checks
+
+After building, run `python3 -m pip install -r scripts/requirements-pe-tests.txt`
+and `python3 scripts/check_pe_differential.py --binary target/release/rea-offline`
+(use `target/release/rea-offline.exe` on Windows). This is a development-only
+validation tool, not part of the offline runtime or release packaging. It uses
+synthetic static fixtures rather than downloaded malware or licensed binaries.
+pefile is an independent implementation, not a proof of Windows-loader behavior:
+these checks cover the explicit supported fixture matrix, not arbitrary malformed
+inputs or signature trust. Existing Rust adversarial-input tests remain necessary.

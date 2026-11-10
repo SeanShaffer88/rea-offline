@@ -1,0 +1,2 @@
+# Development/CI oracle only. Never installed or imported by rea-offline itself.
+pefile==2024.8.26
