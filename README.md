@@ -95,6 +95,14 @@ analyzed set into one tree — `install/`, `_installer/` and the profile-relativ
 drop paths — so the file that decided the verdict is one click away.
 See [`docs/GUI.md`](docs/GUI.md).
 
+Double-clicking `rea-offline.exe` opens the picker window too. The server binds
+first and then hands the browser the URL of the port it actually got; if the
+preferred port is taken, the next free one is used and that port is printed and
+opened. Leave the console window titled `rea-offline - window open (close to
+stop)` open behind the browser — closing it stops the server. If a browser
+cannot be launched, the URL is printed and shown in a dialog so it can be
+pasted manually; `gui --no-open` starts the server without that handoff.
+
 ## Reports
 
 Inspection commands write JSON (schema `3`). `scan`, `sandbox`, `report`, and
@@ -475,6 +483,28 @@ Created by Sean Shaffer
 MIT — see [LICENSE](LICENSE).
 
 ## Changelog
+
+### 0.25.0
+
+- **Double-clicking the .exe now reliably shows a window.** The launcher used
+  to open the browser *before* binding the loopback server and always pointed
+  it at the preferred port, even when a busy port made the server move to the
+  next one — so a fast browser could get `ERR_CONNECTION_REFUSED`, a second
+  copy could open a stale port, and `cmd /C start` failures were swallowed.
+  The listener now binds first, prints and opens the URL of the port actually
+  bound, uses `ShellExecuteW` with a `rundll32` fallback on Windows (and
+  `open` / `xdg-open` elsewhere), and reports a failed handoff as a dialog
+  plus a pasteable URL instead of silence. Fatal startup errors get the same
+  dialog, so a console that a double-click closes cannot hide them. The
+  console window is titled `rea-offline - window open (close to stop)` and the
+  banner tells the operator to leave it open rather than press `Ctrl+C`.
+- **A browser preconnect can no longer stall the page.** The accept loop
+  serves each connection on its own thread instead of blocking the whole
+  server for up to five seconds on a socket that connects and sends nothing.
+  Picker state is protected by a mutex that is dropped before the response is
+  written, so a slow reader cannot hold other requests hostage.
+- **Tests**: the port-fallback URL, report content types and the `Send + Sync`
+  contract for shared page state are now covered on every CI platform.
 
 ### 0.24.0
 

@@ -1,7 +1,8 @@
 //! Graphical interface — a WizTree-shaped window for analysis, not disk use.
 //!
-//! `rea-offline gui` serves a single self-contained page on `127.0.0.1` and
-//! opens it in the default browser. Why not a native Win32 window? Because
+//! `rea-offline gui` binds `127.0.0.1` first, then opens the URL of the
+//! port it actually got in the default browser. Why not a native Win32
+//! window? Because
 //! this tool must build on an air-gapped machine with **zero crates** — no
 //! GUI toolkit is available without vendoring one — and a browser is a
 //! windowing system every Windows edition already ships. See `docs/GUI.md`
@@ -31,6 +32,7 @@ use crate::json::Value;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tree::{SortColumn, TreemapScope, View};
 
@@ -694,15 +696,223 @@ footer pre{margin:0;font:12px/1.5 "Cascadia Mono",Consolas,monospace;color:#c6d3
 "#;
 
 // ---------------------------------------------------------------------------
+// Launching the window: bind first, then open the browser
+// ---------------------------------------------------------------------------
+
+/// The loopback address the window is served on. Built from the port the
+/// listener actually bound — which may have moved past the preferred port
+/// when it was already taken — so the browser and the banner never disagree.
+pub fn window_url(port: u16) -> String {
+    format!("http://127.0.0.1:{port}/")
+}
+
+/// Whether the process has no terminal of the user's to talk to. On
+/// Windows, a process started from a terminal shares that console (the
+/// console's process list has the shell in it too); a double-clicked
+/// process is alone in a fresh console, or has none. Elsewhere, a bare
+/// launch is assumed to be a terminal asking for help.
+#[cfg(windows)]
+pub fn launched_without_console() -> bool {
+    win::launched_without_console()
+}
+
+/// Whether the process has no terminal of the user's to talk to. On
+/// Windows, a process started from a terminal shares that console (the
+/// console's process list has the shell in it too); a double-clicked
+/// process is alone in a fresh console, or has none. Elsewhere, a bare
+/// launch is assumed to be a terminal asking for help.
+#[cfg(not(windows))]
+pub fn launched_without_console() -> bool {
+    false
+}
+
+/// Hand `url` to the platform's default browser. Returns whether the
+/// handoff was accepted — `false` means the caller must tell the user the
+/// URL, because a double-clicked launch has no other way to learn it.
+#[cfg(windows)]
+pub fn open_browser(url: &str) -> bool {
+    win::open(url)
+}
+
+/// Hand `url` to the platform's default browser. Returns whether the
+/// handoff was accepted — `false` means the caller must tell the user the
+/// URL, because a double-clicked launch has no other way to learn it.
+#[cfg(target_os = "macos")]
+pub fn open_browser(url: &str) -> bool {
+    std::process::Command::new("open")
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .is_ok()
+}
+
+/// Hand `url` to the platform's default browser. Returns whether the
+/// handoff was accepted — `false` means the caller must tell the user the
+/// URL, because a double-clicked launch has no other way to learn it.
+#[cfg(all(unix, not(target_os = "macos")))]
+pub fn open_browser(url: &str) -> bool {
+    std::process::Command::new("xdg-open")
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .is_ok()
+}
+
+/// Hand `url` to the platform's default browser. Returns whether the
+/// handoff was accepted — `false` means the caller must tell the user the
+/// URL, because a double-clicked launch has no other way to learn it.
+#[cfg(not(any(windows, unix)))]
+pub fn open_browser(url: &str) -> bool {
+    let _ = url;
+    false
+}
+
+/// Show a small dialog that stays until dismissed. Used when a launch has
+/// no console to read an error in (a double-click): without it, a failure
+/// prints to a console that closes the moment the process exits, which
+/// reads as "the file does nothing".
+#[cfg(windows)]
+pub fn show_message(caption: &str, text: &str) {
+    win::show_message(caption, text)
+}
+
+/// Show a small dialog that stays until dismissed. Used when a launch has
+/// no console to read an error in (a double-click): without it, a failure
+/// prints to a console that closes the moment the process exits, which
+/// reads as "the file does nothing".
+#[cfg(not(windows))]
+pub fn show_message(caption: &str, text: &str) {
+    let _ = (caption, text);
+}
+
+/// Name the console window so a double-clicked launch is recognisable
+/// behind the browser: it is the window that must stay open.
+#[cfg(windows)]
+fn set_console_title() {
+    win::set_console_title()
+}
+
+/// Name the console window so a double-clicked launch is recognisable
+/// behind the browser: it is the window that must stay open.
+#[cfg(not(windows))]
+fn set_console_title() {}
+
+/// Tell the operator where the window is, then open it. The listener is
+/// already bound when this runs, so the browser can never arrive before
+/// the server — and the URL it opens is the port actually bound, not the
+/// preferred one.
+fn announce(url: &str, open: bool) {
+    set_console_title();
+    eprintln!("[rea-offline] Window open: {url}");
+    eprintln!("[rea-offline] Leave this window open while you use the browser tab. Close it (or press Ctrl+C) to stop.");
+    if open && !open_browser(url) {
+        eprintln!("[rea-offline] Could not open a browser automatically — open {url} yourself.");
+        if launched_without_console() {
+            // MessageBoxW blocks until dismissed. Showing it on the server
+            // thread would hold the accept loop up, so the loopback server
+            // starts first and the dialog gets its own thread.
+            let text = format!(
+                "The window is running at:\n\n{url}\n\nOpen that address in your browser. Leave this console window open while you use it; close it to stop."
+            );
+            std::thread::spawn(move || show_message("rea-offline", &text));
+        }
+    }
+}
+
+#[cfg(windows)]
+mod win {
+    use std::os::windows::ffi::OsStrExt;
+
+    fn wide(s: &str) -> Vec<u16> {
+        std::ffi::OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetConsoleProcessList(process_list: *mut u32, count: u32) -> u32;
+        fn SetConsoleTitleW(title: *const u16) -> i32;
+    }
+
+    #[link(name = "shell32")]
+    extern "system" {
+        fn ShellExecuteW(
+            hwnd: isize,
+            op: *const u16,
+            file: *const u16,
+            params: *const u16,
+            dir: *const u16,
+            show: i32,
+        ) -> isize;
+    }
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn MessageBoxW(hwnd: isize, text: *const u16, caption: *const u16, kind: u32) -> i32;
+    }
+
+    pub fn launched_without_console() -> bool {
+        let mut pids = [0u32; 2];
+        let attached = unsafe { GetConsoleProcessList(pids.as_mut_ptr(), pids.len() as u32) };
+        attached <= 1
+    }
+
+    /// `ShellExecuteW` with verb "open": the shell's own association for
+    /// http URLs, with no `cmd /C start` quoting to get wrong and no
+    /// console process for policy to block. Returns > 32 on success.
+    pub fn open(url: &str) -> bool {
+        let op = wide("open");
+        let file = wide(url);
+        let rc = unsafe {
+            ShellExecuteW(0, op.as_ptr(), file.as_ptr(), std::ptr::null(), std::ptr::null(), 1)
+        };
+        if rc > 32 {
+            return true;
+        }
+        // Fallback for shells that refuse the verb: rundll32's protocol
+        // handler is the other standard way to open a URL.
+        std::process::Command::new("rundll32")
+            .args(["url.dll,FileProtocolHandler", url])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .is_ok()
+    }
+
+    pub fn set_console_title() {
+        let title = wide("rea-offline - window open (close to stop)");
+        unsafe {
+            SetConsoleTitleW(title.as_ptr());
+        }
+    }
+
+    pub fn show_message(caption: &str, text: &str) {
+        let caption_w = wide(caption);
+        let text_w = wide(text);
+        // MB_OK (0) | MB_ICONINFORMATION (0x40).
+        unsafe {
+            MessageBoxW(0, text_w.as_ptr(), caption_w.as_ptr(), 0x40);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Loopback server
 // ---------------------------------------------------------------------------
 
 /// Serve `page` on `127.0.0.1:preferred` until the process is killed.
 ///
-/// One request at a time, no keep-alive, no chunking: enough for a UI that a
-/// single operator drives, and small enough to audit. Only loopback is bound,
-/// so nothing is exposed to the network (this tool is for air-gapped hosts).
-/// Bind the first free loopback port at or after `preferred_port`.
+/// No keep-alive, no chunking: enough for a UI that a single operator
+/// drives, and small enough to audit. Only loopback is bound, so nothing
+/// is exposed to the network (this tool is for air-gapped hosts).
+/// Bind the first free loopback port at or after `preferred_port`, then
+/// open the browser on the port actually bound. Each connection is served
+/// on its own thread, so a browser's speculative preconnect — which
+/// connects and sends nothing — cannot hold the page hostage.
 fn bind(preferred_port: u16) -> crate::Result<(TcpListener, u16)> {
     let mut last_error = None;
     for offset in 0..40u16 {
@@ -710,7 +920,8 @@ fn bind(preferred_port: u16) -> crate::Result<(TcpListener, u16)> {
         match TcpListener::bind(("127.0.0.1", port)) {
             Ok(listener) => {
                 listener.set_nonblocking(false).ok();
-                return Ok((listener, port));
+                let actual = listener.local_addr().map(|a| a.port()).unwrap_or(port);
+                return Ok((listener, actual));
             }
             Err(e) => last_error = Some(e),
         }
@@ -720,10 +931,14 @@ fn bind(preferred_port: u16) -> crate::Result<(TcpListener, u16)> {
     })))
 }
 
-fn accept_loop(listener: TcpListener, mut serve_one: impl FnMut(TcpStream)) -> ! {
+fn accept_loop(listener: TcpListener, serve_one: impl Fn(TcpStream) + Send + Sync + 'static) -> ! {
+    let serve_one = Arc::new(serve_one);
     for stream in listener.incoming() {
         match stream {
-            Ok(stream) => serve_one(stream),
+            Ok(stream) => {
+                let serve_one = Arc::clone(&serve_one);
+                std::thread::spawn(move || serve_one(stream));
+            }
             Err(e) => {
                 eprintln!("[rea-offline] gui accept error: {e}");
                 std::thread::sleep(Duration::from_millis(50));
@@ -733,10 +948,11 @@ fn accept_loop(listener: TcpListener, mut serve_one: impl FnMut(TcpStream)) -> !
     unreachable!("the accept loop only ends with the process")
 }
 
-pub fn serve(page: Page, preferred_port: u16) -> crate::Result<u16> {
+pub fn serve(page: Page, preferred_port: u16, open: bool) -> crate::Result<u16> {
     let (listener, port) = bind(preferred_port)?;
-    eprintln!("[rea-offline] GUI: http://127.0.0.1:{port}/  (Ctrl+C to stop)");
-    accept_loop(listener, |stream| {
+    announce(&window_url(port), open);
+    let page = Arc::new(page);
+    accept_loop(listener, move |stream| {
         if let Err(e) = handle(stream, &page) {
             eprintln!("[rea-offline] gui request error: {e}");
         }
@@ -772,18 +988,7 @@ fn handle(mut stream: TcpStream, page: &Page) -> std::io::Result<()> {
             let html = page_html(page, query);
             respond(&mut stream, "200 OK", "text/html; charset=utf-8", html.as_bytes())
         }
-        "/json" => {
-            let body = format!("{}\n", page.report.to_string_pretty());
-            respond(&mut stream, "200 OK", "application/json", body.as_bytes())
-        }
-        "/text" => {
-            let body = page.summary_text();
-            respond(&mut stream, "200 OK", "text/plain; charset=utf-8", body.as_bytes())
-        }
-        "/markdown" => {
-            let body = crate::render::to_markdown(&page.report);
-            respond(&mut stream, "200 OK", "text/markdown; charset=utf-8", body.as_bytes())
-        }
+        "/json" | "/text" | "/markdown" => handle_report_route(&mut stream, path, page),
         "/healthz" => respond(&mut stream, "200 OK", "text/plain", b"ok\n"),
         _ => respond(&mut stream, "404 Not Found", "text/plain", b"not found\n"),
     }
@@ -898,18 +1103,18 @@ fn with_picker_bar(html: String) -> String {
 
 /// Serve the picker until a target is chosen, then that target's report.
 /// The process serves until killed, exactly like [`serve`].
-pub fn serve_picker(preferred_port: u16) -> crate::Result<u16> {
+pub fn serve_picker(preferred_port: u16, open: bool) -> crate::Result<u16> {
     let (listener, port) = bind(preferred_port)?;
-    eprintln!("[rea-offline] GUI picker: http://127.0.0.1:{port}/  (Ctrl+C to stop)");
-    let mut current: Option<Page> = None;
-    accept_loop(listener, |stream| {
-        if let Err(e) = handle_picker(stream, &mut current) {
+    announce(&window_url(port), open);
+    let current: Arc<Mutex<Option<Page>>> = Arc::new(Mutex::new(None));
+    accept_loop(listener, move |stream| {
+        if let Err(e) = handle_picker(stream, &current) {
             eprintln!("[rea-offline] gui request error: {e}");
         }
     });
 }
 
-fn handle_picker(mut stream: TcpStream, current: &mut Option<Page>) -> std::io::Result<()> {
+fn handle_picker(mut stream: TcpStream, current: &Mutex<Option<Page>>) -> std::io::Result<()> {
     let (method, path, query) = read_request(&mut stream)?;
     if method != "GET" {
         return respond(&mut stream, "405 Method Not Allowed", "text/plain", b"GET only\n");
@@ -931,7 +1136,12 @@ fn handle_picker(mut stream: TcpStream, current: &mut Option<Page>) -> std::io::
             match built {
                 Ok(page) => {
                     let html = with_picker_bar(page_html(&page, ""));
-                    *current = Some(page);
+                    // Do not hold the lock while writing the response: a
+                    // browser that stalls mid-read must not stall the next
+                    // request for the page.
+                    let mut guard = current.lock().unwrap_or_else(|e| e.into_inner());
+                    *guard = Some(page);
+                    drop(guard);
                     respond(&mut stream, "200 OK", "text/html; charset=utf-8", html.as_bytes())
                 }
                 Err(e) => {
@@ -941,45 +1151,56 @@ fn handle_picker(mut stream: TcpStream, current: &mut Option<Page>) -> std::io::
             }
         }
         "/new" => {
-            *current = None;
+            let mut guard = current.lock().unwrap_or_else(|e| e.into_inner());
+            *guard = None;
+            drop(guard);
             let html = picker_html(None);
             respond(&mut stream, "200 OK", "text/html; charset=utf-8", html.as_bytes())
         }
-        "/" | "/view" | "/index.html" => match current {
-            Some(page) => {
-                let html = with_picker_bar(page_html(page, &query));
-                respond(&mut stream, "200 OK", "text/html; charset=utf-8", html.as_bytes())
+        "/" | "/view" | "/index.html" => {
+            let html = {
+                let guard = current.lock().unwrap_or_else(|e| e.into_inner());
+                match guard.as_ref() {
+                    Some(page) => with_picker_bar(page_html(page, &query)),
+                    None => picker_html(None),
+                }
+            };
+            respond(&mut stream, "200 OK", "text/html; charset=utf-8", html.as_bytes())
+        }
+        "/json" | "/text" | "/markdown" => {
+            let body = {
+                let guard = current.lock().unwrap_or_else(|e| e.into_inner());
+                guard.as_ref().map(|page| report_body(path, page))
+            };
+            match body {
+                Some((content_type, body)) => {
+                    respond(&mut stream, "200 OK", content_type, body.as_bytes())
+                }
+                None => respond(&mut stream, "404 Not Found", "text/plain", b"nothing inspected yet\n"),
             }
-            None => {
-                let html = picker_html(None);
-                respond(&mut stream, "200 OK", "text/html; charset=utf-8", html.as_bytes())
-            }
-        },
-        "/json" | "/text" | "/markdown" => match current {
-            Some(page) => handle_report_route(&mut stream, path, page),
-            None => respond(&mut stream, "404 Not Found", "text/plain", b"nothing inspected yet\n"),
-        },
+        }
         "/healthz" => respond(&mut stream, "200 OK", "text/plain", b"ok\n"),
         _ => respond(&mut stream, "404 Not Found", "text/plain", b"not found\n"),
     }
 }
 
-/// The non-HTML report routes, shared shape with [`handle`].
-fn handle_report_route(stream: &mut TcpStream, path: &str, page: &Page) -> std::io::Result<()> {
+/// The non-HTML report routes, shared shape with [`handle`]. Kept as a
+/// pure builder so a picker request can drop its state lock before the
+/// socket write, while `handle` can still call it directly.
+fn report_body(path: &str, page: &Page) -> (&'static str, String) {
     match path {
-        "/json" => {
-            let body = format!("{}\n", page.report.to_string_pretty());
-            respond(stream, "200 OK", "application/json", body.as_bytes())
-        }
-        "/text" => {
-            let body = page.summary_text();
-            respond(stream, "200 OK", "text/plain; charset=utf-8", body.as_bytes())
-        }
-        _ => {
-            let body = crate::render::to_markdown(&page.report);
-            respond(stream, "200 OK", "text/markdown; charset=utf-8", body.as_bytes())
-        }
+        "/json" => ("application/json", format!("{}\n", page.report.to_string_pretty())),
+        "/text" => ("text/plain; charset=utf-8", page.summary_text()),
+        _ => (
+            "text/markdown; charset=utf-8",
+            crate::render::to_markdown(&page.report),
+        ),
     }
+}
+
+fn handle_report_route(stream: &mut TcpStream, path: &str, page: &Page) -> std::io::Result<()> {
+    let (content_type, body) = report_body(path, page);
+    respond(stream, "200 OK", content_type, body.as_bytes())
 }
 
 fn respond(stream: &mut TcpStream, status: &str, content_type: &str, body: &[u8]) -> std::io::Result<()> {
@@ -1228,5 +1449,51 @@ mod tests {
         let page = sample();
         assert!(page.summary_text().contains("risk score"));
         assert!(crate::render::to_markdown(&page.report).starts_with("# rea-offline"));
+
+        // The picker builds the same bodies without a socket while holding
+        // its state lock, so the content type must come back with the body.
+        assert_eq!(report_body("/json", &page).0, "application/json");
+        assert_eq!(report_body("/text", &page).0, "text/plain; charset=utf-8");
+        assert_eq!(report_body("/markdown", &page).0, "text/markdown; charset=utf-8");
+        assert!(report_body("/json", &page).1.contains("\n"));
+    }
+
+    #[test]
+    fn page_is_safe_to_share_between_request_threads() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<Page>();
+        assert_send_sync::<Arc<Mutex<Option<Page>>>>();
+    }
+
+    #[test]
+    fn window_url_names_the_port_the_listener_actually_got() {
+        assert_eq!(window_url(8787), "http://127.0.0.1:8787/");
+        assert_eq!(window_url(9100), "http://127.0.0.1:9100/");
+    }
+
+    #[test]
+    fn bind_moves_past_a_busy_port_and_reports_the_port_it_got() {
+        // Hold a real loopback port, then ask the launcher for that port.
+        // The browser must be sent to the port `bind()` actually got, not
+        // the preferred one that is already taken — an old source of an
+        // ERR_CONNECTION_REFUSED on a second launch.
+        let held = loop {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).expect("free loopback port");
+            if listener.local_addr().unwrap().port() < 65500 {
+                break listener;
+            }
+        };
+        let busy = held.local_addr().unwrap().port();
+        let (listener, actual) = bind(busy).expect("a nearby free loopback port");
+        // Some platforms permit a second bind to the same address; there is
+        // no port bump to assert in that case, so the test is a no-op there.
+        if actual == busy {
+            return;
+        }
+        assert!(actual > busy, "the fallback must move forward: {busy} -> {actual}");
+        assert_eq!(listener.local_addr().unwrap().port(), actual);
+        assert_eq!(window_url(actual), format!("http://127.0.0.1:{actual}/"));
+        drop(listener);
+        drop(held);
     }
 }
