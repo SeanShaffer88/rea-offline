@@ -161,7 +161,8 @@ impl PeBuilder {
                 desc_off += 20;
             }
             d[dd + 8..dd + 12].copy_from_slice(&import_dir_rva.to_le_bytes());
-            d[dd + 12..dd + 16].copy_from_slice(&(descriptors.len() as u32 * 20).to_le_bytes());
+            // Include the all-zero terminating descriptor in the directory.
+            d[dd + 12..dd + 16].copy_from_slice(&((descriptors.len() as u32 + 1) * 20).to_le_bytes());
         }
 
         // Section table.
