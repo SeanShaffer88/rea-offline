@@ -188,3 +188,17 @@ incomplete. Imports may be partial, and imphash is intentionally withheld.
 
 File details show the exact inspected byte count and distinguish it from the
 full-file fingerprints. Older saved reports show `Content scope: not recorded`.
+
+### External REA launch failures on Windows
+
+`External REA analyzer unavailable` means an optional external analyzer failed;
+it does not mean the inspected executable was launched and failed. Native static
+analysis still supplies file details and findings, but missing external enrichment
+is recorded as incomplete coverage. The warning names the analyzer path.
+
+Windows discovery skips the extensionless `rea` shell shim sometimes installed by
+npm and searches each PATH directory for `rea.exe`, `rea.cmd`, `rea.js`, then
+`rea.bat`. A JavaScript entry point requires Node on PATH. Explicit `REA_PATH`
+or `--rea` selections are not silently replaced if missing. Error 193 usually
+means the selected launcher is not a compatible Windows executable: select its
+Windows batch launcher, Node `.js` entry point, or matching-architecture `.exe`.

@@ -270,23 +270,15 @@ impl ReaBridge {
     pub fn resolved_rea_path(&self) -> Option<PathBuf> { self.resolve_rea() }
 
     fn resolve_rea(&self) -> Option<PathBuf> {
-        if let Some(p) = &self.config.rea_path {
-            if p.exists() { return Some(p.clone()); }
+        // An explicit selection must not silently switch to another tool
+        // when misspelled or missing: report its failure alongside native results.
+        if let Some(p) = &self.config.rea_path { return Some(p.clone()); }
+        if let Some(p) = std::env::var_os("REA_PATH").filter(|p| !p.is_empty()) {
+            return Some(PathBuf::from(p));
         }
-        if let Ok(p) = std::env::var("REA_PATH") {
-            let p = PathBuf::from(p);
-            if p.exists() { return Some(p); }
-        }
-        // Probe PATH for `rea` / `rea.cmd` without spawning a shell.
-        if let Ok(path_var) = std::env::var("PATH") {
-            for dir in std::env::split_paths(&path_var) {
-                for name in ["rea", "rea.exe", "rea.cmd", "rea.js"] {
-                    let candidate = dir.join(name);
-                    if candidate.exists() { return Some(candidate); }
-                }
-            }
-        }
-        None
+        std::env::var_os("PATH").and_then(|path| {
+            discover_rea(std::env::split_paths(&path), cfg!(windows))
+        })
     }
 
     /// Analyze a file or a directory (recursively) — Mode A entry point.
@@ -304,7 +296,8 @@ impl ReaBridge {
                 Err(e) => {
                     let mut report = self.analyze_native(target)?;
                     report.scan_issues.push(ScanIssue::new(
-                        crate::util::path_to_slash_string(target), "rea-external", e.to_string(),
+                        crate::util::path_to_slash_string(target), "rea-external",
+                        format!("External REA analyzer '{}' failed: {e}. Native static analysis completed; external enrichment is unavailable.", rea.display()),
                     ));
                     return Ok(report);
                 }
@@ -314,18 +307,28 @@ impl ReaBridge {
     }
 
     fn run_external(&self, rea: &Path, target: &Path) -> Result<Value> {
+        #[cfg(windows)]
+        if !matches!(crate::util::extension_lower(rea).as_str(), "exe" | "cmd" | "bat" | "js") {
+            return Err(Error::InvalidInput(format!(
+                "unsupported Windows REA launcher '{}'; select a Windows .exe, .cmd/.bat launcher, or Node .js entry point with REA_PATH or --rea", rea.display()
+            )));
+        }
         let is_js = crate::util::extension_lower(rea) == "js";
         let mut cmd = if is_js {
             let mut c = std::process::Command::new("node");
             c.arg(rea);
             c
         } else {
+            // Rust's Windows Command handles .cmd/.bat using its batch-file
+            // quoting rules. Do not concatenate target paths into cmd /C.
             std::process::Command::new(rea)
         };
         cmd.arg(target).arg("--format").arg("json")
             .stdin(std::process::Stdio::null());
         let timeout = self.config.timeout.unwrap_or(Duration::from_secs(600));
-        let output = run_with_timeout(cmd, timeout)?;
+        let output = run_with_timeout(cmd, timeout).map_err(|e| Error::Process(format!(
+            "could not run REA launcher '{}': {e}. On Windows, error 193 means the launcher is not a compatible Windows application; use its .cmd launcher or .js entry point instead of an extensionless script, or a matching-architecture .exe", rea.display()
+        )))?;
         if output.stdout_truncated {
             return Err(Error::Process(format!(
                 "REA stdout exceeded the {} MiB capture limit ({} bytes seen)",
@@ -435,6 +438,23 @@ impl ReaBridge {
             scan_issues,
         })
     }
+}
+
+/// Platform-specific candidates keep npm's Unix shell shim `rea` from
+/// shadowing rea.cmd on Windows. PATH directory precedence is preserved.
+fn discover_rea(directories: impl IntoIterator<Item = PathBuf>, windows: bool) -> Option<PathBuf> {
+    let names: &[&str] = if windows {
+        &["rea.exe", "rea.cmd", "rea.js", "rea.bat"]
+    } else {
+        &["rea", "rea.exe", "rea.cmd", "rea.js"]
+    };
+    for dir in directories {
+        for name in names {
+            let candidate = dir.join(name);
+            if candidate.is_file() { return Some(candidate); }
+        }
+    }
+    None
 }
 
 /// External REA output is captured through temporary files rather than
@@ -1007,6 +1027,58 @@ fn parse_pe_with_size(data: &[u8], file_len: u64) -> Option<PeInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn discovery_skips_unix_shims_on_windows_and_preserves_path_order() {
+        let root = std::env::temp_dir().join(format!("rea_discovery_{}", crate::util::new_id()));
+        let first = root.join("first");
+        let second = root.join("second");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        std::fs::write(first.join("rea"), b"#!/bin/sh").unwrap();
+        std::fs::write(first.join("rea.cmd"), b"@echo off").unwrap();
+        std::fs::write(second.join("rea.exe"), b"fake").unwrap();
+        assert_eq!(discover_rea(vec![first.clone(), second.clone()], true), Some(first.join("rea.cmd")));
+        assert_eq!(discover_rea(vec![first.clone()], false), Some(first.join("rea")));
+        std::fs::remove_file(first.join("rea.cmd")).unwrap();
+        assert_eq!(discover_rea(vec![first.clone(), second.clone()], true), Some(second.join("rea.exe")));
+        std::fs::create_dir(first.join("rea.exe")).unwrap();
+        assert_eq!(discover_rea(vec![first.clone()], true), None);
+        std::fs::write(first.join("rea.js"), b"// node entry").unwrap();
+        assert_eq!(discover_rea(vec![first.clone()], true), Some(first.join("rea.js")));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn explicit_missing_analyzer_is_named_without_losing_native_results() {
+        let root = std::env::temp_dir().join(format!("rea_missing_{}", crate::util::new_id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let target = root.join("target.txt");
+        let launcher = root.join("missing-rea.exe");
+        std::fs::write(&target, b"plain text").unwrap();
+        let bridge = ReaBridge::new(ReaConfig { rea_path: Some(launcher.clone()), timeout: None });
+        assert_eq!(bridge.resolved_rea_path(), Some(launcher));
+        let report = bridge.analyze(&target).unwrap();
+        assert_eq!(report.files.len(), 1);
+        let issue = report.scan_issues.iter().find(|i| i.stage == "rea-external").unwrap();
+        assert!(issue.message.contains("missing-rea.exe"));
+        assert!(issue.message.contains("Native static analysis completed"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_batch_launcher_runs_with_a_target_containing_spaces() {
+        let root = std::env::temp_dir().join(format!("rea batch {}", crate::util::new_id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let launcher = root.join("rea.cmd");
+        std::fs::write(&launcher, b"@echo off\r\necho {\"ok\":true}\r\n").unwrap();
+        let bridge = ReaBridge::new(ReaConfig::default());
+        let json = bridge.run_external(&launcher, &root.join("target file & name.exe")).unwrap();
+        assert_eq!(json.get("ok"), Some(&Value::Bool(true)));
+        assert!(bridge.run_external(&root.join("rea"), Path::new("unused.exe")).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn stream_fingerprints_and_entropy_cover_bytes_beyond_the_prefix() {
         let data: Vec<u8> = (0..150_003).map(|i| (i % 251) as u8).collect();

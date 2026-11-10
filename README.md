@@ -497,6 +497,15 @@ MIT — see [LICENSE](LICENSE).
 
 ## Changelog
 
+### 0.28.0
+
+- **Windows REA discovery skips extensionless Unix launchers.** Discovery
+  prefers supported Windows executables, batch launchers and Node entry points
+  while preserving PATH directory precedence. Explicit missing or incompatible
+  selections are reported rather than silently replaced. Analyzer failures name
+  the selected launcher, explain Windows error 193, and confirm native analysis
+  remains available. GUI coverage warnings label external REA failures separately.
+
 ### 0.27.0
 
 - **Malformed import names are not invented.** PE32+ name thunks with reserved
