@@ -21,8 +21,9 @@ and opens that port — the banner and the browser can never disagree, and the
 browser can never arrive before the server exists. A console window titled
 `rea-offline - window open (close to stop)` stays behind the browser: leave it
 open while using the window and close it when done. If the browser cannot be
-started, the URL is printed and a dialog shows it; if the server cannot start
-at all, a dialog shows the error instead of a console that flashes and closes.
+started, the URL is printed and a foreground dialog shows it; if the server
+cannot start at all, a dialog shows the error instead of a console that flashes
+and closes.
 
 ### If no browser tab appears
 

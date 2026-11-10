@@ -100,8 +100,8 @@ first and then hands the browser the URL of the port it actually got; if the
 preferred port is taken, the next free one is used and that port is printed and
 opened. Leave the console window titled `rea-offline - window open (close to
 stop)` open behind the browser — closing it stops the server. If a browser
-cannot be launched, the URL is printed and shown in a dialog so it can be
-pasted manually; `gui --no-open` starts the server without that handoff.
+cannot be launched, the URL is printed and shown in a foreground dialog so it
+can be pasted manually; `gui --no-open` starts the server without that handoff.
 
 ## Reports
 
@@ -493,8 +493,8 @@ MIT — see [LICENSE](LICENSE).
   copy could open a stale port, and `cmd /C start` failures were swallowed.
   The listener now binds first, prints and opens the URL of the port actually
   bound, uses `ShellExecuteW` with a `rundll32` fallback on Windows (and
-  `open` / `xdg-open` elsewhere), and reports a failed handoff as a dialog
-  plus a pasteable URL instead of silence. Fatal startup errors get the same
+  `open` / `xdg-open` elsewhere), and reports a failed handoff as a foreground
+  dialog plus a pasteable URL instead of silence. Fatal startup errors get the same
   dialog, so a console that a double-click closes cannot hide them. The
   console window is titled `rea-offline - window open (close to stop)` and the
   banner tells the operator to leave it open rather than press `Ctrl+C`.

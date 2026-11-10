@@ -893,9 +893,12 @@ mod win {
     pub fn show_message(caption: &str, text: &str) {
         let caption_w = wide(caption);
         let text_w = wide(text);
-        // MB_OK (0) | MB_ICONINFORMATION (0x40).
+        // MB_OK (0) | MB_ICONINFORMATION (0x40) | MB_SETFOREGROUND (0x10000)
+        // | MB_TOPMOST (0x40000): a launch that otherwise shows nothing must
+        // not hide its one explanation behind the browser or the console.
+        const FLAGS: u32 = 0x40 | 0x10000 | 0x40000;
         unsafe {
-            MessageBoxW(0, text_w.as_ptr(), caption_w.as_ptr(), 0x40);
+            MessageBoxW(0, text_w.as_ptr(), caption_w.as_ptr(), FLAGS);
         }
     }
 }
