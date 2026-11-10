@@ -26,6 +26,17 @@ pub enum Severity {
 }
 
 impl Severity {
+    pub fn parse(text: &str) -> Option<Severity> {
+        match text {
+            "info" => Some(Severity::Info),
+            "low" => Some(Severity::Low),
+            "medium" => Some(Severity::Medium),
+            "high" => Some(Severity::High),
+            "critical" => Some(Severity::Critical),
+            _ => None,
+        }
+    }
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Severity::Info => "info",
@@ -506,9 +517,9 @@ pub fn evaluate(report: &crate::rea_bridge::ReaReport) -> Vec<Finding> {
 /// Scores are capped at 100. A single critical finding always lands the
 /// target in at least the `high` band so one decisive rule cannot be diluted
 /// by a hundred boring files.
-pub fn risk(findings: &[Finding]) -> (u64, &'static str) {
-    let raw: u64 = findings.iter().map(|f| f.score).sum();
-    let highest = findings.iter().map(|f| f.severity).max().unwrap_or(Severity::Info);
+/// The shared arithmetic: cap the summed score, then floor it by the
+/// worst severity present, then band it into a verdict.
+fn score_with_floor(raw: u64, highest: Severity) -> (u64, &'static str) {
     let mut score = raw.min(100);
     if highest == Severity::Critical {
         score = score.max(70);
@@ -516,6 +527,43 @@ pub fn risk(findings: &[Finding]) -> (u64, &'static str) {
         score = score.max(30);
     }
     (score, verdict_for_score(score))
+}
+
+pub fn risk(findings: &[Finding]) -> (u64, &'static str) {
+    let raw: u64 = findings.iter().map(|f| f.score).sum();
+    let highest = findings.iter().map(|f| f.severity).max().unwrap_or(Severity::Info);
+    score_with_floor(raw, highest)
+}
+
+/// The score, verdict and per-severity counts a list of *serialized*
+/// findings implies — the same arithmetic as [`risk`], over the JSON an
+/// archive carries. Archive validation recomputes from this because a
+/// stored report's labels are claims and its findings are the evidence.
+/// Counts are in writer order: critical, high, medium, low, info.
+/// `None` when a finding lacks a usable severity or score: the caller
+/// refuses rather than guessing at a verdict it cannot check.
+pub fn risk_from_serialized(findings: &[Value]) -> Option<(u64, &'static str, [u64; 5])> {
+    let mut raw: u64 = 0;
+    let mut highest = Severity::Info;
+    let mut counts = [0u64; 5];
+    for finding in findings {
+        let severity = Severity::parse(finding.get("severity").and_then(Value::as_str)?)?;
+        let score = match finding.get("score") {
+            Some(Value::Number(n)) if n.is_finite() && *n >= 0.0 && n.fract() == 0.0 => *n as u64,
+            _ => return None,
+        };
+        raw = raw.saturating_add(score);
+        highest = highest.max(severity);
+        counts[match severity {
+            Severity::Critical => 0,
+            Severity::High => 1,
+            Severity::Medium => 2,
+            Severity::Low => 3,
+            Severity::Info => 4,
+        }] += 1;
+    }
+    let (score, verdict) = score_with_floor(raw, highest);
+    Some((score, verdict, counts))
 }
 
 /// The band a score falls in. Every verdict in every report comes from here,

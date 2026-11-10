@@ -424,7 +424,10 @@ const SANDBOX_ARCHIVE: &str = r#"{
   "installer_report": {
     "file_count": 1, "risk_score": 6, "verdict": "low", "target": "setup.exe",
     "files": [{"path": "setup.exe", "size": 100, "format": "PE", "sha256": "aa", "md5": "bb"}],
-    "rules": {"findings": []}, "scan_issues": []
+    "rules": {"findings": [
+      {"rule": "PE001", "title": "Unsigned executable", "severity": "low",
+       "file": "setup.exe", "evidence": "no Authenticode signature", "score": 6}
+    ]}, "scan_issues": []
   },
   "delta": {"added": [], "modified": [], "deleted": []},
   "sandbox_delta": {
@@ -437,7 +440,10 @@ const SANDBOX_ARCHIVE: &str = r#"{
     "rules": {"findings": [
       {"rule": "PE140", "title": "Injection API set present", "severity": "high",
        "file": "AppData/Roaming/payload.exe",
-       "evidence": "VirtualAllocEx + WriteProcessMemory + CreateRemoteThread"}
+       "evidence": "VirtualAllocEx + WriteProcessMemory + CreateRemoteThread", "score": 22},
+      {"rule": "SC300", "title": "Dropped executable runs at logon", "severity": "critical",
+       "file": "AppData/Roaming/payload.exe",
+       "evidence": "Run key entry points at the dropped file", "score": 72}
     ]},
     "scan_issues": []
   },

@@ -70,6 +70,94 @@ fn validate_body(body: &Value, label: &str) -> Result<()> {
             }
         }
     }
+    // The verdict is arithmetic over the score, not free text: a verdict
+    // that does not match its own number's band was edited after the fact.
+    if let (Some(score), Some(verdict)) = (integer(body.get("risk_score")), body.get("verdict").and_then(Value::as_str)) {
+        let expected = crate::rules::verdict_for_score(score);
+        if verdict != expected {
+            return Err(invalid(format!(
+                "invalid report: {label}.verdict is '{verdict}' but its risk_score {score} falls in the '{expected}' band"
+            )));
+        }
+    }
+    if let Some(rules) = body.get("rules").filter(|v| !matches!(v, Value::Null)) {
+        validate_rules_block(body, rules, label)?;
+    }
+    Ok(())
+}
+
+/// A body's `rules` block carries the findings its verdict was computed
+/// from. Recompute: the writer derives score and verdict from the findings
+/// with one fixed formula, so any disagreement between the recorded labels
+/// and the findings in the same file means the labels were edited after
+/// the fact. A gate reads the labels; refuse rather than let a relabeled
+/// archive pass as its calmer self. Fields an older archive may not carry
+/// (finding_count, by_severity entries) are checked when present.
+fn validate_rules_block(body: &Value, rules: &Value, label: &str) -> Result<()> {
+    if !matches!(rules, Value::Object(_)) {
+        return Err(invalid(format!("invalid report: {label}.rules must be an object")));
+    }
+    let findings = match rules.get("findings") {
+        Some(Value::Array(items)) => items,
+        _ => return Err(invalid(format!(
+            "invalid report: {label}.rules.findings must be an array; the verdict cannot be checked without it"
+        ))),
+    };
+    // One unusable finding makes the recorded verdict unverifiable, which
+    // for a gate is the same as wrong.
+    for (index, finding) in findings.iter().enumerate() {
+        let usable = matches!(finding, Value::Object(_))
+            && finding.get("severity").and_then(Value::as_str)
+                .is_some_and(|s| crate::rules::Severity::parse(s).is_some())
+            && integer(finding.get("score")).is_some();
+        if !usable {
+            return Err(invalid(format!(
+                "invalid report: {label}.rules.findings[{index}] has no usable severity/score; the verdict cannot be checked"
+            )));
+        }
+    }
+    let (score, verdict, counts) = crate::rules::risk_from_serialized(findings)
+        .expect("every finding was just checked usable");
+    let shown = |value: Option<&Value>| match integer(value) {
+        Some(n) => n.to_string(),
+        None => "a non-integer".to_string(),
+    };
+    let check_num = |recorded: Option<&Value>, expected: u64, what: &str| -> Result<()> {
+        if let Some(value) = recorded {
+            if integer(Some(value)) != Some(expected) {
+                return Err(invalid(format!(
+                    "invalid report: {label}.{what} is {}, but its findings give {expected}",
+                    shown(Some(value))
+                )));
+            }
+        }
+        Ok(())
+    };
+    check_num(rules.get("score"), score, "rules.score")?;
+    if let Some(recorded) = rules.get("verdict").and_then(Value::as_str) {
+        if recorded != verdict {
+            return Err(invalid(format!(
+                "invalid report: {label}.rules.verdict is '{recorded}', but its findings give '{verdict}'"
+            )));
+        }
+    }
+    check_num(rules.get("finding_count"), findings.len() as u64, "rules.finding_count")?;
+    if let Some(by_severity) = rules.get("by_severity").filter(|v| !matches!(v, Value::Null)) {
+        if !matches!(by_severity, Value::Object(_)) {
+            return Err(invalid(format!("invalid report: {label}.rules.by_severity must be an object")));
+        }
+        for (index, name) in ["critical", "high", "medium", "low", "info"].iter().enumerate() {
+            check_num(by_severity.get(name), counts[index], &format!("rules.by_severity.{name}"))?;
+        }
+    }
+    check_num(body.get("risk_score"), score, "risk_score")?;
+    if let Some(recorded) = body.get("verdict").and_then(Value::as_str) {
+        if recorded != verdict {
+            return Err(invalid(format!(
+                "invalid report: {label}.verdict is '{recorded}', but its findings give '{verdict}'"
+            )));
+        }
+    }
     Ok(())
 }
 
@@ -130,6 +218,18 @@ pub fn validate(report: &Value) -> Result<()> {
                 if verdict.as_str() != Some(body_verdict) {
                     return Err(invalid("invalid report: envelope verdict disagrees with report.verdict"));
                 }
+            }
+        }
+    }
+    // A scan envelope is its body's decision restated, so their scores
+    // must agree too. (A sandbox envelope is a combination; it is checked
+    // against verdict_sources instead.)
+    if mode == "local-scan" {
+        if let (Some(envelope), Some(body_score)) = (integer(report.get("risk_score")), integer(body.get("risk_score"))) {
+            if envelope != body_score {
+                return Err(invalid(format!(
+                    "invalid report: envelope risk_score is {envelope} but report.risk_score is {body_score}"
+                )));
             }
         }
     }
@@ -681,6 +781,97 @@ mod tests {
             map.insert("coverage".into(), crate::json::parse(CLEAN_COVERAGE).unwrap());
         }
         validate(&clean).unwrap();
+    }
+
+    /// One high finding scoring 22 and one low scoring 6: raw 28, floored
+    /// to 30 by the high severity — score 30, verdict "high", everywhere.
+    fn archive_with_findings() -> Value {
+        crate::json::parse(r#"{
+            "schema_version":3,"mode":"local-scan","generated_unix":123,"verdict":"high","risk_score":30,
+            "report":{"file_count":1,"risk_score":30,"verdict":"high",
+                "files":[{"path":"a.exe","size":10}],"scan_issues":[],
+                "rules":{"score":30,"verdict":"high","finding_count":2,
+                    "by_severity":{"critical":0,"high":1,"medium":0,"low":1,"info":0},
+                    "findings":[
+                        {"rule":"PE140","title":"t","severity":"high","category":"injection","score":22,"file":"a.exe","evidence":"e"},
+                        {"rule":"PE001","title":"t","severity":"low","category":"trust","score":6,"file":"a.exe","evidence":"e"}
+                    ]}}
+        }"#).unwrap()
+    }
+
+    fn set_body(report: &mut Value, key: &str, value: Value) {
+        if let Value::Object(map) = report {
+            if let Some(Value::Object(body)) = map.get_mut("report") {
+                body.insert(key.into(), value);
+            }
+        }
+    }
+
+    fn set_rules(report: &mut Value, key: &str, value: Value) {
+        if let Value::Object(map) = report {
+            if let Some(Value::Object(body)) = map.get_mut("report") {
+                if let Some(Value::Object(rules)) = body.get_mut("rules") {
+                    rules.insert(key.into(), value);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_verdict_recomputed_from_the_findings_must_match_the_labels() {
+        validate(&archive_with_findings()).unwrap();
+        // The full relabel: envelope, body and rules all calmed at once.
+        // They agree with each other — and contradict the findings.
+        let mut calm = archive_with_findings();
+        if let Value::Object(map) = &mut calm {
+            map.insert("verdict".into(), Value::str("low"));
+            map.insert("risk_score".into(), Value::num(0));
+        }
+        set_body(&mut calm, "verdict", Value::str("low"));
+        set_body(&mut calm, "risk_score", Value::num(0));
+        set_rules(&mut calm, "verdict", Value::str("low"));
+        set_rules(&mut calm, "score", Value::num(0));
+        let error = validate(&calm).unwrap_err().to_string();
+        assert!(error.contains("findings give"), "{error}");
+    }
+
+    #[test]
+    fn a_verdict_must_match_its_own_scores_band() {
+        let mut report = archive();
+        if let Value::Object(map) = &mut report {
+            map.insert("verdict".into(), Value::str("low"));
+        }
+        set_body(&mut report, "verdict", Value::str("low"));
+        let error = validate(&report).unwrap_err().to_string();
+        assert!(error.contains("band"), "{error}");
+    }
+
+    #[test]
+    fn a_scan_envelope_score_must_match_its_body() {
+        let mut report = archive_with_findings();
+        if let Value::Object(map) = &mut report {
+            map.insert("risk_score".into(), Value::num(0));
+        }
+        let error = validate(&report).unwrap_err().to_string();
+        assert!(error.contains("envelope risk_score is 0"), "{error}");
+    }
+
+    #[test]
+    fn unverifiable_findings_and_wrong_counts_are_refused() {
+        // A finding without its score: the verdict cannot be checked.
+        let mut report = archive_with_findings();
+        set_rules(&mut report, "findings", crate::json::parse(
+            r#"[{"rule":"PE140","title":"t","severity":"high","file":"a.exe","evidence":"e"}]"#
+        ).unwrap());
+        let error = validate(&report).unwrap_err().to_string();
+        assert!(error.contains("cannot be checked"), "{error}");
+        // A severity count that disagrees with the findings.
+        let mut report = archive_with_findings();
+        set_rules(&mut report, "by_severity", crate::json::parse(
+            r#"{"critical":0,"high":0,"medium":0,"low":1,"info":0}"#
+        ).unwrap());
+        let error = validate(&report).unwrap_err().to_string();
+        assert!(error.contains("by_severity.high"), "{error}");
     }
 
     #[test]

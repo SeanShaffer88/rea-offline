@@ -111,6 +111,26 @@ jobs:
           if "$EXE" report duplicate-key.json --quiet; then
             echo "duplicate JSON keys must be rejected" >&2; exit 1
           fi
+          # A relabeled archive — every label rewritten consistently while
+          # the findings stay — must be refused: the verdict is recomputed
+          # from the findings the file itself carries.
+          python3 - <<'PY'
+          import json
+          with open("report.json") as fh:
+              data = json.load(fh)
+          data["verdict"] = "critical"
+          data["risk_score"] = 99
+          body = data["report"]
+          body["verdict"] = "critical"
+          body["risk_score"] = 99
+          body["rules"]["score"] = 99
+          body["rules"]["verdict"] = "critical"
+          with open("relabeled.json", "w") as fh:
+              json.dump(data, fh)
+          PY
+          if "$EXE" report relabeled.json --quiet; then
+            echo "relabeled archive must be refused" >&2; exit 1
+          fi
           if "$EXE" scan sample.exe --outpt typo.json --quiet; then
             echo "mistyped option must be rejected" >&2; exit 1
           fi

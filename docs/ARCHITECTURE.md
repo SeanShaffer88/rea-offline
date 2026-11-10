@@ -243,3 +243,13 @@ never touches the risk score: coverage describes the evidence, not the sample.
 and the bodies it summarizes, so an archive cannot be made to look clean by
 flipping one boolean. `--fail-on-incomplete` turns the same record into exit
 code 3, which lets CI refuse a calm verdict that rests on partial evidence.
+
+The verdict itself is checked the same way. A body's score is fixed
+arithmetic over its findings (sum, capped, floored by the worst severity,
+banded), and the writer derives it with `rules::risk` every time — so
+`report::validate` recomputes it from the serialized findings
+(`rules::risk_from_serialized`) and refuses a body whose recorded score,
+verdict, finding count or severity counts disagree, a verdict outside its
+own score's band, or a scan envelope whose score differs from its body's.
+Findings are never re-derived from files at load time; the archive is
+judged against its own evidence, which is all a gate ever has.
