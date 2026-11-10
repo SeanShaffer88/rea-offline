@@ -1382,6 +1382,19 @@ mod tests {
     }
 
     #[test]
+    fn printable_import_names_preserve_spaces_and_decorations() {
+        let mut bytes = synthetic_pe();
+        bytes[0x380..0x390].fill(0);
+        bytes[0x380..0x38b].copy_from_slice(b"my lib.dll\0");
+        bytes[0x392..0x3b0].fill(0);
+        let name = b"?entry@@YAXXZ";
+        bytes[0x392..0x392 + name.len()].copy_from_slice(name);
+        let pe = parse_pe(&bytes).unwrap();
+        assert_eq!(pe.imports, vec!["my lib.dll"]);
+        assert!(pe.imported_functions.iter().any(|s| s == "my lib.dll!?entry@@YAXXZ"));
+    }
+
+    #[test]
     fn truncated_function_names_are_not_accepted_as_complete_imports() {
         let mut bytes = synthetic_pe();
         bytes[0x340..0x348].copy_from_slice(&0x11f0u64.to_le_bytes());
