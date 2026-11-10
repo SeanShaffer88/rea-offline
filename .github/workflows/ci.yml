@@ -158,6 +158,7 @@ jobs:
           if "$EXE" report summary-count-tampered.json --quiet; then
             echo "completeness-tampered archive must be refused" >&2; exit 1
           fi
+
           if "$EXE" scan sample.exe --outpt typo.json --quiet; then
             echo "mistyped option must be rejected" >&2; exit 1
           fi
@@ -368,6 +369,22 @@ jobs:
             chmod +x stage.sh
             "$EXE" sandbox stage.sh --quiet --output stage.json
             grep -q '"tmp/staged.exe"' stage.json
+            # The drops report must account for the raw delta: erasing
+            # the analyzed drop (keeping the body's own counts
+            # consistent) is refused because the delta still shows the
+            # file landing.
+            python3 - <<'PY'
+            import json
+            with open("stage.json") as fh:
+                data = json.load(fh)
+            data["drops_report"]["files"] = []
+            data["drops_report"]["file_count"] = 0
+            with open("drop-erased.json", "w") as fh:
+                json.dump(data, fh)
+            PY
+            if "$EXE" report drop-erased.json --quiet; then
+              echo "drop-erased archive must be refused" >&2; exit 1
+            fi
             # A link a scan does not follow is named, not silently skipped.
             mkdir -p linktree && printf 'x' > linktree/real.txt
             ln -s "$PWD/linktree/real.txt" linktree/linked.txt

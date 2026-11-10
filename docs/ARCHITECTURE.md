@@ -258,3 +258,7 @@ combination the envelope legitimately makes — a sandbox run's
 copied from, and each body's reader-facing `summary` against the body
 (score, verdict, issue count, and completeness alike), so no
 restatement anywhere in the file can be calmer than what it restates.
+The sandbox's raw `sandbox_delta` is checked the same way against the
+`drops_report` built from it: every changed file it lists must be
+accounted for by the report, and every analyzed drop must appear in
+it.
