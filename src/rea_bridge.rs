@@ -921,6 +921,7 @@ fn parse_pe_with_size(data: &[u8], file_len: u64) -> Option<PeInfo> {
     let dir_rva = |idx: usize| directory(idx).0;
     let dir_size = |idx: usize| directory(idx).1;
     let import_rva = dir_rva(1);
+    let import_size = dir_size(1);
     let cert_off = dir_rva(4) as u64;
     let cert_size = dir_size(4) as u64;
     let certificate_in_file = cert_off != 0 && cert_size >= 8
@@ -1012,9 +1013,17 @@ fn parse_pe_with_size(data: &[u8], file_len: u64) -> Option<PeInfo> {
     let mut imports = Vec::new();
     let mut imported_functions = Vec::new();
     let mut imports_complete = !(directory_count > 1 && optional.len() < directory_base + 16);
+    if (import_rva == 0) != (import_size == 0) { imports_complete = false; }
     if import_rva != 0 {
         let mut descriptors_terminated = false;
-        if let Some((mut desc, desc_end)) = rva_to_window(import_rva) {
+        if let Some((mut desc, region_end)) = rva_to_window(import_rva) {
+            // Directory size bounds descriptors only: referenced names and
+            // lookup tables have their own independently resolved windows.
+            let declared_end = desc as u64 + import_size as u64;
+            if import_rva as u64 + import_size as u64 > u32::MAX as u64 + 1
+                || declared_end > region_end as u64
+            { imports_complete = false; }
+            let desc_end = declared_end.min(region_end as u64) as usize;
             for _ in 0..64 {
                 if desc.saturating_add(20) > desc_end { imports_complete = false; break; }
                 let descriptor = match data.get(desc..desc.saturating_add(20)) {
@@ -1566,7 +1575,7 @@ mod tests {
         let data = synthetic_pe();
         assert!(parse_pe(&data).unwrap().imports_complete);
         let mut absent = data.clone();
-        absent[0x98 + 112 + 8..0x98 + 112 + 12].fill(0);
+        absent[0x98 + 112 + 8..0x98 + 112 + 16].fill(0);
         assert!(parse_pe(&absent).unwrap().imports_complete);
         let mut malformed = data;
         malformed[0x340..0x348].copy_from_slice(&0x0000_0001_0000_1190u64.to_le_bytes());
@@ -1677,6 +1686,43 @@ mod tests {
         let pe = parse_pe(&bytes).unwrap();
         assert!(pe.imports_complete);
         assert!(pe.imported_functions.iter().any(|f| f == "KERNEL32.dll!XXXXXXXXXXXXX"));
+    }
+
+    #[test]
+    fn import_directory_size_bounds_descriptors_not_referenced_tables() {
+        // The fixture names and thunks are outside the 40-byte descriptor
+        // directory. They remain valid independently addressed records.
+        let original = synthetic_pe();
+        assert!(parse_pe(&original).unwrap().imports_complete);
+        for size in [0u32, 19, 20, 39] {
+            let mut bytes = original.clone();
+            bytes[0x98 + 112 + 12..0x98 + 112 + 16].copy_from_slice(&size.to_le_bytes());
+            let pe = parse_pe(&bytes).unwrap();
+            assert!(!pe.imports_complete, "size={size}");
+            assert_eq!(pe.imports.len(), if size >= 20 { 1 } else { 0 });
+        }
+    }
+
+    #[test]
+    fn absent_import_directory_requires_both_address_and_size_zero() {
+        let mut bytes = synthetic_pe();
+        bytes[0x98 + 112 + 8..0x98 + 112 + 12].fill(0);
+        assert!(!parse_pe(&bytes).unwrap().imports_complete);
+        bytes[0x98 + 112 + 12..0x98 + 112 + 16].fill(0);
+        let pe = parse_pe(&bytes).unwrap();
+        assert!(pe.imports_complete);
+        assert!(pe.imports.is_empty());
+    }
+
+    #[test]
+    fn oversized_or_overflowing_import_directory_is_incomplete() {
+        for size in [0x101u32, u32::MAX] {
+            let mut bytes = synthetic_pe();
+            bytes[0x98 + 112 + 12..0x98 + 112 + 16].copy_from_slice(&size.to_le_bytes());
+            let pe = parse_pe(&bytes).unwrap();
+            assert!(!pe.imports_complete);
+            assert_eq!(pe.imports, vec!["KERNEL32.dll"]);
+        }
     }
 
     #[test]
