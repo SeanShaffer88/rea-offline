@@ -17,6 +17,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          # The note generator needs the older v* tags to find the previous
+          # release and collect every changelog section shipped since it.
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Validate release tag
@@ -34,6 +37,15 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: .\scripts\package-release.ps1 -Tag $env:RELEASE_TAG -BinaryPath .\target\release\rea-offline.exe -OutputDirectory .\dist
 
+      - name: Generate grouped release notes
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          python3 scripts/release-notes.py --tag "$RELEASE_TAG" --output release-notes.md
+          test -s release-notes.md
+
       - name: Publish GitHub release
         shell: pwsh
         env:
@@ -45,7 +57,7 @@ jobs:
             Get-ChildItem -LiteralPath .\dist -File |
               Select-Object -ExpandProperty FullName
           )
-          gh release create $env:RELEASE_TAG @assets --verify-tag --generate-notes --title "rea-offline $env:RELEASE_TAG" --repo $env:GITHUB_REPOSITORY
+          gh release create $env:RELEASE_TAG @assets --verify-tag --notes-file release-notes.md --title "rea-offline $env:RELEASE_TAG" --repo $env:GITHUB_REPOSITORY
           if ($LASTEXITCODE -ne 0) {
             throw "Could not publish release assets for $env:RELEASE_TAG."
           }
