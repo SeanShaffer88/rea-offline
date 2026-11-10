@@ -47,6 +47,15 @@ jobs:
               | while IFS= read -r line; do echo "::error::${line:0:900}"; done
           fi
           exit $status
+      - name: Differential PE parser checks (CI-only pefile oracle)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check -r scripts/requirements-pe-tests.txt
+          exe=target/release/rea-offline
+          if [ -f "$exe.exe" ]; then exe="$exe.exe"; fi
+          python3 scripts/check_pe_differential.py --binary "$exe"
+
       - name: Upload binary
         if: always() && success()
         uses: actions/upload-artifact@v4
