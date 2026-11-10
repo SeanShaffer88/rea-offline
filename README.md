@@ -89,8 +89,10 @@ rea-offline.exe gui Downloads\setup.exe --port 9100
 rea-offline.exe gui report.json --from-report --output window.html --no-open
 ```
 
-The window is served from `127.0.0.1` only and contains no JavaScript, no
-external assets and no write endpoints. For a sandbox run it merges every
+The window is served from `127.0.0.1` only, with no external assets or destructive
+endpoints. Report navigation needs no JavaScript. The picker optionally uses a
+small inline script for native Browse feedback and path filling; Browse also
+works without scripting via token-protected POST forms. For a sandbox run it merges every
 analyzed set into one tree — `install/`, `_installer/` and the profile-relative
 drop paths — so the file that decided the verdict is one click away.
 See [`docs/GUI.md`](docs/GUI.md).

@@ -1134,6 +1134,7 @@ code{{color:var(--muted)}}
 <p class="hint">Type or paste the full path of a file, a folder, or an installer.
 The inspection runs entirely on this PC; nothing is uploaded anywhere.</p>
 {error_block}
+{browse_controls}
 <form id="inspect-form" method="get" action="/inspect">
 <label for="path">Path</label>
 <input type="text" id="path" name="path" autofocus
@@ -1146,7 +1147,6 @@ The inspection runs entirely on this PC; nothing is uploaded anywhere.</p>
 </fieldset>
 <button type="submit">Inspect</button>
 </form>
-{browse_controls}
 <noscript><p>Browse returns here with the selected path. Click Inspect when ready.</p></noscript>
 <script>{PICKER_SCRIPT}</script>
 </main></body></html>"#

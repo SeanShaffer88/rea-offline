@@ -64,7 +64,7 @@ So `rea-offline gui`:
 2. prints the URL of the port it actually bound and names the console window,
 3. opens your default browser at that same URL (`ShellExecuteW` on Windows,
    `open` / `xdg-open` elsewhere), with a fallback if the shell refuses,
-4. serves one self-contained page (inline CSS and SVG, **no JavaScript**) on
+4. serves self-contained report pages (inline CSS and SVG, no required JavaScript) on
    a thread per connection, so a browser's speculative preconnect cannot
    hold the real request hostage.
 
@@ -74,11 +74,12 @@ and `/markdown` serve the report in the other formats.
 
 ## What is deliberately not there
 
-* **No JavaScript.** Every control is a link. That keeps the window usable
-  when a policy disables scripting, and means the page cannot be talked into
-  doing something the server did not already decide.
-* **No writes.** The server answers `GET` only; there is no endpoint that
-  deletes, purges, or scans a *new* path. Purging stays a CLI action
+* **No required JavaScript.** Report navigation is link-based. The picker uses
+  optional inline scripting for Browse status, path filling and busy feedback;
+  native Browse also works by submitting a form when scripting is disabled.
+* **No destructive endpoints.** Browsing uses token-protected POST requests to
+  show a local dialog; inspection and report navigation use GET. There is no
+  endpoint that deletes or purges files. Purging stays a CLI action
   (`rea-offline purge`) so a stray click cannot destroy evidence.
 * **No network fetches.** No fonts, no CDNs, no telemetry. The page renders
   identically with the network cable pulled.
