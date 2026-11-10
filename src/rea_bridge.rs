@@ -1053,6 +1053,35 @@ mod tests {
     }
 
     #[test]
+    fn full_small_pe_retains_imphash_and_complete_scope() {
+        let dir = std::env::temp_dir().join(format!("rea_full_{}", crate::util::new_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("small.exe");
+        let data = synthetic_pe();
+        std::fs::write(&path, &data).unwrap();
+        let analysis = analyze_file(&path, Path::new("small.exe")).unwrap();
+        assert_eq!(analysis.content_bytes, data.len() as u64);
+        assert_eq!(analysis.sha256, crate::sha256::hash_bytes(&data));
+        assert_eq!(analysis.md5, crate::md5::hash_bytes(&data));
+        assert!(analysis.imphash.is_some());
+        assert!((analysis.entropy - shannon_entropy(&data)).abs() < 1e-10);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn identical_prefixes_do_not_make_full_file_fingerprints_identical() {
+        let a = vec![0u8; 256];
+        let mut b = a.clone();
+        for (i, byte) in b[64..].iter_mut().enumerate() { *byte = i as u8; }
+        let first = inspect_stream(&mut std::io::Cursor::new(a), 64).unwrap();
+        let second = inspect_stream(&mut std::io::Cursor::new(b), 64).unwrap();
+        assert_eq!(first.prefix, second.prefix);
+        assert_ne!(first.sha256, second.sha256);
+        assert_ne!(first.md5, second.md5);
+        assert!(second.entropy > first.entropy);
+    }
+
+    #[test]
     fn pe_overlay_uses_full_length_not_retained_prefix_length() {
         let bytes = synthetic_pe();
         let pe = parse_pe_with_size(&bytes, 100_000_000).unwrap();
@@ -1068,9 +1097,8 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("growing.bin");
         std::fs::write(&file, vec![3u8; 48 * 1024 * 1024]).unwrap();
-        // Keep appending for the whole analysis, so the file provably
-        // moves between the four separate reads (stat, two hash passes,
-        // content read) the analysis is built from.
+        // Keep appending for the whole analysis, so the file moves between
+        // the metadata checks that bracket the streaming read.
         let stop = std::sync::Arc::new(AtomicBool::new(false));
         let writer = {
             let stop = stop.clone();
