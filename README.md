@@ -476,6 +476,18 @@ MIT — see [LICENSE](LICENSE).
 
 ## Changelog
 
+### 0.22.0
+
+- **A just-written installer no longer fails the run for a moment's
+  timing.** Spawning an installer that was written to disk moments
+  earlier can briefly fail with "text file busy" while the filesystem
+  settles; the sandbox runner now retries the spawn a few times with a
+  short backoff — the same treatment the purge already gave deletes —
+  instead of recording the run as failed. Test fixtures write their
+  scripts atomically (temporary name, flush, rename) for the same
+  reason, which ends an intermittent failure in the sandbox test
+  suites.
+
 ### 0.21.0
 
 - **The purge guard now refuses what it says it refuses.** The root
