@@ -111,7 +111,13 @@ entry with no path, a duplicated path, or a size or hash of the wrong shape
 is refused at load instead of being dropped, overwritten or defaulted,
 because a manifest that loses entries on the way in is the same failure one
 level down — a delta that claims complete coverage of evidence it never
-held. A missing `sha256` is the one deliberate exception: it loads as an
+held. The `issues` block gets it too: present, it must be a list of
+string-fielded issue objects, since it is the record of what the snapshot
+could not see and reading it loosely would erase the blindness it records;
+absent, it stays allowed, because pre-coverage manifests have none.
+Analysis is bracketed the same way capture is: a scan file whose size or
+modification time moves between the reads its row is built from is refused
+with a named issue rather than mixing versions. A missing `sha256` is the one deliberate exception: it loads as an
 empty digest and diffs as `unverified`, which is exactly what an unreadable
 file already means. `Snapshot::compare_issues` then states
 what makes two otherwise-valid manifests incomparable: a different root, or
