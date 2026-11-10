@@ -2,7 +2,10 @@
 //!
 //! Unmounts the temporary hive, releases handles, wipes the sandbox tree
 //! and *verifies* zero residue. Guards against deleting arbitrary paths:
-//! only directories named `rea_sandbox_*` (or an explicit `force`) go away.
+//! without `force`, only directories named `rea_sandbox_*` directly
+//! inside the temp folder go away — sandboxes are only ever created
+//! there. A filesystem root and the temp folder itself are refused no
+//! matter what flags are passed.
 
 use crate::registry_sandbox::RegistrySandbox;
 use crate::{Error, Result};
@@ -28,28 +31,45 @@ impl CleanupController {
         if !path.exists() {
             return Ok(PurgeReport { path: path.display().to_string(), removed: false, verified_zero_residue: true });
         }
+        // Judge the path the filesystem sees, not the spelling it was
+        // given: canonical form settles symlinks, `..` segments and
+        // platform spellings before any rule is applied to it.
+        let canonical = std::fs::canonicalize(path)?;
+        let temp = std::fs::canonicalize(std::env::temp_dir())
+            .unwrap_or_else(|_| std::env::temp_dir());
+        // Two refusals no flag overrides. A filesystem root is not a
+        // sandbox under any spelling, and purging the temp folder itself
+        // would take every sandbox — and everything else in temp — with
+        // it.
+        if canonical.parent().is_none() {
+            return Err(Error::Refused(format!(
+                "refusing to purge '{}': it is a filesystem root",
+                path.display())));
+        }
+        if canonical == temp {
+            return Err(Error::Refused(format!(
+                "refusing to purge '{}': it is the temp folder itself",
+                path.display())));
+        }
         if !force {
-            let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-            let parent_is_temp = path.parent().map(|p| p == std::env::temp_dir()).unwrap_or(false);
-            if !(name.starts_with("rea_sandbox_") && parent_is_temp) && !name.starts_with("rea_sandbox_") {
+            let name = canonical.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let parent_is_temp = canonical.parent().map(|p| p == temp.as_path()).unwrap_or(false);
+            if !(name.starts_with("rea_sandbox_") && parent_is_temp) {
                 return Err(Error::Refused(format!(
-                    "'{}' is not a rea_sandbox_* directory; pass --force to purge it anyway",
+                    "'{}' is not a rea_sandbox_* directory directly inside the temp folder; pass --force to purge it anyway",
                     path.display())));
-            }
-            if path.parent().is_none() || path == Path::new("/") {
-                return Err(Error::Refused("refusing to purge a filesystem root".into()));
             }
         }
         // Retry a few times: antivirus / the just-exited installer may
         // briefly hold handles on Windows.
         let mut last_err: Option<std::io::Error> = None;
         for attempt in 0..5 {
-            match std::fs::remove_dir_all(path) {
+            match std::fs::remove_dir_all(&canonical) {
                 Ok(()) => {
                     return Ok(PurgeReport {
                         path: path.display().to_string(),
                         removed: true,
-                        verified_zero_residue: !path.exists(),
+                        verified_zero_residue: !canonical.exists(),
                     });
                 }
                 Err(e) => {
@@ -74,5 +94,42 @@ mod tests {
         assert!(CleanupController::purge_dir(&dir, false).is_err());
         assert!(dir.exists(), "guard must not delete the directory");
         assert!(CleanupController::purge_dir(&dir, true).unwrap().verified_zero_residue);
+    }
+
+    #[test]
+    fn a_sandbox_directly_in_temp_purges_without_force() {
+        let dir = std::env::temp_dir().join(format!("rea_sandbox_{}", crate::util::new_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(CleanupController::purge_dir(&dir, false).unwrap().verified_zero_residue);
+    }
+
+    #[test]
+    fn a_sandbox_name_outside_temp_is_refused_without_force() {
+        // The name alone used to be enough. Sandboxes live directly in
+        // temp; nested one level deeper is not a sandbox this tool made.
+        let outer = std::env::temp_dir().join(format!("rea_offline_nested_{}", crate::util::new_id()));
+        let dir = outer.join("rea_sandbox_nested");
+        std::fs::create_dir_all(&dir).unwrap();
+        let error = match CleanupController::purge_dir(&dir, false) {
+            Ok(_) => panic!("a nested rea_sandbox_* must be refused without force"),
+            Err(e) => e.to_string(),
+        };
+        assert!(error.contains("directly inside the temp folder"), "{error}");
+        assert!(dir.exists(), "guard must not delete the directory");
+        assert!(CleanupController::purge_dir(&dir, true).unwrap().verified_zero_residue);
+        std::fs::remove_dir_all(&outer).unwrap();
+    }
+
+    #[test]
+    fn force_cannot_purge_a_root_or_the_temp_folder() {
+        let temp = std::env::temp_dir();
+        let root = temp.ancestors().last().unwrap().to_path_buf();
+        for target in [root, temp] {
+            assert!(
+                CleanupController::purge_dir(&target, true).is_err(),
+                "force must not purge {}", target.display()
+            );
+            assert!(target.exists());
+        }
     }
 }
