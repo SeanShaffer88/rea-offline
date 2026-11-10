@@ -83,6 +83,31 @@ fn validate_body(body: &Value, label: &str) -> Result<()> {
     if let Some(rules) = body.get("rules").filter(|v| !matches!(v, Value::Null)) {
         validate_rules_block(body, rules, label)?;
     }
+    // The summary repeats the body's score and verdict for readers; it is
+    // written from the same computation, so a summary that disagrees with
+    // its own body was edited after the fact.
+    if let Some(summary) = body.get("summary").filter(|v| !matches!(v, Value::Null)) {
+        if !matches!(summary, Value::Object(_)) {
+            return Err(invalid(format!("invalid report: {label}.summary must be an object")));
+        }
+        if let (Some(recorded), Some(actual)) = (summary.get("risk_score"), body.get("risk_score")) {
+            if integer(Some(recorded)) != integer(Some(actual)) {
+                return Err(invalid(format!(
+                    "invalid report: {label}.summary.risk_score does not match {label}.risk_score"
+                )));
+            }
+        }
+        if let (Some(recorded), Some(actual)) = (
+            summary.get("verdict").and_then(Value::as_str),
+            body.get("verdict").and_then(Value::as_str),
+        ) {
+            if recorded != actual {
+                return Err(invalid(format!(
+                    "invalid report: {label}.summary.verdict does not match {label}.verdict"
+                )));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -408,7 +433,8 @@ fn validate_coverage(coverage: &Value, report: &Value) -> Result<()> {
 
 /// `verdict_sources` records the score/verdict of each analyzed part. Check
 /// the shape, then check the arithmetic: the envelope may not be calmer
-/// than the worst part it lists.
+/// than the worst part it lists. Then check the copy itself: each entry
+/// must equal the body it summarizes.
 fn validate_verdict_sources(sources: &Value, report: &Value) -> Result<()> {
     let map = match sources {
         Value::Object(map) => map,
@@ -437,21 +463,59 @@ fn validate_verdict_sources(sources: &Value, report: &Value) -> Result<()> {
         }
         worst = Some(worst.map_or(score, |w: u64| w.max(score)));
     }
-    let Some(worst) = worst else { return Ok(()) };
-    let expected = crate::rules::verdict_for_score(worst);
-    match report.get("verdict").and_then(Value::as_str) {
-        Some(verdict) if verdict != expected => {
-            return Err(invalid(format!(
-                "invalid report: verdict is '{verdict}' but the worst analyzed part scores {worst} ({expected})"
-            )));
+    if let Some(worst) = worst {
+        let expected = crate::rules::verdict_for_score(worst);
+        match report.get("verdict").and_then(Value::as_str) {
+            Some(verdict) if verdict != expected => {
+                return Err(invalid(format!(
+                    "invalid report: verdict is '{verdict}' but the worst analyzed part scores {worst} ({expected})"
+                )));
+            }
+            _ => {}
         }
-        _ => {}
+        if let Some(score) = integer(report.get("risk_score")) {
+            if score != worst {
+                return Err(invalid(format!(
+                    "invalid report: risk_score is {score} but the worst analyzed part scores {worst}"
+                )));
+            }
+        }
     }
-    if let Some(score) = integer(report.get("risk_score")) {
-        if score != worst {
-            return Err(invalid(format!(
-                "invalid report: risk_score is {score} but the worst analyzed part scores {worst}"
-            )));
+    // Each source entry is copied from a body at write time, so check the
+    // copy: the envelope is verified against the sources, and a source
+    // calmer than its body would calm the envelope with it — while the
+    // body's own (findings-checked) verdict says otherwise.
+    for (name, body_key) in [
+        ("installer", "installer_report"),
+        ("install_tree", "report"),
+        ("drops", "drops_report"),
+    ] {
+        let source = map.get(name).filter(|v| !matches!(v, Value::Null));
+        let body = report.get(body_key).filter(|v| !matches!(v, Value::Null));
+        match (source, body) {
+            (None, None) => {}
+            (None, Some(_)) => {
+                return Err(invalid(format!(
+                    "invalid report: verdict_sources.{name} is missing but {body_key} is present"
+                )));
+            }
+            (Some(_), None) => {
+                return Err(invalid(format!(
+                    "invalid report: verdict_sources.{name} has no {body_key} body to match"
+                )));
+            }
+            (Some(source), Some(body)) => {
+                if integer(source.get("risk_score")) != integer(body.get("risk_score")) {
+                    return Err(invalid(format!(
+                        "invalid report: verdict_sources.{name}.risk_score does not match {body_key}.risk_score"
+                    )));
+                }
+                if source.get("verdict").and_then(Value::as_str) != body.get("verdict").and_then(Value::as_str) {
+                    return Err(invalid(format!(
+                        "invalid report: verdict_sources.{name}.verdict does not match {body_key}.verdict"
+                    )));
+                }
+            }
         }
     }
     Ok(())
@@ -609,6 +673,44 @@ mod tests {
             ]));
         }
         assert!(validate(&report).is_err(), "a source verdict must match its own score");
+    }
+
+    #[test]
+    fn a_verdict_source_must_match_the_body_it_summarizes() {
+        // Calm the drops source AND the envelope together: they agree
+        // with each other and the arithmetic passes — but the drops
+        // body still says 94/critical.
+        let mut report = sandbox_archive();
+        if let Value::Object(map) = &mut report {
+            map.insert("verdict".into(), Value::str("medium"));
+            map.insert("risk_score".into(), Value::num(12));
+            map.insert("verdict_sources".into(), crate::json::parse(r#"{
+                "installer":{"risk_score":12,"verdict":"medium"},
+                "install_tree":{"risk_score":0,"verdict":"low"},
+                "drops":{"risk_score":6,"verdict":"low"}
+            }"#).unwrap());
+        }
+        let error = validate(&report).unwrap_err().to_string();
+        assert!(error.contains("verdict_sources.drops"), "{error}");
+        // A source with no body left to match.
+        let mut report = sandbox_archive();
+        if let Value::Object(map) = &mut report {
+            map.remove("drops_report");
+        }
+        let error = validate(&report).unwrap_err().to_string();
+        assert!(error.contains("no drops_report body"), "{error}");
+    }
+
+    #[test]
+    fn a_summary_must_match_its_body() {
+        let mut report = archive_with_findings();
+        set_body(&mut report, "summary", crate::json::parse(
+            r#"{"risk_score":30,"verdict":"high"}"#).unwrap());
+        validate(&report).unwrap();
+        set_body(&mut report, "summary", crate::json::parse(
+            r#"{"risk_score":0,"verdict":"low"}"#).unwrap());
+        let error = validate(&report).unwrap_err().to_string();
+        assert!(error.contains("summary.risk_score"), "{error}");
     }
 
     fn with_execution(execution_json: &str, coverage_json: Option<&str>) -> Value {
