@@ -269,3 +269,15 @@ The sandbox's raw `sandbox_delta` is checked the same way against the
 `drops_report` built from it: every changed file it lists must be
 accounted for by the report, and every analyzed drop must appear in
 it.
+
+### Import read windows
+
+Native import RVA resolution carries a file-backed read window, not just a start
+offset. Descriptor records, thunk entries, hints and terminated names must fit
+inside the raw section (or declared header region) containing that RVA and inside
+the retained bytes. Adjacent raw sections and overlay bytes cannot complete a
+truncated table or provide a missing string terminator. A boundary violation
+preserves previously observed imports, marks traversal incomplete, withholds
+imphash and propagates an imports coverage issue. A valid terminator at the last
+byte of a region remains accepted. This is bounded static parsing, not emulation
+of every permissive Windows loader behavior.

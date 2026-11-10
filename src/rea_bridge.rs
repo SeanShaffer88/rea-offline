@@ -979,7 +979,7 @@ fn parse_pe_with_size(data: &[u8], file_len: u64) -> Option<PeInfo> {
     }
     let overlay_size = overlay_ranges.iter().map(|range| range.size).sum();
 
-    let rva_to_offset = |rva: u32| -> Option<usize> {
+    let rva_to_window = |rva: u32| -> Option<(usize, usize)> {
         for s in &parsed_sections {
             // Widen before addition: hostile u32 addresses can wrap in
             // optimized builds or panic in debug builds.
@@ -989,18 +989,20 @@ fn parse_pe_with_size(data: &[u8], file_len: u64) -> Option<PeInfo> {
                 // not be read as an import table from a following section.
                 if delta >= s.raw_size as u64 { return None; }
                 let off = s.raw_ptr as u64 + delta;
-                return usize::try_from(off).ok().filter(|off| *off < data.len());
+                let offset = usize::try_from(off).ok().filter(|off| *off < data.len())?;
+                let end = (s.raw_ptr as u64 + s.raw_size as u64).min(data.len() as u64) as usize;
+                return Some((offset, end));
             }
         }
         // RVAs outside sections may point into headers, not arbitrary raw
         // section contents. SizeOfHeaders bounds this fallback.
-        if (rva as usize) < headers_size && (rva as usize) < data.len() { Some(rva as usize) } else { None }
+        if (rva as usize) < headers_size && (rva as usize) < data.len() { Some((rva as usize, headers_size.min(data.len()))) } else { None }
     };
 
-    let read_c_string = |off: usize| -> Option<String> {
+    let read_c_string = |(off, end): (usize, usize)| -> Option<String> {
         // Do not invent an import name from an unterminated prefix or
         // replace invalid bytes with Unicode replacement characters.
-        let slice = data.get(off..off.saturating_add(512).min(data.len()))?;
+        let slice = data.get(off..off.saturating_add(512).min(end))?;
         let end = slice.iter().position(|&b| b == 0)?;
         let name = std::str::from_utf8(&slice[..end]).ok()?;
         if name.is_empty() || !name.bytes().all(|b| b.is_ascii_graphic() || b == b' ') { return None; }
@@ -1012,8 +1014,9 @@ fn parse_pe_with_size(data: &[u8], file_len: u64) -> Option<PeInfo> {
     let mut imports_complete = !(directory_count > 1 && optional.len() < directory_base + 16);
     if import_rva != 0 {
         let mut descriptors_terminated = false;
-        if let Some(mut desc) = rva_to_offset(import_rva) {
+        if let Some((mut desc, desc_end)) = rva_to_window(import_rva) {
             for _ in 0..64 {
+                if desc.saturating_add(20) > desc_end { imports_complete = false; break; }
                 let descriptor = match data.get(desc..desc.saturating_add(20)) {
                     Some(bytes) => bytes,
                     None => { imports_complete = false; break; }
@@ -1022,15 +1025,16 @@ fn parse_pe_with_size(data: &[u8], file_len: u64) -> Option<PeInfo> {
                 let oft_rva = u32le(descriptor, 0).unwrap();
                 let name_rva = u32le(descriptor, 12).unwrap();
                 let ft_rva = u32le(descriptor, 16).unwrap();
-                let dll = rva_to_offset(name_rva).and_then(&read_c_string).unwrap_or_default();
+                let dll = Some(name_rva).filter(|rva| *rva != 0).and_then(&rva_to_window).and_then(&read_c_string).unwrap_or_default();
                 if dll.is_empty() { imports_complete = false; desc += 20; continue; }
                 imports.push(dll.clone());
                 let thunk_rva = if oft_rva != 0 { oft_rva } else { ft_rva };
                 let mut thunks_terminated = false;
                 if thunk_rva != 0 {
-                    if let Some(mut thunk) = rva_to_offset(thunk_rva) {
+                    if let Some((mut thunk, thunk_end)) = rva_to_window(thunk_rva) {
                         for _ in 0..512 {
                             let step = if is_64bit { 8 } else { 4 };
+                            if thunk.saturating_add(step) > thunk_end { imports_complete = false; break; }
                             let entry = match if is_64bit { u64le(data, thunk) } else { u32le(data, thunk).map(u64::from) } {
                                 Some(value) => value,
                                 None => { imports_complete = false; break; }
@@ -1041,9 +1045,10 @@ fn parse_pe_with_size(data: &[u8], file_len: u64) -> Option<PeInfo> {
                                 if entry & !(ordinal_flag | 0xffff) != 0 { imports_complete = false; }
                                 else { imported_functions.push(format!("{dll}!#{}", entry & 0xffff)); }
                             } else {
-                                let name = u32::try_from(entry).ok().and_then(&rva_to_offset).and_then(|hn| {
+                                let name = u32::try_from(entry).ok().and_then(&rva_to_window).and_then(|(hn, end)| {
+                                    if hn.saturating_add(2) > end { return None; }
                                     u16le(data, hn)?;
-                                    read_c_string(hn.saturating_add(2))
+                                    read_c_string((hn.saturating_add(2), end))
                                 });
                                 match name {
                                     Some(name) => imported_functions.push(format!("{dll}!{name}")),
@@ -1615,6 +1620,63 @@ mod tests {
             assert!(report.scan_issues.iter().any(|i| i.stage == "imports"));
         }
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn function_names_cannot_borrow_terminators_from_overlay_bytes() {
+        let mut bytes = synthetic_pe();
+        bytes[0x340..0x348].copy_from_slice(&0x11f0u64.to_le_bytes());
+        bytes[0x3f2..0x400].fill(b'X');
+        // The overlay starts with NUL; it is not part of the raw section.
+        bytes[0x400..].fill(0);
+        let pe = parse_pe(&bytes).unwrap();
+        assert!(!pe.imports_complete);
+        assert!(!pe.imported_functions.iter().any(|f| f.contains("!XXX")));
+        assert!(pe.imported_functions.iter().any(|f| f.ends_with("!#42")));
+    }
+
+    #[test]
+    fn thunk_terminators_must_be_inside_the_same_file_backed_region() {
+        let mut bytes = synthetic_pe();
+        bytes[0x300..0x304].copy_from_slice(&0x11f8u32.to_le_bytes());
+        bytes[0x3f8..0x400].copy_from_slice(&0x8000_0000_0000_002au64.to_le_bytes());
+        bytes[0x400..].fill(0);
+        let pe = parse_pe(&bytes).unwrap();
+        assert!(!pe.imports_complete);
+        assert_eq!(pe.imported_functions, vec!["KERNEL32.dll!#42"]);
+    }
+
+    #[test]
+    fn descriptors_cannot_span_from_a_section_into_overlay() {
+        let mut bytes = synthetic_pe();
+        let descriptor = bytes[0x300..0x314].to_vec();
+        bytes[0x98 + 112 + 8..0x98 + 112 + 12].copy_from_slice(&0x11f8u32.to_le_bytes());
+        bytes[0x3f8..0x40c].copy_from_slice(&descriptor);
+        bytes[0x40c..].fill(0);
+        let pe = parse_pe(&bytes).unwrap();
+        assert!(!pe.imports_complete);
+        assert!(pe.imports.is_empty());
+    }
+
+    #[test]
+    fn header_import_names_cannot_borrow_section_bytes() {
+        let mut bytes = synthetic_pe();
+        bytes[0x30c..0x310].copy_from_slice(&0x1f8u32.to_le_bytes());
+        bytes[0x1f8..0x200].fill(b'A');
+        let pe = parse_pe(&bytes).unwrap();
+        assert!(!pe.imports_complete);
+        assert!(pe.imports.is_empty());
+    }
+
+    #[test]
+    fn a_function_name_terminated_at_the_last_section_byte_is_valid() {
+        let mut bytes = synthetic_pe();
+        bytes[0x340..0x348].copy_from_slice(&0x11f0u64.to_le_bytes());
+        bytes[0x3f2..0x3ff].fill(b'X');
+        bytes[0x3ff] = 0;
+        let pe = parse_pe(&bytes).unwrap();
+        assert!(pe.imports_complete);
+        assert!(pe.imported_functions.iter().any(|f| f == "KERNEL32.dll!XXXXXXXXXXXXX"));
     }
 
     #[test]

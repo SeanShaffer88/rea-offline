@@ -510,6 +510,14 @@ inputs or signature trust. Existing Rust adversarial-input tests remain necessar
 
 ## Changelog
 
+### 0.33.0
+
+- **Import reads stay in their file-backed region.** Descriptor records, thunk
+  entries, hint/name records and NUL-terminated strings cannot spill past the
+  raw section or declared header region that contains their starting RVA.
+  Adjacent sections and overlay bytes no longer supply fake names or terminators;
+  truncated traversal is explicitly incomplete and its imphash is withheld.
+
 ### 0.32.0
 
 - **Partial imports cannot masquerade as complete fingerprints.** Native PE
