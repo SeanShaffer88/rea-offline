@@ -47,7 +47,8 @@ pub struct PeSection {
     pub name: String,
     pub virtual_size: u32,
     pub raw_size: u32,
-    pub entropy: f64,
+    /// Unknown when the entire raw section is not retained for inspection.
+    pub entropy: Option<f64>,
     pub executable: bool,
     pub writable: bool,
 }
@@ -177,7 +178,7 @@ impl ReaReport {
                         ("name", Value::str(s.name.clone())),
                         ("virtual_size", Value::num(s.virtual_size as u64)),
                         ("raw_size", Value::num(s.raw_size as u64)),
-                        ("entropy", Value::Number((s.entropy * 1000.0).round() / 1000.0)),
+                        ("entropy", s.entropy.map(|e| Value::Number((e * 1000.0).round() / 1000.0)).unwrap_or(Value::Null)),
                         ("executable", Value::Bool(s.executable)),
                         ("writable", Value::Bool(s.writable)),
                     ])).collect())),
@@ -797,13 +798,13 @@ fn scan_indicators(data: &[u8]) -> Vec<Indicator> {
 // --- Minimal PE parser (headers, sections, import DLL/function names) ------
 
 fn u16le(d: &[u8], off: usize) -> Option<u16> {
-    d.get(off..off + 2).map(|s| u16::from_le_bytes([s[0], s[1]]))
+    d.get(off..off.checked_add(2)?).map(|s| u16::from_le_bytes([s[0], s[1]]))
 }
 fn u32le(d: &[u8], off: usize) -> Option<u32> {
-    d.get(off..off + 4).map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
+    d.get(off..off.checked_add(4)?).map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
 }
 fn u64le(d: &[u8], off: usize) -> Option<u64> {
-    d.get(off..off + 8).map(|s| u64::from_le_bytes([s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]]))
+    d.get(off..off.checked_add(8)?).map(|s| u64::from_le_bytes([s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]]))
 }
 
 struct Section {
@@ -859,7 +860,10 @@ fn parse_pe_with_size(data: &[u8], file_len: u64) -> Option<PeInfo> {
     let dir_rva = |idx: usize| u32le(data, dd_base + idx * 8).unwrap_or(0);
     let dir_size = |idx: usize| u32le(data, dd_base + idx * 8 + 4).unwrap_or(0);
     let import_rva = dir_rva(1);
-    let signed = dir_rva(4) != 0 && dir_size(4) >= 8;
+    let cert_off = dir_rva(4) as u64;
+    let cert_size = dir_size(4) as u64;
+    let certificate_in_file = cert_off != 0 && cert_size >= 8
+        && cert_off + cert_size <= file_len;
 
     let mut sections = Vec::new();
     let mut section_details = Vec::new();
@@ -878,13 +882,12 @@ fn parse_pe_with_size(data: &[u8], file_len: u64) -> Option<PeInfo> {
         let writable = characteristics & 0x8000_0000 != 0;
         if executable { executable_sections.push(name.clone()); }
         last_section_end = last_section_end.max(raw_ptr as u64 + raw_size as u64);
-        let raw = data.get(raw_ptr as usize..(raw_ptr as usize).saturating_add(raw_size as usize))
-            .unwrap_or(&[]);
+        let raw = data.get(raw_ptr as usize..(raw_ptr as usize).saturating_add(raw_size as usize));
         section_details.push(PeSection {
             name: name.clone(),
             virtual_size: u32le(data, off + 8).unwrap_or(0),
             raw_size,
-            entropy: shannon_entropy(raw),
+            entropy: raw.map(shannon_entropy),
             executable,
             writable,
         });
@@ -896,23 +899,31 @@ fn parse_pe_with_size(data: &[u8], file_len: u64) -> Option<PeInfo> {
             raw_ptr,
         });
     }
-    // Overlay: trailing bytes past the final section, minus the
-    // Authenticode blob (which legitimately lives there when signed).
-    let mut overlay_size = file_len.saturating_sub(last_section_end);
-    if signed {
-        let cert_off = dir_rva(4) as u64;
-        if cert_off >= last_section_end { overlay_size = cert_off.saturating_sub(last_section_end); }
-    }
+    // Presence only, not cryptographic trust. A table pointing outside the
+    // actual file or into a section is not an on-disk certificate table.
+    let signed = certificate_in_file && cert_off >= last_section_end;
+    // Exclude only the certificate itself, not bytes hidden after it.
+    let overlay_size = file_len.saturating_sub(last_section_end)
+        .saturating_sub(if signed { cert_size } else { 0 });
 
     let rva_to_offset = |rva: u32| -> Option<usize> {
         for s in &parsed_sections {
-            let span = s.virtual_size.max(s.raw_size);
-            if rva >= s.virtual_address && rva < s.virtual_address + span {
-                return Some((s.raw_ptr + (rva - s.virtual_address)) as usize);
+            // Widen before addition: hostile u32 addresses can wrap in
+            // optimized builds or panic in debug builds.
+            let delta = (rva as u64).checked_sub(s.virtual_address as u64);
+            if let Some(delta) = delta.filter(|d| *d < s.virtual_size.max(s.raw_size) as u64) {
+                // Virtual zero-fill is not backed by file bytes and must
+                // not be read as an import table from a following section.
+                if delta >= s.raw_size as u64 { return None; }
+                let off = s.raw_ptr as u64 + delta;
+                return usize::try_from(off).ok().filter(|off| *off < data.len());
             }
         }
-        if (rva as usize) < data.len() { Some(rva as usize) } else { None }
+        // RVAs outside sections may point into headers, not arbitrary raw
+        // section contents. The section table bounds this fallback.
+        if (rva as usize) < sec_base && (rva as usize) < data.len() { Some(rva as usize) } else { None }
     };
+
     let read_c_string = |off: usize| -> String {
         // Clamp the window to EOF: `get(off..off + 512)` returns None when
         // the range runs past the end, silently dropping strings that sit
@@ -1170,6 +1181,81 @@ mod tests {
         d[raw(0x1190) + 2..raw(0x1190) + 2 + 18].copy_from_slice(b"CreateRemoteThread");
         d[raw(0x1180)..raw(0x1180) + 12].copy_from_slice(b"KERNEL32.dll");
         d
+    }
+
+    fn set_certificate(data: &mut [u8], offset: u32, size: u32) {
+        let directory = 0x98 + 112 + 4 * 8;
+        data[directory..directory + 4].copy_from_slice(&offset.to_le_bytes());
+        data[directory + 4..directory + 8].copy_from_slice(&size.to_le_bytes());
+    }
+
+    #[test]
+    fn certificate_ranges_must_be_inside_file_and_outside_sections() {
+        for offset in [0xffff_fff0, 0x500, 0x200] {
+            let mut data = synthetic_pe();
+            set_certificate(&mut data, offset, 0x20);
+            let pe = parse_pe(&data).unwrap();
+            assert!(!pe.signed, "offset {offset:x}");
+            assert_eq!(pe.overlay_size, 0x40);
+        }
+        let mut data = synthetic_pe();
+        set_certificate(&mut data, 0x400, 0x40);
+        let pe = parse_pe(&data).unwrap();
+        assert!(pe.signed);
+        assert_eq!(pe.overlay_size, 0);
+    }
+
+    #[test]
+    fn bytes_after_a_certificate_are_still_overlay() {
+        let mut data = synthetic_pe();
+        data.resize(0x500, 0);
+        set_certificate(&mut data, 0x420, 0x20);
+        let pe = parse_pe(&data).unwrap();
+        assert!(pe.signed);
+        assert_eq!(pe.overlay_size, 0xe0, "exclude only the certificate, retaining both adjacent ranges");
+        // A certificate outside the retained prefix can still be present
+        // in the actual full file; its bytes need not be in memory.
+        let pe = parse_pe_with_size(&data[..0x400], 0x500).unwrap();
+        assert!(pe.signed);
+        assert_eq!(pe.overlay_size, 0xe0);
+    }
+
+    #[test]
+    fn section_address_overflows_do_not_panic_or_wrap_into_headers() {
+        let section = 0x98 + 240;
+        for (address, raw_pointer) in [(0xffff_fff0u32, 0x200u32), (0x1000, 0xffff_fff0)] {
+            let mut data = synthetic_pe();
+            data[section + 12..section + 16].copy_from_slice(&address.to_le_bytes());
+            data[section + 20..section + 24].copy_from_slice(&raw_pointer.to_le_bytes());
+            let import_rva = if address == 0x1000 { 0x1100u32 } else { 0xffff_fff8u32 };
+            data[0x98 + 112 + 8..0x98 + 112 + 12].copy_from_slice(&import_rva.to_le_bytes());
+            let pe = parse_pe(&data).unwrap();
+            assert!(pe.imports.is_empty());
+        }
+    }
+
+    #[test]
+    fn virtual_zero_fill_is_not_a_file_backed_import_table() {
+        let mut data = synthetic_pe();
+        let descriptor = data[0x300..0x328].to_vec();
+        data.resize(0x700, 0);
+        data[0x500..0x528].copy_from_slice(&descriptor);
+        let section = 0x98 + 240;
+        data[section + 8..section + 12].copy_from_slice(&0x1000u32.to_le_bytes());
+        data[0x98 + 112 + 8..0x98 + 112 + 12].copy_from_slice(&0x1300u32.to_le_bytes());
+        assert!(parse_pe(&data).unwrap().imports.is_empty());
+    }
+
+    #[test]
+    fn missing_section_bytes_have_unknown_not_zero_entropy() {
+        let data = synthetic_pe();
+        let full = parse_pe(&data).unwrap();
+        assert!(full.section_details[0].entropy.is_some());
+        let prefix = parse_pe_with_size(&data[..0x300], data.len() as u64).unwrap();
+        assert_eq!(prefix.section_details[0].entropy, None);
+        assert_eq!(u16le(&[], usize::MAX), None);
+        assert_eq!(u32le(&[], usize::MAX), None);
+        assert_eq!(u64le(&[], usize::MAX), None);
     }
 
     #[test]

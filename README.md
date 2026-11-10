@@ -499,6 +499,13 @@ MIT — see [LICENSE](LICENSE).
 
 ### 0.27.0
 
+- **PE parsing resists hostile address ranges.** Import RVA arithmetic is
+  widened and bounded to retained file-backed section bytes, never virtual
+  zero-fill. Certificate-table presence requires a range inside the actual
+  file and outside sections; overlay calculations retain data after a
+  certificate. Uninspected section entropy is `null` (unknown), not zero,
+  and cannot trigger an entropy-based packing finding.
+
 - **Large files receive bounded content inspection instead of hashes alone.**
   The native analyzer retains the first 32 MiB for PE parsing and string
   indicators, while streaming SHA-256, MD5 and whole-file entropy over every

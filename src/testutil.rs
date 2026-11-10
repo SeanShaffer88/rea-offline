@@ -70,7 +70,7 @@ impl PeBuilder {
     pub fn timestamp(mut self, value: u32) -> Self { self.timestamp = value; self }
     pub fn entry_point(mut self, value: u32) -> Self { self.entry_point = value; self }
     pub fn overlay(mut self, bytes: usize) -> Self { self.overlay = vec![0x41; bytes]; self }
-    /// Presence-only Authenticode: sets the certificate data-directory entry.
+    /// Presence-only Authenticode: appends a dummy WIN_CERTIFICATE (not a valid signature).
     pub fn signed(mut self, on: bool) -> Self { self.signed = on; self }
 
     /// Replace the section table (first entry must stay at RVA 0x1000 so the
@@ -186,12 +186,16 @@ impl PeBuilder {
             d.resize(last_end as usize, 0);
         }
 
-        // Authenticode certificate table is a *file offset*, placed past EOF
-        // in real files; presence is all the analyzer reads.
+        // A presence-only dummy WIN_CERTIFICATE still needs actual bytes.
+        // Keep the caller's overlay separate, so tests can prove that data
+        // after the certificate remains visible to overlay accounting.
         if self.signed {
-            let cert_off = last_end as u32;
+            let cert_off = d.len() as u32;
             d[dd + 32..dd + 36].copy_from_slice(&cert_off.to_le_bytes());
             d[dd + 36..dd + 40].copy_from_slice(&8u32.to_le_bytes());
+            d.extend_from_slice(&8u32.to_le_bytes()); // dwLength
+            d.extend_from_slice(&0x0200u16.to_le_bytes()); // revision
+            d.extend_from_slice(&2u16.to_le_bytes()); // PKCS signed data type
         }
         if !self.overlay.is_empty() {
             d.extend_from_slice(&self.overlay);
@@ -234,6 +238,6 @@ mod tests {
         let bytes = PeBuilder::new().overlay(100).signed(true).build();
         let info = crate::rea_bridge::parse_pe_bytes(&bytes).unwrap();
         assert!(info.signed);
-        assert_eq!(info.overlay_size, 0, "certificate table lives in the overlay");
+        assert_eq!(info.overlay_size, 100, "the certificate must not hide appended overlay bytes");
     }
 }
