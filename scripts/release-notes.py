@@ -120,14 +120,17 @@ def main(argv):
     args = parser.parse_args(argv)
 
     try:
-        notes = build_notes(args.tag, args.since, Path("README.md").read_text())
+        notes = build_notes(args.tag, args.since, Path("README.md").read_text(encoding="utf-8"))
         output = Path(args.output)
         output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(notes)
+        # GitHub consumes UTF-8, regardless of the Windows process locale.
+        # Explicit LF also makes release artifacts byte-identical across hosts.
+        with output.open("w", encoding="utf-8", newline="\n") as stream:
+            stream.write(notes)
     except (OSError, ValueError) as exc:
         print("release-notes: {}".format(exc), file=sys.stderr)
         return 1
-    print("release-notes: wrote {} ({} bytes)".format(args.output, len(notes)))
+    print("release-notes: wrote {} ({} bytes)".format(args.output, len(notes.encode("utf-8"))))
     return 0
 
 
