@@ -28,6 +28,7 @@
 
 pub mod tree;
 mod native_picker;
+mod evidence;
 
 use crate::json::Value;
 use std::io::{Read, Write};
@@ -672,13 +673,17 @@ pub fn page_html(page: &Page, query: &str) -> String {
     // Details pane: the evidence for whatever is selected. `selected` is a
     // report path (what `details_text` looks up), so a selected *folder*
     // simply falls back to the summary rather than printing "no record".
-    body.push_str("<footer><pre>");
+    body.push_str("<footer aria-label=\"Selected file evidence\"><pre>");
     if selected.is_empty() || rows.iter().any(|r| r.is_dir && r.path == selected) {
         body.push_str(&html_escape(&compact_summary(page)));
     } else {
         body.push_str(&html_escape(&tree::details_text(&page.tree, &selected)));
     }
-    body.push_str("</pre></footer>");
+    body.push_str("</pre>");
+    if let Some(file) = tree::find_file(&page.tree, &selected) {
+        body.push_str(&evidence::render(file));
+    }
+    body.push_str("</footer>");
     body.push_str("</body></html>");
     body
 }
@@ -762,7 +767,13 @@ tr.tint-high td.name{color:#fbd38d}
 header{flex-wrap:wrap}.chips{flex-wrap:wrap}
 .map svg{width:100%;height:100%;display:block}
 .map rect:hover{stroke:#e5edf5;stroke-width:.3;fill-opacity:1}
-footer{background:var(--panel);border-top:1px solid var(--line);padding:8px 14px;max-height:32vh;overflow:auto}
+footer{background:var(--panel);border-top:1px solid var(--line);padding:8px 14px;max-height:52vh;overflow:auto}
+.evidence{margin-top:14px;overflow-wrap:anywhere}.evidence h2{font-size:16px;margin:8px 0}
+.evidence details{border:1px solid var(--line);padding:8px 12px;margin:8px 0;border-radius:6px}
+.evidence summary{cursor:pointer;font-weight:600}.evidence p{margin:6px 0;color:#c6d3e2}
+.evidence table{margin-top:8px}.evidence th{position:static}.evidence td{white-space:normal;overflow-wrap:anywhere}
+.evidence dl{display:grid;grid-template-columns:minmax(110px,auto) 1fr;gap:4px 12px}
+.evidence dt{color:var(--muted)}.evidence dd{margin:0}.evidence .finding{border-left:3px solid var(--medium);padding-left:12px;margin:10px 0}
 footer pre{margin:0;font:12px/1.5 "Cascadia Mono",Consolas,monospace;color:#c6d3e2;white-space:pre-wrap}
 @media (max-width:760px){main{grid-template-columns:1fr;grid-template-rows:1fr 1fr}}
 "#;
@@ -1442,6 +1453,14 @@ mod tests {
             }
         }
         Page::new(report, "C:/Downloads/setup.exe")
+    }
+
+    #[test]
+    fn selected_sandbox_evidence_uses_merged_paths_without_cross_contamination() {
+        let page = sandbox_page();
+        let html = page_html(&page, "select=AppData%2FRoaming%2Fpayload.exe");
+        assert!(html.contains("Recorded file evidence"));
+        assert!(html.contains("AppData/Roaming/payload.exe"));
     }
 
     #[test]
