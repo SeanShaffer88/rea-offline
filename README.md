@@ -510,6 +510,14 @@ inputs or signature trust. Existing Rust adversarial-input tests remain necessar
 
 ## Changelog
 
+### 0.34.0
+
+- **Import directory sizes are enforced.** Descriptor traversal must fit both
+  its declared directory size and its file-backed read window. Inconsistent
+  address/size pairs, oversized or overflowing directory ranges, and terminators
+  outside the declared range mark imports incomplete and withhold imphash.
+  Referenced names and thunks retain their independent read windows.
+
 ### 0.33.0
 
 - **Import reads stay in their file-backed region.** Descriptor records, thunk

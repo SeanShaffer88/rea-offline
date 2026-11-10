@@ -281,3 +281,11 @@ preserves previously observed imports, marks traversal incomplete, withholds
 imphash and propagates an imports coverage issue. A valid terminator at the last
 byte of a region remains accepted. This is bounded static parsing, not emulation
 of every permissive Windows loader behavior.
+
+Descriptor traversal is additionally bounded by the import directory's declared
+size, including its all-zero terminating descriptor. Names and thunk tables are
+separately addressed and need not be contained in that descriptor directory.
+An absent directory requires both address and size to be zero; inconsistent
+pairs, a declared extent outside the backing region, or an RVA range extending
+past the 32-bit address space mark traversal incomplete even if a terminator is
+observed earlier. Observed valid records remain available as partial evidence.
