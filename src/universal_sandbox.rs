@@ -221,7 +221,21 @@ mod portable {
             .stdout(std::process::Stdio::from(stdout_file))
             .stderr(std::process::Stdio::from(stderr_file));
         for (k, v) in env { cmd.env(k, v); }
-        let mut child = cmd.spawn().map_err(|e| Error::Process(format!("spawn {}: {e}", program.display())))?;
+        // A just-written installer can briefly refuse to execute
+        // (ETXTBSY, "text file busy") while the filesystem settles —
+        // the same transient the purge retries on delete. Retry briefly
+        // rather than failing the whole run for a moment's timing.
+        let mut attempt = 0;
+        let mut child = loop {
+            match cmd.spawn() {
+                Ok(child) => break child,
+                Err(e) if e.raw_os_error() == Some(26) && attempt < 5 => {
+                    attempt += 1;
+                    std::thread::sleep(Duration::from_millis(50 * attempt));
+                }
+                Err(e) => return Err(Error::Process(format!("spawn {}: {e}", program.display()))),
+            }
+        };
         let deadline = Instant::now() + timeout;
         loop {
             match child.try_wait()? {

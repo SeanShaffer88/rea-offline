@@ -19,6 +19,25 @@ fn workdir(tag: &str) -> PathBuf {
     dir
 }
 
+/// Write an executable fixture script atomically: create it under a
+/// temporary name, flush it to disk, set the executable bit, then rename
+/// it into place. Executing a script that was written under its final
+/// name intermittently fails with ETXTBSY ("text file busy") — the
+/// renamed file was never open for writing under the name it runs by,
+/// so the spawn race disappears.
+#[cfg(unix)]
+fn write_script(path: &Path, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = path.with_extension("part");
+    let mut file = std::fs::File::create(&tmp)?;
+    file.write_all(contents.as_ref())?;
+    file.sync_all()?;
+    drop(file);
+    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
+    std::fs::rename(&tmp, path)
+}
+
 struct Run {
     code: i32,
     stdout: String,
@@ -506,7 +525,6 @@ fn archived_sandbox_gates_on_the_combined_verdict_not_the_install_tree() {
 #[cfg(unix)]
 #[test]
 fn sandbox_gate_fires_on_a_profile_drop() {
-    use std::os::unix::fs::PermissionsExt;
     let dir = workdir("sandbox-gate");
     let payload = dir.join("payload.bin");
     let bytes = rea_offline::testutil::PeBuilder::new()
@@ -527,7 +545,7 @@ fn sandbox_gate_fires_on_a_profile_drop() {
         .build();
     std::fs::write(&payload, bytes).unwrap();
     let script = dir.join("dropper.sh");
-    std::fs::write(
+    write_script(
         &script,
         format!(
             "#!/bin/sh\nmkdir -p \"$REASANDBOX/AppData/Roaming\"\ncp '{}' \"$REASANDBOX/AppData/Roaming/payload.exe\"\n",
@@ -535,7 +553,6 @@ fn sandbox_gate_fires_on_a_profile_drop() {
         ),
     )
     .unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     let gated = run(&dir, &["sandbox", "dropper.sh", "--fail-on", "high", "--quiet", "--output", "run.json"]);
     assert_eq!(gated.code, 2, "a critical profile drop must fail the gate: {}", gated.stderr);
@@ -558,15 +575,13 @@ fn sandbox_gate_fires_on_a_profile_drop() {
 #[cfg(unix)]
 #[test]
 fn a_timed_out_sandbox_run_exits_three() {
-    use std::os::unix::fs::PermissionsExt;
     let dir = workdir("sandbox-timeout");
     let script = dir.join("stall.sh");
-    std::fs::write(
+    write_script(
         &script,
         "#!/bin/sh\nmkdir -p \"$REASANDBOX_INSTALL\"\nprintf 'MZ half' > \"$REASANDBOX_INSTALL/partial.exe\"\nsleep 30\n",
     )
     .unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     let gated = run(
         &dir,
