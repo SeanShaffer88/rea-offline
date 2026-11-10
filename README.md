@@ -497,6 +497,17 @@ MIT — see [LICENSE](LICENSE).
 
 ## Changelog
 
+### 0.29.0
+
+- **Browse instead of typing paths.** Windows picker controls open native file,
+  folder and saved-report dialogs and fill in the selected local path without
+  uploading or executing it. Saved-report selection switches modes automatically.
+  Browsing requires a token-protected POST; only one native dialog can be open
+  at a time. Manual entry and no-JavaScript operation remain available.
+- **Picker feedback and recovery.** Inspection errors preserve the entered path
+  and report mode. Browse cancellation preserves the current field when scripting
+  is enabled, and the Inspect button displays a busy state while loading.
+
 ### 0.28.0
 
 - **Windows REA discovery skips extensionless Unix launchers.** Discovery

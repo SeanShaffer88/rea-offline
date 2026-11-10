@@ -27,6 +27,7 @@
 //! loopback socket.
 
 pub mod tree;
+mod native_picker;
 
 use crate::json::Value;
 use std::io::{Read, Write};
@@ -1072,10 +1073,30 @@ fn handle(mut stream: TcpStream, page: &Page) -> std::io::Result<()> {
 // Picker server: the window before a target is chosen
 // ---------------------------------------------------------------------------
 
-/// The page a bare launch opens: one question — what should I inspect? A
-/// browser file dialog cannot hand a local tool real paths, so the picker
-/// asks for the path as text; everything stays on this machine.
+/// Manual entry works everywhere; Windows Browse uses native local dialogs.
 pub fn picker_html(error: Option<&str>) -> String {
+    picker_html_state(error, "", false)
+}
+
+fn browse_token() -> &'static str {
+    use std::hash::{BuildHasher, Hasher};
+    static TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    TOKEN.get_or_init(|| {
+        let a = std::collections::hash_map::RandomState::new().build_hasher().finish();
+        let b = std::collections::hash_map::RandomState::new().build_hasher().finish();
+        format!("{a:016x}{b:016x}")
+    })
+}
+
+fn picker_html_state(error: Option<&str>, selected_path: &str, report: bool) -> String {
+    let value = html_escape(selected_path);
+    let target_checked = if report { "" } else { "checked" };
+    let report_checked = if report { "checked" } else { "" };
+    let mut browse_controls = String::from("<div class=\"browse-controls\">");
+    for (kind, label) in [("file", "Browse file…"), ("folder", "Browse folder…"), ("report", "Browse saved report…")] {
+        browse_controls.push_str(&format!("<form class=\"browse\" method=\"post\" action=\"/browse?token={}&amp;kind={kind}\" data-kind=\"{kind}\"><button type=\"submit\">{label}</button></form>", browse_token()));
+    }
+    browse_controls.push_str("</div><p id=\"browse-status\" role=\"status\" aria-live=\"polite\">Browse opens a Windows dialog on this PC. Nothing is uploaded. You can also paste a path.</p>");
     let error_block = match error {
         Some(message) => format!(
             "<p class=\"error\" role=\"alert\">{}</p>",
@@ -1105,25 +1126,93 @@ button{{background:var(--accent);color:#fff;border:0;border-radius:6px;
 padding:10px 22px;font:inherit;font-weight:600;cursor:pointer}}
 .error{{background:#3a1414;border:1px solid var(--accent);border-radius:6px;padding:10px 14px}}
 code{{color:var(--muted)}}
+.browse-controls{{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0}}
+.browse button{{background:#263445;padding:8px 12px}}button:disabled{{opacity:.6;cursor:wait}}
+#browse-status{{color:var(--muted);font-size:13px}}
 </style></head><body><main>
 <h1><span class="logo">rea-offline</span> — what should I inspect?</h1>
 <p class="hint">Type or paste the full path of a file, a folder, or an installer.
 The inspection runs entirely on this PC; nothing is uploaded anywhere.</p>
 {error_block}
-<form method="get" action="/inspect">
+<form id="inspect-form" method="get" action="/inspect">
 <label for="path">Path</label>
 <input type="text" id="path" name="path" autofocus
- placeholder="C:\Users\you\Downloads\setup.exe" autocomplete="off">
+ placeholder="C:\Users\you\Downloads\setup.exe" autocomplete="off" value="{value}" required>
 <fieldset><legend>That path is…</legend>
-<label><input type="radio" name="kind" value="target" checked>
+<label><input type="radio" name="kind" value="target" {target_checked}>
  a file, folder or installer to inspect</label>
-<label><input type="radio" name="kind" value="report">
+<label><input type="radio" name="kind" value="report" {report_checked}>
  a report saved earlier (a <code>report.json</code> from a previous run)</label>
 </fieldset>
 <button type="submit">Inspect</button>
 </form>
+{browse_controls}
+<noscript><p>Browse returns here with the selected path. Click Inspect when ready.</p></noscript>
+<script>{PICKER_SCRIPT}</script>
 </main></body></html>"#
     )
+}
+
+const PICKER_SCRIPT: &str = r#"
+for (const form of document.querySelectorAll('form.browse')) {
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    const buttons = document.querySelectorAll('.browse button');
+    const status = document.getElementById('browse-status');
+    buttons.forEach(button => button.disabled = true);
+    status.textContent = 'Choose an item in the Windows dialog (it may be behind your browser)…';
+    try {
+      const response = await fetch(form.action + '&format=json', {method: 'POST'});
+      if (!response.ok) throw new Error('Browse request rejected. Reload this page and try again.');
+      const result = await response.json();
+      if (result.error) throw new Error(result.error);
+      if (result.path !== null) {
+        document.getElementById('path').value = result.path;
+        document.querySelector('input[name=kind][value=' + (form.dataset.kind === 'report' ? 'report' : 'target') + ']').checked = true;
+        status.textContent = 'Path selected. Click Inspect to begin.';
+      } else { status.textContent = 'Selection cancelled. Your path is unchanged.'; }
+    } catch (error) { status.textContent = error.message; }
+    finally { buttons.forEach(button => button.disabled = false); }
+  });
+}
+document.getElementById('inspect-form').addEventListener('submit', event => {
+  const button = event.target.querySelector('button[type=submit]');
+  button.textContent = 'Inspecting…'; button.disabled = true;
+});
+window.addEventListener('pageshow', () => {
+  const button = document.querySelector('#inspect-form button[type=submit]');
+  button.disabled = false; button.textContent = 'Inspect';
+});
+"#;
+
+fn browse_request_allowed(method: &str, query: &str) -> bool {
+    method == "POST" && query_param(query, "token").as_deref() == Some(browse_token())
+}
+
+fn handle_browse(stream: &mut TcpStream, method: &str, query: &str) -> std::io::Result<()> {
+    if !browse_request_allowed(method, query) {
+        return respond(stream, "403 Forbidden", "text/plain", b"Browse requires a POST from this picker page. Reload it and try again.\n");
+    }
+    let kind = match query_param(query, "kind").as_deref() {
+        Some("file") => native_picker::Kind::File,
+        Some("folder") => native_picker::Kind::Folder,
+        Some("report") => native_picker::Kind::Report,
+        _ => return respond(stream, "400 Bad Request", "text/plain", b"Unknown Browse kind\n"),
+    };
+    let result = native_picker::choose(kind);
+    if query_param(query, "format").as_deref() == Some("json") {
+        let (path, error) = match result {
+            Ok(path) => (path.map(Value::str).unwrap_or(Value::Null), Value::Null),
+            Err(error) => (Value::Null, Value::str(error)),
+        };
+        let json = Value::obj(vec![("path", path), ("error", error)]).to_string_pretty();
+        return respond(stream, "200 OK", "application/json", json.as_bytes());
+    }
+    let html = match result {
+        Ok(path) => picker_html_state(None, path.as_deref().unwrap_or(""), kind == native_picker::Kind::Report),
+        Err(error) => picker_html(Some(&error)),
+    };
+    respond(stream, "200 OK", "text/html; charset=utf-8", html.as_bytes())
 }
 
 /// Percent-decode one query component (`+` means space in a form query).
@@ -1190,6 +1279,7 @@ pub fn serve_picker(preferred_port: u16, open: bool) -> crate::Result<u16> {
 
 fn handle_picker(mut stream: TcpStream, current: &Mutex<Option<Page>>) -> std::io::Result<()> {
     let (method, path, query) = read_request(&mut stream)?;
+    if path == "/browse" { return handle_browse(&mut stream, &method, &query); }
     if method != "GET" {
         return respond(&mut stream, "405 Method Not Allowed", "text/plain", b"GET only\n");
     }
@@ -1219,7 +1309,7 @@ fn handle_picker(mut stream: TcpStream, current: &Mutex<Option<Page>>) -> std::i
                     respond(&mut stream, "200 OK", "text/html; charset=utf-8", html.as_bytes())
                 }
                 Err(e) => {
-                    let html = picker_html(Some(&format!("Could not inspect {target}: {e}")));
+                    let html = picker_html_state(Some(&format!("Could not inspect {target}: {e}")), &target, query_param(&query, "kind").as_deref() == Some("report"));
                     respond(&mut stream, "200 OK", "text/html; charset=utf-8", html.as_bytes())
                 }
             }
@@ -1281,7 +1371,7 @@ fn respond(stream: &mut TcpStream, status: &str, content_type: &str, body: &[u8]
     let header = format!(
         "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n\
          Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n\
-         Referrer-Policy: no-referrer\r\nConnection: close\r\n\r\n",
+         Referrer-Policy: no-referrer\r\nX-Frame-Options: DENY\r\nConnection: close\r\n\r\n",
         body.len()
     );
     stream.write_all(header.as_bytes())?;
@@ -1352,6 +1442,76 @@ mod tests {
             }
         }
         Page::new(report, "C:/Downloads/setup.exe")
+    }
+
+    #[test]
+    fn picker_browse_controls_are_local_and_state_is_escaped() {
+        let html = picker_html_state(Some("cannot inspect <file>"), r#"C:\a & b\<x>".exe"#, true);
+        assert!(html.contains("Browse file…"));
+        assert!(html.contains("Browse folder…"));
+        assert!(html.contains("Browse saved report…"));
+        assert!(html.contains("method=\"post\""));
+        assert!(!html.contains("type=\"file\""), "a browser upload cannot provide a trustworthy local path");
+        assert!(html.contains("&amp; b"));
+        assert!(html.contains("&lt;x&gt;&quot;.exe"));
+        assert!(html.contains("value=\"report\" checked"));
+        assert!(html.contains("cannot inspect &lt;file&gt;"));
+        assert!(html.contains("Inspecting…"));
+    }
+
+    #[test]
+    fn browse_requires_post_and_the_current_process_token() {
+        let query = format!("token={}&kind=file", browse_token());
+        assert!(browse_request_allowed("POST", &query));
+        assert!(!browse_request_allowed("GET", &query));
+        assert!(!browse_request_allowed("POST", "kind=file"));
+        assert!(!browse_request_allowed("POST", "token=wrong&kind=file"));
+    }
+
+    fn picker_request(method: &str, path: &str) -> String {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let thread = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            handle_picker(stream, &Mutex::new(None)).unwrap();
+        });
+        let mut client = TcpStream::connect(address).unwrap();
+        client.write_all(format!("{method} {path} HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n").as_bytes()).unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        thread.join().unwrap();
+        response
+    }
+
+    #[test]
+    fn browse_http_rejects_unauthorized_or_invalid_requests_without_a_dialog() {
+        assert!(picker_request("POST", "/browse?kind=file&token=bad").starts_with("HTTP/1.1 403"));
+        let query = format!("/browse?token={}&kind=file", browse_token());
+        assert!(picker_request("GET", &query).starts_with("HTTP/1.1 403"));
+        let query = format!("/browse?token={}&kind=invalid", browse_token());
+        let response = picker_request("POST", &query);
+        assert!(response.starts_with("HTTP/1.1 400"));
+        assert!(response.contains("X-Frame-Options: DENY"));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn unsupported_native_picker_returns_json_guidance_without_uploading() {
+        let query = format!("/browse?token={}&kind=file&format=json", browse_token());
+        let response = picker_request("POST", &query);
+        assert!(response.starts_with("HTTP/1.1 200"));
+        let (_, body) = response.split_once("\r\n\r\n").unwrap();
+        let json = crate::json::parse(body).unwrap();
+        assert_eq!(json.get("path"), Some(&Value::Null));
+        assert!(json.get("error").and_then(Value::as_str).unwrap().contains("Paste the full local path"));
+    }
+
+    #[test]
+    fn inspection_error_keeps_path_and_report_mode() {
+        let response = picker_request("GET", "/inspect?path=does-not-exist-rea-report.json&kind=report");
+        assert!(response.contains("value=\"does-not-exist-rea-report.json\""));
+        assert!(response.contains("value=\"report\" checked"));
+        assert!(response.contains("Could not inspect"));
     }
 
     #[test]

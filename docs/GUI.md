@@ -202,3 +202,24 @@ npm and searches each PATH directory for `rea.exe`, `rea.cmd`, `rea.js`, then
 or `--rea` selections are not silently replaced if missing. Error 193 usually
 means the selected launcher is not a compatible Windows executable: select its
 Windows batch launcher, Node `.js` entry point, or matching-architecture `.exe`.
+
+### Browse local files and folders
+
+On Windows, **Browse file**, **Browse folder**, and **Browse saved report** open
+native dialogs on the PC running rea-offline. Selection fills in the real local
+path; it does not upload or execute the selected item. Click **Inspect** to start.
+Saved-report browsing selects report mode automatically. One dialog may be open
+at a time; if it is hidden, switch to the Windows dialog to choose or cancel.
+The folder dialog uses the shell's traditional filesystem picker; for paths it
+cannot represent, paste the full path manually.
+
+With JavaScript, cancellation leaves your input unchanged and browsing displays
+status feedback. Without scripting, Browse returns a prefilled picker page;
+cancelling returns an empty path. Non-Windows hosts show manual-entry guidance.
+Inspection errors preserve the path and selected mode.
+
+Native dialogs require a POST carrying a per-process unpredictable token from
+the picker page. GET requests and invalid tokens never open dialogs. Responses
+are not CORS-enabled and cannot be framed. Native dialogs are not automated in
+CI; Windows compilation and HTTP authorization are tested, while interactive
+file/folder selection still needs a Windows desktop smoke test.
