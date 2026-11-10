@@ -256,3 +256,10 @@ Ranges describe full-file geometry even when only a prefix was retained. Legacy
 archives without location fields remain readable with offsets marked not recorded.
 New archived range lists must fit the file, be sorted/disjoint, exclude any
 recorded certificate and sum to the recorded overlay byte count.
+
+Import evidence includes `imports_complete` for new reports. False means table
+traversal encountered a malformed/unreadable entry, missing terminator or parser
+limit. Observed names remain useful evidence, but imphash is withheld and the
+scan has an `imports` coverage limitation. True refers only to the supported
+static table traversal: it does not cover dynamically resolved or delay-loaded
+imports, nor prove execution. Legacy reports show completeness not recorded.

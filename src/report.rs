@@ -86,6 +86,24 @@ fn validate_body(body: &Value, label: &str) -> Result<()> {
         }
         if let Some(pe) = file.get("pe") {
             validate_file_ranges(pe, integer(file.get("size")).unwrap())?;
+            if let Some(complete) = pe.get("imports_complete") {
+                if !matches!(complete, Value::Bool(_)) {
+                    return Err(invalid("invalid report: imports_complete must be boolean"));
+                }
+                if complete == &Value::Bool(false) {
+                    if file.get("imphash").is_some_and(|v| !matches!(v, Value::Null)) {
+                        return Err(invalid("invalid report: incomplete imports must not carry an imphash"));
+                    }
+                    let path = file.get("path").and_then(Value::as_str);
+                    let recorded = match body.get("scan_issues") {
+                        Some(Value::Array(issues)) => issues.iter().any(|issue|
+                            issue.get("path").and_then(Value::as_str) == path
+                            && issue.get("stage").and_then(Value::as_str) == Some("imports")),
+                        _ => false,
+                    };
+                    if !recorded { return Err(invalid("invalid report: incomplete imports have no matching coverage issue")); }
+                }
+            }
         }
         // Additive fields: old archives remain loadable, but a new scope
         // must tell a coherent story about exactly which bytes were seen.
@@ -715,6 +733,15 @@ mod tests {
             "report":{"file_count":1,"risk_score":41,"verdict":"high",
                 "files":[{"path":"a.exe","size":10}],"scan_issues":[]}
         }"#).unwrap()
+    }
+
+    #[test]
+    fn partial_imports_require_a_coverage_issue_and_no_fingerprint() {
+        for (issue, hash, valid) in [(true, "null", true), (false, "null", false), (true, "\"abc\"", false)] {
+            let body = crate::json::parse(&format!(r#"{{"file_count":1,"files":[{{"path":"a.exe","size":100,"imphash":{hash},"pe":{{"imports_complete":false}}}}],"scan_issues":{}}}"#,
+                if issue { r#"[{"path":"a.exe","stage":"imports","message":"incomplete"}]"# } else { "[]" })).unwrap();
+            assert_eq!(validate_body(&body, "report").is_ok(), valid);
+        }
     }
 
     #[test]

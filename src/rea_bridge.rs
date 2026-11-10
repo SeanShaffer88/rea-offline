@@ -74,6 +74,7 @@ pub struct PeInfo {
     pub imports: Vec<String>,
     /// `DLL.dll!FunctionName` (or `DLL.dll!#ordinal`) per imported function.
     pub imported_functions: Vec<String>,
+    pub imports_complete: bool,
     pub executable_sections: Vec<String>,
     /// COFF TimeDateStamp (seconds since epoch, as stamped by the linker).
     pub timestamp: u32,
@@ -199,6 +200,7 @@ impl ReaReport {
                     ])).collect())),
                     ("imports", Value::Array(pe.imports.iter().map(|s| Value::str(s.clone())).collect())),
                     ("imported_functions", Value::Array(pe.imported_functions.iter().map(|s| Value::str(s.clone())).collect())),
+                    ("imports_complete", Value::Bool(pe.imports_complete)),
                     ("executable_sections", Value::Array(pe.executable_sections.iter().map(|s| Value::str(s.clone())).collect())),
                     ("dll_characteristics", Value::Array(pe.dll_characteristics.iter().map(|s| Value::str(s.clone())).collect())),
                     ("mitigations", Value::obj(vec![
@@ -386,6 +388,7 @@ impl ReaBridge {
             if file.size > MAX_ANALYZE_BYTES {
                 scan_issues.push(content_limit_issue(&file.path, file.size));
             }
+            if let Some(issue) = import_limit_issue(&file) { scan_issues.push(issue); }
             files.push(file);
         } else if meta.is_dir() {
             // Walk without following links, including file links. Snapshot
@@ -425,6 +428,7 @@ impl ReaBridge {
                                 if file.size > MAX_ANALYZE_BYTES {
                                     scan_issues.push(content_limit_issue(&rel, file.size));
                                 }
+                                if let Some(issue) = import_limit_issue(&file) { scan_issues.push(issue); }
                                 files.push(file);
                             }
                             Err(e) => scan_issues.push(ScanIssue::new(rel, "analysis", e.to_string())),
@@ -598,6 +602,12 @@ pub(crate) fn content_limit_issue(path: &str, size: u64) -> ScanIssue {
     )
 }
 
+pub(crate) fn import_limit_issue(file: &FileAnalysis) -> Option<ScanIssue> {
+    file.pe.as_ref().filter(|pe| !pe.imports_complete).map(|_| ScanIssue::new(
+        file.path.clone(), "imports", "PE import parsing is incomplete (unreadable or malformed entries, missing terminators, or parser limits); observed imports are retained but imphash is withheld"
+    ))
+}
+
 fn display_path(prefix: &str, path: &Path, root: &Path) -> String {
     if prefix.is_empty() {
         let rel = crate::util::path_to_slash_string(path.strip_prefix(root).unwrap_or(path));
@@ -632,7 +642,7 @@ pub fn analyze_file(path: &Path, display: &Path) -> Result<FileAnalysis> {
     let pe = if format == "PE" { parse_pe_with_size(&data, size) } else { None };
     // A partial import table must not become a comparable family fingerprint.
     let imphash = if data.len() as u64 == size {
-        pe.as_ref().and_then(|p| imphash(&p.imported_functions))
+        pe.as_ref().filter(|p| p.imports_complete).and_then(|p| imphash(&p.imported_functions))
     } else { None };
     Ok(FileAnalysis {
         path: crate::util::path_to_slash_string(display),
@@ -999,56 +1009,65 @@ fn parse_pe_with_size(data: &[u8], file_len: u64) -> Option<PeInfo> {
 
     let mut imports = Vec::new();
     let mut imported_functions = Vec::new();
+    let mut imports_complete = !(directory_count > 1 && optional.len() < directory_base + 16);
     if import_rva != 0 {
+        let mut descriptors_terminated = false;
         if let Some(mut desc) = rva_to_offset(import_rva) {
-            for _ in 0..64 { // descriptor cap
-                let oft_rva = u32le(data, desc).unwrap_or(0);       // OriginalFirstThunk
-                let name_rva = u32le(data, desc + 12).unwrap_or(0);
-                let ft_rva = u32le(data, desc + 16).unwrap_or(0);   // FirstThunk
-                if oft_rva == 0 && name_rva == 0 && ft_rva == 0 { break; }
+            for _ in 0..64 {
+                let descriptor = match data.get(desc..desc.saturating_add(20)) {
+                    Some(bytes) => bytes,
+                    None => { imports_complete = false; break; }
+                };
+                if descriptor.iter().all(|byte| *byte == 0) { descriptors_terminated = true; break; }
+                let oft_rva = u32le(descriptor, 0).unwrap();
+                let name_rva = u32le(descriptor, 12).unwrap();
+                let ft_rva = u32le(descriptor, 16).unwrap();
                 let dll = rva_to_offset(name_rva).and_then(&read_c_string).unwrap_or_default();
-                if !dll.is_empty() { imports.push(dll.clone()); }
-                // Walk the lookup table for per-function names/ordinals.
+                if dll.is_empty() { imports_complete = false; desc += 20; continue; }
+                imports.push(dll.clone());
                 let thunk_rva = if oft_rva != 0 { oft_rva } else { ft_rva };
-                if thunk_rva != 0 && !dll.is_empty() {
+                let mut thunks_terminated = false;
+                if thunk_rva != 0 {
                     if let Some(mut thunk) = rva_to_offset(thunk_rva) {
-                        for _ in 0..512 { // per-DLL function cap
-                            let (entry, step) = if is_64bit {
-                                (u64le(data, thunk).unwrap_or(0), 8usize)
-                            } else {
-                                (u32le(data, thunk).unwrap_or(0) as u64, 4usize)
+                        for _ in 0..512 {
+                            let step = if is_64bit { 8 } else { 4 };
+                            let entry = match if is_64bit { u64le(data, thunk) } else { u32le(data, thunk).map(u64::from) } {
+                                Some(value) => value,
+                                None => { imports_complete = false; break; }
                             };
-                            if entry == 0 { break; }
-                            let ordinal_flag: u64 = if is_64bit { 0x8000_0000_0000_0000 } else { 0x8000_0000 };
+                            if entry == 0 { thunks_terminated = true; break; }
+                            let ordinal_flag = if is_64bit { 1u64 << 63 } else { 1u64 << 31 };
                             if entry & ordinal_flag != 0 {
-                                imported_functions.push(format!("{dll}!#{}", entry & 0xffff));
-                            } else if let Ok(rva) = u32::try_from(entry) {
-                                // PE32+ name thunks still contain a 32-bit
-                                // RVA. Never wrap reserved high bits into
-                                // an unrelated valid name in the prefix.
-                                if let Some(hn) = rva_to_offset(rva) {
-                                    if u16le(data, hn).is_some() {
-                                        if let Some(name) = read_c_string(hn.saturating_add(2)) {
-                                            imported_functions.push(format!("{dll}!{name}"));
-                                        }
-                                    }
+                                if entry & !(ordinal_flag | 0xffff) != 0 { imports_complete = false; }
+                                else { imported_functions.push(format!("{dll}!#{}", entry & 0xffff)); }
+                            } else {
+                                let name = u32::try_from(entry).ok().and_then(&rva_to_offset).and_then(|hn| {
+                                    u16le(data, hn)?;
+                                    read_c_string(hn.saturating_add(2))
+                                });
+                                match name {
+                                    Some(name) => imported_functions.push(format!("{dll}!{name}")),
+                                    None => imports_complete = false,
                                 }
                             }
                             thunk += step;
-                            if imported_functions.len() >= 4096 { break; }
+                            if imported_functions.len() >= 4096 { imports_complete = false; break; }
                         }
                     }
                 }
+                if !thunks_terminated { imports_complete = false; }
                 desc += 20;
+                if imported_functions.len() >= 4096 { break; }
             }
         }
+        if !descriptors_terminated { imports_complete = false; }
     }
 
     Some(PeInfo {
         machine: match machine_raw { 0x8664 => "x86-64", 0x14c => "x86", 0xaa64 => "ARM64", 0x1c0 => "ARM", _ => "unknown" }.to_string(),
         is_64bit,
         subsystem: match subsystem_raw { 2 => "windows-gui", 3 => "windows-console", 1 => "native", _ => "other" }.to_string(),
-        sections, section_details, imports, imported_functions, executable_sections,
+        sections, section_details, imports, imported_functions, imports_complete, executable_sections,
         timestamp, entry_point_rva, dll_characteristics, mitigations, signed, overlay_size, overlay_ranges, certificate_range,
     })
 }
@@ -1535,6 +1554,67 @@ mod tests {
         bytes[0x3f2..].fill(b'X');
         let pe = parse_pe(&bytes).unwrap();
         assert!(!pe.imported_functions.iter().any(|s| s.contains("!XXX")));
+    }
+
+    #[test]
+    fn import_completeness_distinguishes_valid_absent_and_malformed_tables() {
+        let data = synthetic_pe();
+        assert!(parse_pe(&data).unwrap().imports_complete);
+        let mut absent = data.clone();
+        absent[0x98 + 112 + 8..0x98 + 112 + 12].fill(0);
+        assert!(parse_pe(&absent).unwrap().imports_complete);
+        let mut malformed = data;
+        malformed[0x340..0x348].copy_from_slice(&0x0000_0001_0000_1190u64.to_le_bytes());
+        let pe = parse_pe(&malformed).unwrap();
+        assert!(!pe.imports_complete);
+        assert!(pe.imported_functions.iter().any(|f| f.ends_with("!#42")));
+    }
+
+    #[test]
+    fn unterminated_thunks_and_descriptors_are_not_complete() {
+        let mut data = synthetic_pe();
+        // Make a file-backed lookup table whose only entry ends at EOF.
+        data[0x300..0x304].copy_from_slice(&0x11f8u32.to_le_bytes());
+        data[0x3f8..0x400].copy_from_slice(&(0x8000_0000_0000_002au64).to_le_bytes());
+        data.truncate(0x400);
+        assert!(!parse_pe(&data).unwrap().imports_complete);
+        let mut data = synthetic_pe();
+        data[0x98 + 112 + 8..0x98 + 112 + 12].copy_from_slice(&0x11f8u32.to_le_bytes());
+        data.truncate(0x400);
+        assert!(!parse_pe(&data).unwrap().imports_complete);
+    }
+
+    #[test]
+    fn function_limit_marks_observed_imports_partial() {
+        let mut data = synthetic_pe();
+        data.resize(0x2000, 0);
+        let section = 0x98 + 240;
+        data[section + 8..section + 12].copy_from_slice(&0x1e00u32.to_le_bytes());
+        data[section + 16..section + 20].copy_from_slice(&0x1e00u32.to_le_bytes());
+        data[0x300..0x304].copy_from_slice(&0x1200u32.to_le_bytes());
+        for off in (0x400..0x1400).step_by(8) {
+            data[off..off + 8].copy_from_slice(&0x8000_0000_0000_002au64.to_le_bytes());
+        }
+        let pe = parse_pe(&data).unwrap();
+        assert!(!pe.imports_complete);
+        assert_eq!(pe.imported_functions.len(), 512);
+    }
+
+    #[test]
+    fn malformed_imports_withhold_imphash_and_record_coverage_in_scans() {
+        let root = std::env::temp_dir().join(format!("rea_partial_imports_{}", crate::util::new_id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("partial.exe");
+        let mut data = synthetic_pe();
+        data[0x392] = 0xff;
+        std::fs::write(&path, data).unwrap();
+        let bridge = ReaBridge::new(ReaConfig::default());
+        for target in [&path, &root] {
+            let report = bridge.analyze_native(target).unwrap();
+            assert!(report.files[0].imphash.is_none());
+            assert!(report.scan_issues.iter().any(|i| i.stage == "imports"));
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -95,6 +95,7 @@ def compare(native, oracle, data, label):
     equal('libraries', pe['imports'], [d.dll.decode('ascii') for d in descriptors])
     functions = [d.dll.decode('ascii') + '!' + (entry.name.decode('ascii') if entry.name else '#' + str(entry.ordinal)) for d in descriptors for entry in d.imports]
     equal('functions', pe['imported_functions'], functions)
+    equal('import completeness on valid fixtures', pe['imports_complete'], True)
     equal('imphash', native['imphash'], oracle.get_imphash() or None)
     flags = oracle.OPTIONAL_HEADER.DllCharacteristics
     for key, bit in [('aslr_dynamic_base', 0x40), ('nx_compat', 0x100), ('guard_cf', 0x4000), ('no_seh', 0x400), ('high_entropy_va', 0x20)]:
