@@ -64,7 +64,7 @@ So `rea-offline gui`:
 2. prints the URL of the port it actually bound and names the console window,
 3. opens your default browser at that same URL (`ShellExecuteW` on Windows,
    `open` / `xdg-open` elsewhere), with a fallback if the shell refuses,
-4. serves one self-contained page (inline CSS and SVG, **no JavaScript**) on
+4. serves self-contained report pages (inline CSS and SVG, no required JavaScript) on
    a thread per connection, so a browser's speculative preconnect cannot
    hold the real request hostage.
 
@@ -74,11 +74,12 @@ and `/markdown` serve the report in the other formats.
 
 ## What is deliberately not there
 
-* **No JavaScript.** Every control is a link. That keeps the window usable
-  when a policy disables scripting, and means the page cannot be talked into
-  doing something the server did not already decide.
-* **No writes.** The server answers `GET` only; there is no endpoint that
-  deletes, purges, or scans a *new* path. Purging stays a CLI action
+* **No required JavaScript.** Report navigation is link-based. The picker uses
+  optional inline scripting for Browse status, path filling and busy feedback;
+  native Browse also works by submitting a form when scripting is disabled.
+* **No destructive endpoints.** Browsing uses token-protected POST requests to
+  show a local dialog; inspection and report navigation use GET. There is no
+  endpoint that deletes or purges files. Purging stays a CLI action
   (`rea-offline purge`) so a stray click cannot destroy evidence.
 * **No network fetches.** No fonts, no CDNs, no telemetry. The page renders
   identically with the network cable pulled.
@@ -202,3 +203,24 @@ npm and searches each PATH directory for `rea.exe`, `rea.cmd`, `rea.js`, then
 or `--rea` selections are not silently replaced if missing. Error 193 usually
 means the selected launcher is not a compatible Windows executable: select its
 Windows batch launcher, Node `.js` entry point, or matching-architecture `.exe`.
+
+### Browse local files and folders
+
+On Windows, **Browse file**, **Browse folder**, and **Browse saved report** open
+native dialogs on the PC running rea-offline. Selection fills in the real local
+path; it does not upload or execute the selected item. Click **Inspect** to start.
+Saved-report browsing selects report mode automatically. One dialog may be open
+at a time; if it is hidden, switch to the Windows dialog to choose or cancel.
+The folder dialog uses the shell's traditional filesystem picker; for paths it
+cannot represent, paste the full path manually.
+
+With JavaScript, cancellation leaves your input unchanged and browsing displays
+status feedback. Without scripting, Browse returns a prefilled picker page;
+cancelling returns an empty path. Non-Windows hosts show manual-entry guidance.
+Inspection errors preserve the path and selected mode.
+
+Native dialogs require a POST carrying a per-process unpredictable token from
+the picker page. GET requests and invalid tokens never open dialogs. Responses
+are not CORS-enabled and cannot be framed. Native dialogs are not automated in
+CI; Windows compilation and HTTP authorization are tested, while interactive
+file/folder selection still needs a Windows desktop smoke test.
