@@ -510,6 +510,14 @@ inputs or signature trust. Existing Rust adversarial-input tests remain necessar
 
 ## Changelog
 
+### 0.35.0
+
+- **Ambiguous import mappings are not guessed.** Import read windows whose
+  virtual extent overlaps another section or the declared headers are rejected,
+  including zero-fill overlaps. Traversal becomes incomplete and imphash is
+  withheld rather than depending on section-table order. Touching half-open
+  ranges and empty sections do not create ambiguity.
+
 ### 0.34.0
 
 - **Import directory sizes are enforced.** Descriptor traversal must fit both

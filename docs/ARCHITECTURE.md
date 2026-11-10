@@ -289,3 +289,14 @@ An absent directory requires both address and size to be zero; inconsistent
 pairs, a declared extent outside the backing region, or an RVA range extending
 past the 32-bit address space mark traversal incomplete even if a terminator is
 observed earlier. Observed valid records remain available as partial evidence.
+
+Import read windows are conservative about ambiguous virtual layouts: the whole
+selected section extent (`max(VirtualSize, SizeOfRawData)`) must be disjoint from
+other section extents and the declared headers, and must fit the 32-bit RVA
+address space. Header-backed windows likewise require headers disjoint from
+nonempty section extents. This rejects overlapping zero-fill and prevents table
+order from choosing evidence. Empty extents and touching half-open boundaries
+are allowed. A window can be rejected even when the particular starting RVA is
+outside the overlap: later records and string terminators must not traverse an
+ambiguous region. These rejected layouts are incomplete, not clean or malicious
+by definition, and are not claims about Windows loader acceptance.

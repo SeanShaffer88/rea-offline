@@ -981,11 +981,27 @@ fn parse_pe_with_size(data: &[u8], file_len: u64) -> Option<PeInfo> {
     let overlay_size = overlay_ranges.iter().map(|range| range.size).sum();
 
     let rva_to_window = |rva: u32| -> Option<(usize, usize)> {
-        for s in &parsed_sections {
+        for (index, s) in parsed_sections.iter().enumerate() {
             // Widen before addition: hostile u32 addresses can wrap in
             // optimized builds or panic in debug builds.
             let delta = (rva as u64).checked_sub(s.virtual_address as u64);
             if let Some(delta) = delta.filter(|d| *d < s.virtual_size.max(s.raw_size) as u64) {
+                // Do not choose an interpretation based on section-table
+                // order. Reject the whole backing window if its virtual
+                // extent aliases headers or another section (including that
+                // section's zero-fill). Even a later string terminator could
+                // otherwise cross into an ambiguous address range.
+                let start = s.virtual_address as u64;
+                let end = start + s.virtual_size.max(s.raw_size) as u64;
+                if start < headers_size as u64 || end > u32::MAX as u64 + 1 {
+                    return None;
+                }
+                if parsed_sections.iter().enumerate().any(|(other_index, other)| {
+                    let other_start = other.virtual_address as u64;
+                    let other_end = other_start + other.virtual_size.max(other.raw_size) as u64;
+                    other_index != index && other_start < other_end
+                        && start < other_end && other_start < end
+                }) { return None; }
                 // Virtual zero-fill is not backed by file bytes and must
                 // not be read as an import table from a following section.
                 if delta >= s.raw_size as u64 { return None; }
@@ -997,7 +1013,12 @@ fn parse_pe_with_size(data: &[u8], file_len: u64) -> Option<PeInfo> {
         }
         // RVAs outside sections may point into headers, not arbitrary raw
         // section contents. SizeOfHeaders bounds this fallback.
-        if (rva as usize) < headers_size && (rva as usize) < data.len() { Some((rva as usize, headers_size.min(data.len()))) } else { None }
+        if (rva as usize) < headers_size && (rva as usize) < data.len() {
+            if parsed_sections.iter().any(|section| section.virtual_size.max(section.raw_size) != 0
+                && (section.virtual_address as u64) < headers_size as u64)
+            { return None; }
+            Some((rva as usize, headers_size.min(data.len())))
+        } else { None }
     };
 
     let read_c_string = |(off, end): (usize, usize)| -> Option<String> {
@@ -1723,6 +1744,58 @@ mod tests {
             assert!(!pe.imports_complete);
             assert_eq!(pe.imports, vec!["KERNEL32.dll"]);
         }
+    }
+
+    fn add_mapping_section(bytes: &mut [u8], address: u32, size: u32) {
+        bytes[0x86..0x88].copy_from_slice(&2u16.to_le_bytes());
+        let second = 0x98 + 240 + 40;
+        bytes[second..second + 5].copy_from_slice(b".more");
+        bytes[second + 8..second + 12].copy_from_slice(&size.to_le_bytes());
+        bytes[second + 12..second + 16].copy_from_slice(&address.to_le_bytes());
+        bytes[second + 16..second + 20].copy_from_slice(&size.to_le_bytes());
+        bytes[second + 20..second + 24].copy_from_slice(&0x400u32.to_le_bytes());
+    }
+
+    #[test]
+    fn overlapping_import_mapping_is_rejected_in_either_section_order() {
+        let mut bytes = synthetic_pe();
+        add_mapping_section(&mut bytes, 0x1100, 0x40);
+        for _ in 0..2 {
+            let pe = parse_pe(&bytes).unwrap();
+            assert!(!pe.imports_complete);
+            assert!(pe.imports.is_empty());
+            let first = 0x98 + 240;
+            for offset in 0..40 { bytes.swap(first + offset, first + 40 + offset); }
+        }
+    }
+
+    #[test]
+    fn touching_and_empty_virtual_ranges_do_not_create_ambiguity() {
+        for (address, size) in [(0x1200u32, 0x40u32), (0x1100, 0)] {
+            let mut bytes = synthetic_pe();
+            add_mapping_section(&mut bytes, address, size);
+            assert!(parse_pe(&bytes).unwrap().imports_complete);
+        }
+    }
+
+    #[test]
+    fn section_zero_fill_overlap_also_makes_import_window_ambiguous() {
+        let mut bytes = synthetic_pe();
+        add_mapping_section(&mut bytes, 0xf00, 0x300);
+        let second = 0x98 + 240 + 40;
+        bytes[second + 16..second + 20].copy_from_slice(&0x40u32.to_le_bytes());
+        assert!(!parse_pe(&bytes).unwrap().imports_complete);
+    }
+
+    #[test]
+    fn import_header_window_cannot_overlap_section_virtual_addresses() {
+        let mut bytes = synthetic_pe();
+        // A header-backed empty descriptor would otherwise look complete.
+        bytes[0x98 + 112 + 8..0x98 + 112 + 12].copy_from_slice(&0x1e0u32.to_le_bytes());
+        bytes[0x98 + 112 + 12..0x98 + 112 + 16].copy_from_slice(&20u32.to_le_bytes());
+        assert!(parse_pe(&bytes).unwrap().imports_complete);
+        add_mapping_section(&mut bytes, 0x1f0, 0x10);
+        assert!(!parse_pe(&bytes).unwrap().imports_complete);
     }
 
     #[test]
