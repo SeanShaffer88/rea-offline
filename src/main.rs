@@ -30,7 +30,7 @@ USAGE:
   rea-offline upstream <cache.json> [--refresh]
                        (offline cache view by default; --refresh explicitly
                        fetches repo metadata, latest commit, README and release)
-  rea-offline ask      "<request>" --model <model.gguf> --llm <llama-cli.exe>
+  rea-offline ask      "<request>" --model <model.gguf> --llm <llama-completion.exe>
                        [--target <path>] [--upstream-cache <cache.json>]
                        [--output answer.json] [--timeout <secs>]
   rea-offline forensic <installer-or-installed-folder> --output <new-folder>

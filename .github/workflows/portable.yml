@@ -74,6 +74,10 @@ jobs:
               $ghidra[0].completion.functions_exported -lt 1) {
             throw 'Real Ghidra source identity, completion footer or function evidence did not validate.'
           }
+          $functions = @(Get-ChildItem .\folder-evidence\deep -Filter '*.jsonl' | ForEach-Object {
+            Get-Content -LiteralPath $_.FullName | ForEach-Object { $_ | ConvertFrom-Json }
+          } | Where-Object { $_.kind -eq 'function' -and $_.decompilation_completed -and $_.pseudocode })
+          if ($functions.Count -lt 1) { throw 'No actual decompiled pseudocode was produced.' }
       - name: Upload portable ZIP and checksum
         uses: actions/upload-artifact@v4
         with:

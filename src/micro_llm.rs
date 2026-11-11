@@ -100,11 +100,11 @@ fn validate(opts: &Options) -> Result<()> {
         return Err(invalid("--timeout must be between 1 and 1800 seconds"));
     }
     if !opts.runner.is_file() { return Err(invalid(
-        "llama.cpp runner not found; set --llm to a trusted local llama-cli.exe (Windows x64)"
+        "llama.cpp runner not found; set --llm to a trusted local llama-completion.exe (Windows x64)"
     )); }
     #[cfg(windows)]
     if crate::util::extension_lower(&opts.runner) != "exe" {
-        return Err(invalid("--llm must be a Windows x64 llama-cli.exe, not a batch script"));
+        return Err(invalid("--llm must be a Windows x64 llama.cpp executable, not a batch script"));
     }
     let mut magic = [0; 4];
     std::fs::File::open(&opts.model).map_err(|e| invalid(&format!(
@@ -143,7 +143,7 @@ pub fn answer(opts: Options) -> Result<Value> {
     })?;
     if !output.status_ok {
         return Err(Error::Process(format!(
-            "local micro-LLM exited {:?}: {}. Use a current llama.cpp x64 runner supporting --offline; no cloud fallback was attempted",
+            "local micro-LLM exited {:?}: {}. Use llama-completion.exe (or a compatible legacy llama-cli) supporting --offline and --no-conversation; no cloud fallback was attempted",
             output.exit_code, prefix(output.stderr.trim(), 1024)
         )));
     }

@@ -13,7 +13,7 @@ if ($clientArgs.Count -gt 0 -and $clientArgs[0] -eq 'ask') {
         $clientArgs += @('--model', (Join-Path $root 'models/qwen2.5-coder-0.5b-instruct-q4_k_m.gguf'))
     }
     if (-not ($clientArgs -match '^--llm(=|$)')) {
-        $clientArgs += @('--llm', (Join-Path $root 'tools/llama/llama-cli.exe'))
+        $clientArgs += @('--llm', (Join-Path $root 'tools/llama/llama-completion.exe'))
     }
 }
 & (Join-Path $root 'rea-offline.exe') @clientArgs

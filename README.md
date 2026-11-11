@@ -93,7 +93,7 @@ Frida's native runtime and optional browser downloads are not included/verified.
 
 ## Local micro-LLM requests
 
-The `ask` command uses a locally supplied **llama.cpp `llama-cli.exe` (Windows
+The `ask` command uses a locally supplied **llama.cpp `llama-completion.exe` (Windows
 x64)** and **Qwen2.5-Coder-0.5B-Instruct GGUF**, preferably Q4_K_M. This is the
 recommended micro-model: the prompt uses Qwen's ChatML instruction format.
 Use an instruction-tuned Qwen-compatible GGUF, not a base model. Model quality,
@@ -104,12 +104,16 @@ machine, or copy both from removable storage. The runner's required DLLs must
 remain beside it. **The executable does not bundle model weights or llama.cpp,
 and does not silently download them; the full portable ZIP includes both.** Use a recent llama.cpp build that
 supports `--offline`. No API key or local HTTP model server is needed.
+Modern llama.cpp separates the interactive `llama-cli` from non-interactive
+completion; use `llama-completion.exe` for this client. Compatible older CLI
+builds can still be supplied explicitly. Extract the portable ZIP to a short
+path such as `C:\REA` to avoid Windows path-length limits.
 
 ```bat
 rea-offline.exe ask "Explain the suspicious imports and what to inspect next" ^
   --target "C:\Apps\sample.exe" ^
   --model "C:\REA\models\qwen2.5-coder-0.5b-instruct-q4_k_m.gguf" ^
-  --llm "C:\REA\llama.cpp\llama-cli.exe" ^
+  --llm "C:\REA\llama.cpp\llama-completion.exe" ^
   --output answer.json
 ```
 

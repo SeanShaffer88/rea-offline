@@ -72,3 +72,21 @@ fn export_refuses_overwrites_recursive_output_and_installer_mode_for_folders() {
     assert!(!root.join("evidence").exists());
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[cfg(unix)]
+#[test]
+fn installed_payload_is_preserved_before_temporary_install_tree_is_purged() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = root();
+    let installer = root.join("installer.sh");
+    std::fs::write(&installer, "#!/bin/sh\nmkdir -p \"$REASANDBOX_INSTALL/Demo\"\nprintf 'offline editor config' > \"$REASANDBOX_INSTALL/Demo/app.ini\"\n").unwrap();
+    std::fs::set_permissions(&installer, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let output = cli(&root, &["forensic", "installer.sh", "--output", "evidence", "--run-installer", "--include-files"]);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(std::fs::read_to_string(root.join("evidence/installed-files/install/Demo/app.ini")).unwrap(), "offline editor config");
+    assert!(root.join("evidence/installed-report.json").exists());
+    let run = parse(&std::fs::read_to_string(root.join("evidence/installer-execution.json")).unwrap()).unwrap();
+    assert_eq!(run.get("sandbox_kept"), Some(&Value::Bool(false)));
+    assert!(!Path::new(run.get("sandbox_path").and_then(Value::as_str).unwrap()).exists());
+    std::fs::remove_dir_all(root).unwrap();
+}

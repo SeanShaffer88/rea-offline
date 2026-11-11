@@ -188,10 +188,15 @@ pub fn export(opts: Options) -> Result<Value> {
     write(&stage.join("resources.json"), &Value::Array(resources))?;
     let mut execution = Value::Null;
     if opts.run_installer {
+        // Know the retention root even if the installer fails before a
+        // sandbox report can be returned, so failure cannot leak a kept tree.
+        let execution_root = if opts.include_files {
+            Some(crate::util::temp_root().join(format!("rea_sandbox_{}", crate::util::new_id())))
+        } else { None };
         match crate::app::mode_sandbox(crate::app::SandboxOptions {
             installer: input.clone(), installer_args: opts.installer_args,
             rea_path: None, sandbox: crate::universal_sandbox::SandboxConfig {
-                timeout: opts.timeout, keep: opts.include_files, ..Default::default()
+                root: execution_root.clone(), timeout: opts.timeout, keep: opts.include_files, ..Default::default()
             },
         }) {
             Ok(mut value) => {
@@ -243,9 +248,17 @@ pub fn export(opts: Options) -> Result<Value> {
                 }
                 execution = value;
             }
-            Err(e) => issues.push(Value::obj(vec![
-                ("stage", Value::str("installer-execution")), ("message", Value::str(e.to_string())),
-            ])),
+            Err(e) => {
+                issues.push(Value::obj(vec![
+                    ("stage", Value::str("installer-execution")), ("message", Value::str(e.to_string())),
+                ]));
+                if let Some(root) = execution_root.filter(|r| r.exists()) {
+                    if let Err(e) = crate::cleanup::CleanupController::purge_sandbox(&root, None, false) {
+                        issues.push(Value::obj(vec![("stage", Value::str("failed-installer-purge")),
+                            ("message", Value::str(e.to_string()))]));
+                    }
+                }
+            }
         }
     }
     if execution != Value::Null { write(&stage.join("installer-execution.json"), &execution)?; }
