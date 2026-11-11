@@ -27,6 +27,7 @@ jobs:
         with:
           path: .bundle-cache
           key: forensic-downloads-windows-x64-${{ hashFiles('portable/dependencies.json') }}
+          restore-keys: forensic-downloads-windows-x64-
       - name: Build dependency-free client
         run: cargo build --release --offline --locked --target x86_64-pc-windows-msvc
       - name: Bundle pinned tools, local model, dependencies and notices
@@ -80,6 +81,15 @@ jobs:
             Get-Content -LiteralPath $_.FullName | ForEach-Object { $_ | ConvertFrom-Json }
           } | Where-Object { $_.kind -eq 'function' -and $_.decompilation_completed -and $_.pseudocode })
           if ($functions.Count -lt 1) { throw 'No actual decompiled pseudocode was produced.' }
+          foreach ($directory in @('installer-evidence','folder-evidence')) {
+            $manifest = Get-Content -Raw (Join-Path $directory 'manifest.json') | ConvertFrom-Json
+            foreach ($entry in $manifest.files) {
+              $file = Join-Path $directory $entry.path
+              if ((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant() -ne $entry.sha256) {
+                throw "Export hash mismatch: $file"
+              }
+            }
+          }
       - name: Upload portable ZIP and checksum
         uses: actions/upload-artifact@v4
         with:

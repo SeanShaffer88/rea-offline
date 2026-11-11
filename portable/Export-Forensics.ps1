@@ -25,6 +25,14 @@ $env:PATH = (Join-Path $root 'tools/vc-runtime') + ';' + (Join-Path $root 'tools
 function Write-Utf8([string] $Path, [string] $Text) {
     [IO.File]::WriteAllText($Path, $Text, (New-Object Text.UTF8Encoding($false)))
 }
+function Get-Sha256([string] $Path) {
+    # Avoid Windows PowerShell module autoload assumptions when this launcher
+    # is invoked from PowerShell 7 or another host with an inherited PSModulePath.
+    $stream = [IO.File]::OpenRead($Path)
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    try { return [BitConverter]::ToString($algorithm.ComputeHash($stream)).Replace('-', '').ToLowerInvariant() }
+    finally { $algorithm.Dispose(); $stream.Dispose() }
+}
 $exportArgs = @('forensic', $targetPath, '--output', $outputPath)
 if ($IncludeFiles) { $exportArgs += '--include-files' }
 if ($RunInstaller) { $exportArgs += '--run-installer' }
@@ -162,7 +170,7 @@ $records = @(Get-ChildItem -LiteralPath $outputPath -Recurse -File |
     Where-Object { $_.FullName -ne (Join-Path $outputPath 'manifest.json') } |
     Sort-Object FullName | ForEach-Object {
         @{path=$_.FullName.Substring($outputPath.Length+1).Replace('\','/');bytes=$_.Length;
-          sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()}
+          sha256=(Get-Sha256 $_.FullName)}
     })
 Write-Utf8 (Join-Path $outputPath 'manifest.json') (
     @{manifest_version=1;hash_algorithm='sha256';files=$records;note='Manifest excludes itself; hashes do not establish behavioral completeness.'} |
