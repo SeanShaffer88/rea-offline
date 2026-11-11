@@ -1,7 +1,8 @@
 //! Module 4 — REA Engine Bridge.
 //!
 //! Primary path: invoke a locally installed REA (`morluto/rea`) CLI/Node
-//! entry point, fully offline, and collect its JSON report.
+//! entry point and collect its JSON report. No network restriction is imposed
+//! on that third-party process; offline operation depends on its configuration.
 //! Fallback path: the built-in native analyzer below (PE parsing, section
 //! entropy, import table, indicator string scan). A machine with no REA
 //! and no network still gets a useful structured report — REA enriches
@@ -487,14 +488,14 @@ const MAX_REA_STDOUT_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_REA_STDERR_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug)]
-struct CmdOutput {
-    status_ok: bool,
-    exit_code: Option<i32>,
-    stdout: String,
-    stderr: String,
-    stdout_bytes: u64,
-    stderr_bytes: u64,
-    stdout_truncated: bool,
+pub(crate) struct CmdOutput {
+    pub(crate) status_ok: bool,
+    pub(crate) exit_code: Option<i32>,
+    pub(crate) stdout: String,
+    pub(crate) stderr: String,
+    pub(crate) stdout_bytes: u64,
+    pub(crate) stderr_bytes: u64,
+    pub(crate) stdout_truncated: bool,
 }
 
 struct CaptureFile {
@@ -531,7 +532,7 @@ fn tail_str(s: &str, max: usize) -> &str {
     &s[start..]
 }
 
-fn run_with_timeout(mut cmd: std::process::Command, timeout: Duration) -> Result<CmdOutput> {
+pub(crate) fn run_with_timeout(mut cmd: std::process::Command, timeout: Duration) -> Result<CmdOutput> {
     let id = crate::util::new_id();
     let stdout_path = crate::util::temp_root().join(format!("rea_offline_rea_{id}.stdout.log"));
     let stderr_path = crate::util::temp_root().join(format!("rea_offline_rea_{id}.stderr.log"));

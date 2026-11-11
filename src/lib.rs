@@ -18,6 +18,7 @@ pub mod imphash_ordinals;
 pub mod json;
 pub mod md5;
 pub mod mdtable;
+pub mod micro_llm;
 pub mod render;
 pub mod report;
 pub mod rea_bridge;
@@ -28,6 +29,7 @@ pub mod snapshot;
 pub mod universal_sandbox;
 pub mod testutil;
 pub mod util;
+pub mod upstream;
 
 #[cfg(test)]
 mod selfcheck;

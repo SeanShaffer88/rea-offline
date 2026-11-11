@@ -56,6 +56,26 @@ jobs:
           if [ -f "$exe.exe" ]; then exe="$exe.exe"; fi
           python3 scripts/check_pe_differential.py --binary "$exe"
 
+      # Deliberately online and separate from the offline unit tests. This
+      # exercises the native WinHTTP transport, not a mocked HTTP client.
+      - name: Windows GitHub details refresh smoke test
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $fresh = & .\target\release\rea-offline.exe upstream github-details.json --refresh
+          if ($LASTEXITCODE -ne 0) { throw 'GitHub details refresh failed.' }
+          $details = $fresh | ConvertFrom-Json
+          if ($details.repository -ne 'morluto/rea' -or
+              $details.metadata.full_name -ne 'morluto/rea' -or
+              $details.latest_commit.sha -notmatch '^[0-9a-f]{40}$') {
+            throw 'GitHub details identity or commit did not validate.'
+          }
+          $cached = & .\target\release\rea-offline.exe upstream github-details.json
+          if ($LASTEXITCODE -ne 0) { throw 'Offline cache view failed.' }
+          if (($cached | ConvertFrom-Json).latest_commit.sha -ne $details.latest_commit.sha) {
+            throw 'Cached details differed from the explicit refresh.'
+          }
+
       - name: Upload binary
         if: always() && success()
         uses: actions/upload-artifact@v4

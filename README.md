@@ -1,10 +1,83 @@
 # rea-offline
 
-**Universal Offline Windows Client & REA Analysis Engine** — inspect local
-programs and untrusted `.exe` / `.msi` installers on *any* Windows edition
-(including Windows Home), with no Hyper-V, no Windows Sandbox, no drivers,
-and no network. Written in Rust with **zero external dependencies**, so it
-builds on a fully air-gapped machine.
+**Offline-first REA client for Windows 11 x64** — inspect local programs,
+analyze installers, and ask a small local model to explain reverse-engineering
+evidence. No Hyper-V, Windows Sandbox, drivers or cloud LLM account is required.
+The Rust client has **zero Cargo dependencies** and builds without internet.
+Windows ARM64 and older Windows versions are not supported; Linux is used only
+as a development/test harness.
+
+## Local micro-LLM requests
+
+The `ask` command uses a locally supplied **llama.cpp `llama-cli.exe` (Windows
+x64)** and **Qwen2.5-Coder-0.5B-Instruct GGUF**, preferably Q4_K_M. This is the
+recommended micro-model: the prompt uses Qwen's ChatML instruction format.
+Use an instruction-tuned Qwen-compatible GGUF, not a base model. Model quality,
+latency and RAM use depend on quantization and hardware.
+
+Download the trusted x64 runner and model separately on an internet-connected
+machine, or copy both from removable storage. The runner's required DLLs must
+remain beside it. **The executable does not bundle model weights or llama.cpp,
+and does not silently download them.** Use a recent llama.cpp build that
+supports `--offline`. No API key or local HTTP model server is needed.
+
+```bat
+rea-offline.exe ask "Explain the suspicious imports and what to inspect next" ^
+  --target "C:\Apps\sample.exe" ^
+  --model "C:\REA\models\qwen2.5-coder-0.5b-instruct-q4_k_m.gguf" ^
+  --llm "C:\REA\llama.cpp\llama-cli.exe" ^
+  --output answer.json
+```
+
+`--target` is optional. With it, the client runs its native static analyzer
+(not the target executable) and sends a bounded evidence summary to the model.
+An optional `--upstream-cache rea-upstream.json` adds cached repository/commit
+provenance; it never refreshes the network implicitly. Output is JSON containing
+the advisory answer, evidence, model/runner paths and truncation/coverage
+information. Default inference timeout is 180 seconds; `--timeout` accepts
+1–1800 seconds. Input is limited to 4096 UTF-8 bytes, evidence to 6000 bytes,
+and generation to 384 tokens with a 4096-token context.
+
+Model inference runs as a direct local subprocess with `--offline`, no shell,
+and no cloud fallback. Temporary prompts are removed on normal success/failure.
+Generated commands are **never executed**, and model text never changes the
+deterministic scan verdict. Small models can be wrong: validate their suggestions.
+This is an evidence assistant, not a replacement for upstream REA's complete
+decompiler, browser, device, runtime and MCP tool catalog. The new assistant is
+currently available through the CLI; existing GUI inspection is unchanged.
+
+## Network behavior and upstream details
+
+**Offline-first does not mean a network firewall.** Static scans, cached reports
+and properly configured local model inference need no internet. Existing external
+REA, installer and browser workflows remain enabled: the client does not block
+their networking, disable Windows connectivity or install firewall rules.
+Job Objects are not a network isolation boundary. Trusted local runner/model
+files are your responsibility; paths to network shares can also cause OS traffic.
+The application cannot promise that third-party tools or Windows never connect.
+
+The client's new outbound HTTP feature is a separate, explicit refresh of
+`morluto/rea` repository details:
+
+```bat
+rem Online only when explicitly requested:
+rea-offline.exe upstream rea-upstream.json --refresh
+rem View the last fetched details offline:
+rea-offline.exe upstream rea-upstream.json
+```
+
+Refresh retrieves repository metadata, the latest default-branch commit,
+the README pinned to that commit and the latest release metadata. It uses
+Windows WinHTTP with TLS 1.2/1.3 to `api.github.com`, only under
+`/repos/morluto/rea`. It does not follow redirects, README links, images,
+download URLs or release assets; it never installs or executes upstream code.
+No local targets, prompts or reports are uploaded. Each response is bounded
+to 2 MiB, with timeouts; a failed refresh leaves an existing cache untouched.
+The cache is replaced atomically only after all required requests succeed.
+No published release (HTTP 404) is represented as `latest_release: null`.
+GitHub rate limits or a network/proxy failure produce an error, not an implicit
+alternate service or cloud fallback. Direct HTTPS access to GitHub is required
+for refresh; the other workflows keep their original network behavior.
 
 ## Modes
 
@@ -509,6 +582,16 @@ these checks cover the explicit supported fixture matrix, not arbitrary malforme
 inputs or signature trust. Existing Rust adversarial-input tests remain necessary.
 
 ## Changelog
+
+### 0.36.0
+
+- Added `ask` for local Qwen-compatible GGUF micro-LLM assistance through a
+  supplied llama.cpp runner, with bounded native evidence and advisory JSON.
+- Added explicit, repository-scoped GitHub details refresh and offline cache
+  viewing; failed refreshes preserve the previous cache.
+- Clarified offline-first behavior without network blocking or disabling
+  external REA, installer or browser workflows.
+- Documented Windows 11 x64 as the supported client target.
 
 ### 0.35.0
 

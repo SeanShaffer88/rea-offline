@@ -10,8 +10,9 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 const HELP: &str = r#"rea-offline — Universal Offline Windows Client & REA Analysis Engine
-Runs on every Windows edition (incl. Home): no Hyper-V, no Windows Sandbox,
-no drivers, no network.
+Windows 11 x64. Static analysis and micro-LLM inference run locally.
+No network blocking is imposed on external tools. Repository details can
+be refreshed explicitly from morluto/rea on GitHub.
 
 USAGE:
   rea-offline scan     <path> [--output report.json] [--rea <path>]
@@ -26,6 +27,12 @@ USAGE:
   rea-offline diff     <before.json> <after.json> [--fail-on-incomplete]
   rea-offline purge    <rea_sandbox_dir> [--force]
   rea-offline doctor   [--rea <path>]
+  rea-offline upstream <cache.json> [--refresh]
+                       (offline cache view by default; --refresh explicitly
+                       fetches repo metadata, latest commit, README and release)
+  rea-offline ask      "<request>" --model <model.gguf> --llm <llama-cli.exe>
+                       [--target <path>] [--upstream-cache <cache.json>]
+                       [--output answer.json] [--timeout <secs>]
   rea-offline sample   <out.exe> [--kind pe|script]
 
 OUTPUT:
@@ -172,6 +179,9 @@ fn command_spec(command: &str) -> Option<CommandSpec> {
         "diff" => spec(&["output"], &["quiet", "fail-on-incomplete"], 2, false),
         "purge" => spec(&["output"], &["quiet", "force"], 1, false),
         "doctor" => spec(&["output", "rea", "format"], &["quiet"], 0, false),
+        "upstream" => spec(&[], &["refresh"], 1, false),
+        "ask" => spec(&["model", "llm", "target", "upstream-cache", "output", "timeout"],
+            &["quiet"], 1, false),
         "sample" => spec(&["kind"], &[], 1, false),
         _ => None,
     }
@@ -412,6 +422,33 @@ fn run(args: &[String]) -> rea_offline::Result<u8> {
         })
     };
     match cmd.as_str() {
+        "upstream" => {
+            let path = need(0, "cache.json")?;
+            let details = if p.has("refresh") {
+                rea_offline::upstream::refresh(&path)?
+            } else {
+                rea_offline::upstream::load(&path)?
+            };
+            println!("{}", details.to_string_pretty());
+            Ok(0)
+        }
+        "ask" => {
+            let required = |flag| p.get(flag).map(PathBuf::from).ok_or_else(|| {
+                rea_offline::Error::InvalidInput(format!("ask requires --{flag}"))
+            });
+            let timeout = p.get("timeout").map(|v| rea_offline::util::parse_number(v, "--timeout"))
+                .transpose()?.unwrap_or(180u64);
+            let answer = rea_offline::micro_llm::answer(rea_offline::micro_llm::Options {
+                request: p.positional[0].clone(),
+                model: required("model")?,
+                runner: required("llm")?,
+                target: p.get("target").map(PathBuf::from),
+                upstream_cache: p.get("upstream-cache").map(PathBuf::from),
+                timeout: Duration::from_secs(timeout),
+            })?;
+            emit(&answer, &p, Format::Json)?;
+            Ok(0)
+        }
         "scan" => {
             let json = app::mode_scan(app::ScanOptions {
                 target: need(0, "path")?,

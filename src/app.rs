@@ -349,6 +349,13 @@ pub fn mode_doctor(rea_path: Option<PathBuf>) -> Result<Value> {
         ])),
         ("os", Value::str(std::env::consts::OS)),
         ("arch", Value::str(std::env::consts::ARCH)),
+        ("network_policy", Value::obj(vec![
+            ("analysis", Value::str("local static analysis; optional external REA preserved")),
+            ("micro_llm", Value::str("local GGUF inference through llama.cpp; no cloud API")),
+            ("network_blocking", Value::Bool(false)),
+            ("upstream_refresh", Value::str("explicit refresh of api.github.com/repos/morluto/rea details")),
+            ("supported_platform", Value::str("Windows 11 x64")),
+        ])),
         // The documented advice is "run untrusted installers from a standard
         // account". Doctor states whether this session actually does, because
         // an elevated run can write past the sandbox and out of the report.

@@ -1,8 +1,8 @@
 [package]
 name = "rea-offline"
-version = "0.35.0"
+version = "0.36.0"
 edition = "2021"
-description = "Universal offline Windows client & REA analysis engine (no Hyper-V / Sandbox required)"
+description = "Offline-first Windows 11 x64 REA client with a local micro-LLM assistant"
 license = "MIT"
 repository = "https://github.com/SeanShaffer88/rea-offline"
 
