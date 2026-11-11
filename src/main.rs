@@ -33,6 +33,11 @@ USAGE:
   rea-offline ask      "<request>" --model <model.gguf> --llm <llama-cli.exe>
                        [--target <path>] [--upstream-cache <cache.json>]
                        [--output answer.json] [--timeout <secs>]
+  rea-offline forensic <installer-or-installed-folder> --output <new-folder>
+                       [--include-files] [--run-installer] [--timeout <secs>]
+                       [--fail-on-incomplete] [-- <installer args>...]
+                       (static by default; execution requires --run-installer;
+                       generated evidence cannot guarantee perfect replication)
   rea-offline sample   <out.exe> [--kind pe|script]
 
 OUTPUT:
@@ -182,6 +187,7 @@ fn command_spec(command: &str) -> Option<CommandSpec> {
         "upstream" => spec(&[], &["refresh"], 1, false),
         "ask" => spec(&["model", "llm", "target", "upstream-cache", "output", "timeout"],
             &["quiet"], 1, false),
+        "forensic" => spec(&["output", "timeout"], &["include-files", "run-installer", "quiet", "fail-on-incomplete"], 1, true),
         "sample" => spec(&["kind"], &[], 1, false),
         _ => None,
     }
@@ -422,6 +428,20 @@ fn run(args: &[String]) -> rea_offline::Result<u8> {
         })
     };
     match cmd.as_str() {
+        "forensic" => {
+            let output = p.get("output").map(PathBuf::from).ok_or_else(||
+                rea_offline::Error::InvalidInput("forensic requires --output <new-folder>".into()))?;
+            let timeout = p.get("timeout").map(|v| rea_offline::util::parse_number(v, "--timeout"))
+                .transpose()?.unwrap_or(300u64);
+            if timeout == 0 { return Err(rea_offline::Error::InvalidInput("--timeout must be positive".into())); }
+            let result = rea_offline::forensic::export(rea_offline::forensic::Options {
+                target: need(0, "installer-or-installed-folder")?, output,
+                include_files: p.has("include-files"), run_installer: p.has("run-installer"),
+                installer_args: p.rest.clone(), timeout: Duration::from_secs(timeout),
+            })?;
+            println!("{}", result.to_string_pretty());
+            Ok(if p.has("fail-on-incomplete") && result.get("export_issue_count") != Some(&Value::num(0)) { 3 } else { 0 })
+        }
         "upstream" => {
             let path = need(0, "cache.json")?;
             let details = if p.has("refresh") {

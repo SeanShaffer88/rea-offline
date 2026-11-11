@@ -1,0 +1,94 @@
+name: Portable forensic bundle
+on:
+  pull_request:
+    paths:
+      - 'portable/**'
+      - 'scripts/package-portable.ps1'
+      - '.github/workflows/portable.yml'
+      - 'src/forensic.rs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  portable:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: actions/cache@v4
+        with:
+          path: .bundle-cache
+          key: forensic-downloads-windows-x64-${{ hashFiles('portable/dependencies.json') }}
+      - name: Build dependency-free client
+        run: cargo build --release --offline --locked --target x86_64-pc-windows-msvc
+      - name: Bundle pinned tools, local model, dependencies and notices
+        shell: pwsh
+        run: |
+          .\scripts\package-portable.ps1 `
+            -BinaryPath .\target\x86_64-pc-windows-msvc\release\rea-offline.exe `
+            -OutputDirectory .\portable-build -CreateZip
+      - name: Validate actual bundled model and default launcher
+        shell: pwsh
+        run: |
+          & .\portable-build\rea.cmd ask "Explain what a PE import table records in one sentence." --timeout 180 --output real-model-smoke.json
+          if ($LASTEXITCODE -ne 0) { throw 'Real bundled-model inference failed.' }
+          $answer = Get-Content -Raw real-model-smoke.json | ConvertFrom-Json
+          if (-not $answer.answer -or -not $answer.advisory) { throw 'Model returned no advisory answer.' }
+      - name: Validate installed-folder and installer evidence with Ghidra
+        shell: pwsh
+        run: |
+          @'
+          fn main() {
+              if let Ok(root) = std::env::var("REASANDBOX_INSTALL") {
+                  let app = std::path::Path::new(&root).join("DemoApp");
+                  std::fs::create_dir_all(&app).unwrap();
+                  std::fs::copy(std::env::current_exe().unwrap(), app.join("demo.exe")).unwrap();
+                  std::fs::write(app.join("app.config"), "{\"demo\":true}").unwrap();
+              } else { println!("REA forensic smoke fixture"); }
+          }
+          '@ | Set-Content -Encoding utf8 fixture.rs
+          rustc --edition=2021 fixture.rs -o fixture.exe
+          if ($LASTEXITCODE -ne 0) { throw 'Fixture compilation failed.' }
+          & .\portable-build\Analyze-Program.cmd -Target .\fixture.exe -Output .\installer-evidence -RunInstaller -IncludeFiles -SkipModel
+          if ($LASTEXITCODE -ne 0) { throw 'Installer forensic export failed.' }
+          if (-not (Test-Path .\installer-evidence\installed-files\install\DemoApp\demo.exe)) {
+            throw 'Installed program files were not preserved before sandbox teardown.'
+          }
+          & .\portable-build\Analyze-Program.cmd `
+            -Target .\installer-evidence\installed-files\install\DemoApp `
+            -Output .\folder-evidence -Deep -MaxFiles 1 -MaxFunctions 8 -DeepTimeoutSeconds 300 -SkipModel
+          if ($LASTEXITCODE -ne 0) { throw 'Installed-folder forensic export failed.' }
+          $scope = Get-Content -Raw .\folder-evidence\reconstruction.json | ConvertFrom-Json
+          if ($scope.source_kind -ne 'installed-program-folder') { throw 'Installed folder was not identified.' }
+          $status = Get-Content -Raw .\folder-evidence\analysis-status.json | ConvertFrom-Json
+          $ghidra = @($status.tools | Where-Object { $_.tool -eq 'ghidra' })
+          if ($ghidra.Count -ne 1 -or -not $ghidra[0].success -or
+              $ghidra[0].completion.functions_exported -lt 1) {
+            throw 'Real Ghidra source identity, completion footer or function evidence did not validate.'
+          }
+      - name: Upload portable ZIP and checksum
+        uses: actions/upload-artifact@v4
+        with:
+          name: rea-offline-portable-windows-x64
+          path: |
+            portable-build.zip
+            portable-build.zip.sha256
+          compression-level: 0
+          retention-days: 14
+      - name: Upload smoke evidence and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: portable-smoke-evidence
+          path: |
+            real-model-smoke.json
+            installer-evidence/
+            folder-evidence/
+          retention-days: 14

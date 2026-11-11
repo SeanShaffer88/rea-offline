@@ -13,6 +13,7 @@ pub mod cleanup;
 pub mod containment;
 pub mod coverage;
 pub mod error;
+pub mod forensic;
 pub mod gui;
 pub mod imphash_ordinals;
 pub mod json;

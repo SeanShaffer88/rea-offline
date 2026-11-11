@@ -16,6 +16,17 @@ jobs:
       - name: Release notes unit tests
         run: python3 -m unittest discover -s scripts -p "test_*.py" -v
 
+      - name: Parse Windows packaging and forensic scripts
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem scripts,portable -Filter '*.ps1' -Recurse)
+          foreach ($file in $files) {
+            $tokens = $null; $errors = $null
+            [Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) { throw "$($file.Name): $($errors | Out-String)" }
+          }
+
       # Advisory: printed for reviewers, not build-blocking.
       - name: rustfmt (advisory)
         continue-on-error: true

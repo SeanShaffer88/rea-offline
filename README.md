@@ -7,6 +7,90 @@ The Rust client has **zero Cargo dependencies** and builds without internet.
 Windows ARM64 and older Windows versions are not supported; Linux is used only
 as a development/test harness.
 
+## Complete portable bundle and forensic exports
+
+The **portable Windows x64 ZIP** includes the client, the actual quantized Qwen
+model, CPU llama.cpp runtime, app-local Microsoft VC runtime, pinned upstream
+REA and its npm dependencies, Node.js, Ghidra, a matching JDK, licenses/notices,
+JDK corresponding source, and a SHA-256 inventory. No separate model or tool
+download is needed after extracting this bundle. Building the bundle downloads
+about 1.5 GB from the pinned public sources; it needs internet at build time.
+Runtime does not impose firewall rules or disable internet-dependent programs.
+
+The portable build workflow uploads the ZIP/checksum under its run's artifacts.
+Release packaging also includes the portable ZIP alongside the standalone EXE.
+Only the portable ZIP includes these tools; the small standalone EXE still needs
+separately supplied tools/models for optional enriched analysis.
+
+```bat
+rem Installed programs: recursive file/folder inspection without running them.
+Analyze-Program.cmd -Target "C:\Program Files\Example" -Output "D:\Evidence\Example" -Deep -IncludeFiles -Zip
+
+rem Static installer inspection (does not execute the installer).
+Analyze-Program.cmd -Target "D:\Downloads\setup.exe" -Output "D:\Evidence\Setup" -Deep
+
+rem Explicit installer execution; use only in a disposable analysis machine.
+Analyze-Program.cmd -Target "D:\Downloads\setup.msi" -Output "D:\Evidence\Installed" -RunInstaller -IncludeFiles -Deep
+
+rem Bundled micro-model; defaults are supplied by the portable launcher.
+rea.cmd ask "Explain this program's imports and likely architecture" --target "C:\Program Files\Example"
+```
+
+**`-RunInstaller` executes code on the current Windows host.** Job Objects,
+profile redirection and filesystem deltas are not secure malware isolation.
+Use a disposable VM for untrusted installers. No elevated account is required
+by the client, but an installer may require privileges, target-specific runtimes,
+license activation or remote services. Those requirements cannot be bundled
+universally. Execution is never implicit when selecting an installed folder.
+
+The native standalone command is also available:
+`rea-offline forensic <installer-or-installed-folder> --output <new-folder>`.
+`--include-files` includes verified originals; `--run-installer` explicitly
+enables the existing installer workflow. Destinations must be new and outside
+the analyzed folder. Evidence is local; nothing is automatically uploaded.
+
+Exports contain `report.json`, `report.md`, ASCII/UTF-16 string observations
+with offsets, UTF-8 configuration/source excerpts, a resource map, optional
+original files, `reconstruction.json`, `AI_RECONSTRUCTION_BRIEF.md` and a
+SHA-256 manifest. With explicit installer execution and file inclusion,
+installed files are copied and hashed **before** sandbox cleanup, with a
+separate `installed-report.json`. Installer reports retain coverage limitations.
+
+The portable orchestrator adds upstream REA observations, optional managed
+artifact/member evidence, and `-Deep` Ghidra pseudocode, assembly, symbols,
+memory blocks and call relationships. Each deep export checks the imported
+program's SHA-256 against the initial scan. `analysis-status.json` records tool
+failures, interrupted exports and scope limits. Local model output is advisory.
+The final manifest includes all these tool outputs.
+
+Deep defaults are 20 PE files, 2000 functions per file, a 900-second per-file
+process deadline, 64 MiB per JSONL export, and bounded per-function
+decompilation/assembly. Configure `-MaxFiles`, `-MaxFunctions` and
+`-DeepTimeoutSeconds` for larger programs. Native string extraction retains
+the first 1 MiB per input, up to 2000 strings per file and 1024 characters per
+string; text excerpts retain up to 64 KiB. Limits and omissions are reported,
+not silently interpreted as a lack of functionality.
+
+**No forensic export can promise a perfect replica.** Static inspection cannot
+prove all UI workflows, remote/server behavior, encrypted code, credentials,
+shared dependencies or unseen edge cases. Reports separate observed facts,
+tool failures and unknowns, and explicitly set `replication_complete: false`.
+An AI should use them to draft an evidence-backed specification and equivalence
+tests, not invent missing behavior. Only examine/reproduce software and assets
+you are authorized to use. Review/redact evidence before sharing it with an AI.
+
+Maintainers can build the complete ZIP with:
+
+```powershell
+.\scripts\package-portable.ps1 -BinaryPath .\target\x86_64-pc-windows-msvc\release\rea-offline.exe -OutputDirectory .\portable-build -CreateZip
+```
+
+The Windows builder needs licensed Visual Studio Build Tools redistributables.
+Download hashes and the upstream npm tarball integrity are pinned in
+`portable/dependencies.json`; the installed npm lock and all package notices
+are retained. Dependency lifecycle scripts are disabled. Commercial providers,
+Frida's native runtime and optional browser downloads are not included/verified.
+
 ## Local micro-LLM requests
 
 The `ask` command uses a locally supplied **llama.cpp `llama-cli.exe` (Windows
@@ -18,7 +102,7 @@ latency and RAM use depend on quantization and hardware.
 Download the trusted x64 runner and model separately on an internet-connected
 machine, or copy both from removable storage. The runner's required DLLs must
 remain beside it. **The executable does not bundle model weights or llama.cpp,
-and does not silently download them.** Use a recent llama.cpp build that
+and does not silently download them; the full portable ZIP includes both.** Use a recent llama.cpp build that
 supports `--offline`. No API key or local HTTP model server is needed.
 
 ```bat
@@ -584,6 +668,14 @@ inputs or signature trust. Existing Rust adversarial-input tests remain necessar
 ## Changelog
 
 ### 0.36.0
+
+- Added a complete Windows x64 portable bundle with pinned local model, inference
+  runtime, REA/Node, Ghidra/JDK, app-local CRT, notices, source and file hashes.
+- Added AI-readable forensic export for both installers and installed program
+  folders, with optional verified originals and installer file retention.
+- Added bounded Ghidra pseudocode/assembly/call exports, managed metadata
+  collection, tool status records and explicit reconstruction unknowns.
+- Corrected upstream REA invocation to `analyze PATH --json` and supported `.mjs`.
 
 - Added `ask` for local Qwen-compatible GGUF micro-LLM assistance through a
   supplied llama.cpp runner, with bounded native evidence and advisory JSON.

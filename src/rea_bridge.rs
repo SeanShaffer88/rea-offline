@@ -328,12 +328,12 @@ impl ReaBridge {
 
     fn run_external(&self, rea: &Path, target: &Path) -> Result<Value> {
         #[cfg(windows)]
-        if !matches!(crate::util::extension_lower(rea).as_str(), "exe" | "cmd" | "bat" | "js") {
+        if !matches!(crate::util::extension_lower(rea).as_str(), "exe" | "cmd" | "bat" | "js" | "mjs") {
             return Err(Error::InvalidInput(format!(
                 "unsupported Windows REA launcher '{}'; select a Windows .exe, .cmd/.bat launcher, or Node .js entry point with REA_PATH or --rea", rea.display()
             )));
         }
-        let is_js = crate::util::extension_lower(rea) == "js";
+        let is_js = matches!(crate::util::extension_lower(rea).as_str(), "js" | "mjs");
         let mut cmd = if is_js {
             let mut c = std::process::Command::new("node");
             c.arg(rea);
@@ -343,7 +343,7 @@ impl ReaBridge {
             // quoting rules. Do not concatenate target paths into cmd /C.
             std::process::Command::new(rea)
         };
-        cmd.arg(target).arg("--format").arg("json")
+        cmd.arg("analyze").arg(target).arg("--json")
             .stdin(std::process::Stdio::null());
         let timeout = self.config.timeout.unwrap_or(Duration::from_secs(600));
         let output = run_with_timeout(cmd, timeout).map_err(|e| Error::Process(format!(
@@ -661,15 +661,15 @@ pub fn analyze_file(path: &Path, display: &Path) -> Result<FileAnalysis> {
 
 /// Bounded memory independent of input length. Full-stream fingerprints and
 /// entropy share exactly the bytes read; only the prefix is retained.
-struct StreamInspection {
-    size: u64,
-    prefix: Vec<u8>,
-    sha256: String,
+pub(crate) struct StreamInspection {
+    pub(crate) size: u64,
+    pub(crate) prefix: Vec<u8>,
+    pub(crate) sha256: String,
     md5: String,
     entropy: f64,
 }
 
-fn inspect_stream(reader: &mut impl Read, limit: usize) -> std::io::Result<StreamInspection> {
+pub(crate) fn inspect_stream(reader: &mut impl Read, limit: usize) -> std::io::Result<StreamInspection> {
     let mut sha = crate::sha256::Sha256::new();
     let mut md5 = crate::md5::Md5::new();
     let mut counts = [0u64; 256];

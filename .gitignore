@@ -1,4 +1,8 @@
 /target
+/.bundle-cache/
+/portable-build/
+/portable-build.zip
+/portable-build.zip.sha256
 *.pdb
 rea-report-*.json
 snapshot-*.json
