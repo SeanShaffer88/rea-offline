@@ -136,7 +136,7 @@ pub fn answer(opts: Options) -> Result<Value> {
     cmd.arg("-m").arg(std::fs::canonicalize(&opts.model)?)
         .arg("-f").arg(&guard.0)
         .args(["--offline", "--no-conversation", "--no-display-prompt", "--simple-io",
-            "--log-disable", "-c", "4096", "-n", "384", "--temp", "0.2"])
+            "--log-verbosity", "0", "-c", "4096", "-n", "384", "--temp", "0.2"])
         .stdin(std::process::Stdio::null());
     let output = crate::rea_bridge::run_with_timeout(cmd, opts.timeout).map_err(|e| {
         Error::Process(format!("local micro-LLM runner failed: {e}; no cloud fallback was attempted"))

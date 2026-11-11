@@ -55,14 +55,18 @@ fn local_model_receives_bounded_evidence_and_cannot_execute_generated_commands()
 set -eu
 prompt=''
 offline=0
+output_log=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -f) shift; prompt="$1";;
     --offline) offline=1;;
+    --log-verbosity) shift; test "$1" = 0; output_log=1;;
+    --log-disable) exit 97;;
   esac
   shift
 done
 test "$offline" = 1
+test "$output_log" = 1
 grep -q 'CreateRemoteThread' "$prompt"
 grep -q 'request-marker' "$prompt"
 cp "$prompt" captured-prompt.txt

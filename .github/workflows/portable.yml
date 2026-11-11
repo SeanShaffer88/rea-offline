@@ -30,6 +30,7 @@ jobs:
       - name: Build dependency-free client
         run: cargo build --release --offline --locked --target x86_64-pc-windows-msvc
       - name: Bundle pinned tools, local model, dependencies and notices
+        id: bundle
         shell: pwsh
         run: |
           .\scripts\package-portable.ps1 `
@@ -43,6 +44,7 @@ jobs:
           $answer = Get-Content -Raw real-model-smoke.json | ConvertFrom-Json
           if (-not $answer.answer -or -not $answer.advisory) { throw 'Model returned no advisory answer.' }
       - name: Validate installed-folder and installer evidence with Ghidra
+        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
         shell: pwsh
         run: |
           @'
