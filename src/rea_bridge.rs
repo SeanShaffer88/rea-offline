@@ -1,7 +1,8 @@
 //! Module 4 — REA Engine Bridge.
 //!
 //! Primary path: invoke a locally installed REA (`morluto/rea`) CLI/Node
-//! entry point, fully offline, and collect its JSON report.
+//! entry point and collect its JSON report. No network restriction is imposed
+//! on that third-party process; offline operation depends on its configuration.
 //! Fallback path: the built-in native analyzer below (PE parsing, section
 //! entropy, import table, indicator string scan). A machine with no REA
 //! and no network still gets a useful structured report — REA enriches
@@ -327,12 +328,12 @@ impl ReaBridge {
 
     fn run_external(&self, rea: &Path, target: &Path) -> Result<Value> {
         #[cfg(windows)]
-        if !matches!(crate::util::extension_lower(rea).as_str(), "exe" | "cmd" | "bat" | "js") {
+        if !matches!(crate::util::extension_lower(rea).as_str(), "exe" | "cmd" | "bat" | "js" | "mjs") {
             return Err(Error::InvalidInput(format!(
                 "unsupported Windows REA launcher '{}'; select a Windows .exe, .cmd/.bat launcher, or Node .js entry point with REA_PATH or --rea", rea.display()
             )));
         }
-        let is_js = crate::util::extension_lower(rea) == "js";
+        let is_js = matches!(crate::util::extension_lower(rea).as_str(), "js" | "mjs");
         let mut cmd = if is_js {
             let mut c = std::process::Command::new("node");
             c.arg(rea);
@@ -342,7 +343,7 @@ impl ReaBridge {
             // quoting rules. Do not concatenate target paths into cmd /C.
             std::process::Command::new(rea)
         };
-        cmd.arg(target).arg("--format").arg("json")
+        cmd.arg("analyze").arg(target).arg("--json")
             .stdin(std::process::Stdio::null());
         let timeout = self.config.timeout.unwrap_or(Duration::from_secs(600));
         let output = run_with_timeout(cmd, timeout).map_err(|e| Error::Process(format!(
@@ -487,14 +488,14 @@ const MAX_REA_STDOUT_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_REA_STDERR_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug)]
-struct CmdOutput {
-    status_ok: bool,
-    exit_code: Option<i32>,
-    stdout: String,
-    stderr: String,
-    stdout_bytes: u64,
-    stderr_bytes: u64,
-    stdout_truncated: bool,
+pub(crate) struct CmdOutput {
+    pub(crate) status_ok: bool,
+    pub(crate) exit_code: Option<i32>,
+    pub(crate) stdout: String,
+    pub(crate) stderr: String,
+    pub(crate) stdout_bytes: u64,
+    pub(crate) stderr_bytes: u64,
+    pub(crate) stdout_truncated: bool,
 }
 
 struct CaptureFile {
@@ -531,7 +532,7 @@ fn tail_str(s: &str, max: usize) -> &str {
     &s[start..]
 }
 
-fn run_with_timeout(mut cmd: std::process::Command, timeout: Duration) -> Result<CmdOutput> {
+pub(crate) fn run_with_timeout(mut cmd: std::process::Command, timeout: Duration) -> Result<CmdOutput> {
     let id = crate::util::new_id();
     let stdout_path = crate::util::temp_root().join(format!("rea_offline_rea_{id}.stdout.log"));
     let stderr_path = crate::util::temp_root().join(format!("rea_offline_rea_{id}.stderr.log"));
@@ -660,15 +661,15 @@ pub fn analyze_file(path: &Path, display: &Path) -> Result<FileAnalysis> {
 
 /// Bounded memory independent of input length. Full-stream fingerprints and
 /// entropy share exactly the bytes read; only the prefix is retained.
-struct StreamInspection {
-    size: u64,
-    prefix: Vec<u8>,
-    sha256: String,
+pub(crate) struct StreamInspection {
+    pub(crate) size: u64,
+    pub(crate) prefix: Vec<u8>,
+    pub(crate) sha256: String,
     md5: String,
     entropy: f64,
 }
 
-fn inspect_stream(reader: &mut impl Read, limit: usize) -> std::io::Result<StreamInspection> {
+pub(crate) fn inspect_stream(reader: &mut impl Read, limit: usize) -> std::io::Result<StreamInspection> {
     let mut sha = crate::sha256::Sha256::new();
     let mut md5 = crate::md5::Md5::new();
     let mut counts = [0u64; 256];

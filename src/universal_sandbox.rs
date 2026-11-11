@@ -1,6 +1,6 @@
 //! Module 1 — Universal Sandbox Engine.
 //!
-//! Windows (7 SP1 → 11, Home included — no Hyper-V / Windows Sandbox):
+//! Windows 11 x64 (Home included — no Hyper-V / Windows Sandbox):
 //! the installer is created *suspended*, assigned to a Job Object with
 //! `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` + a process-memory ceiling, then
 //! resumed. Closing the job handle kills the whole process tree.

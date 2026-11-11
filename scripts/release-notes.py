@@ -98,14 +98,15 @@ def build_notes(tag, since, readme):
     shape = previous_tag if previous_tag else "the first release"
     if first == last:
         header = (
-            "Release notes for {}. One Windows x64 executable plus a SHA-256 "
-            "sidecar, the same shape as {}.\n\n"
+            "Release notes for {}. Windows x64 standalone executable and complete "
+            "portable forensic bundle, with SHA-256 sidecars. Previous release: {}.\n\n"
         ).format(last, shape)
     else:
         header = (
             "Grouped release covering {} through {} — none of those versions "
             "shipped individually, so their changelog sections are collected here. "
-            "One Windows x64 executable plus a SHA-256 sidecar, the same shape as {}.\n\n"
+            "Windows x64 standalone executable and complete portable forensic bundle, "
+            "with SHA-256 sidecars. Previous release: {}.\n\n"
         ).format(first, last, shape)
     # Each section ends with a newline; joining with another newline keeps
     # the blank line the README places between version headings.

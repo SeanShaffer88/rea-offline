@@ -1,3 +1,15 @@
+# Current runtime policy (v0.36.0)
+
+Windows 11 x64 is the supported client target. Existing external REA, installer
+and browser execution is preserved, with **no network blocking**. Job Objects
+are not a network firewall. Local native analysis and local llama.cpp GGUF
+inference work without internet once their files are present. `ask` is an
+advisory CLI assistant; it never executes generated commands. Only explicit
+`upstream <cache> --refresh` invokes the new fixed-repository GitHub details
+transport. It neither updates installed REA code nor downloads models.
+See the README's current setup and limitations; older Windows support claims
+in the original design below are historical, not supported release targets.
+
 # Architecture
 
 Implements the *Universal Offline Windows Client & REA Analysis Engine*

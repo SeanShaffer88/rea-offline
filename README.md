@@ -1,10 +1,171 @@
 # rea-offline
 
-**Universal Offline Windows Client & REA Analysis Engine** — inspect local
-programs and untrusted `.exe` / `.msi` installers on *any* Windows edition
-(including Windows Home), with no Hyper-V, no Windows Sandbox, no drivers,
-and no network. Written in Rust with **zero external dependencies**, so it
-builds on a fully air-gapped machine.
+**Offline-first REA client for Windows 11 x64** — inspect local programs,
+analyze installers, and ask a small local model to explain reverse-engineering
+evidence. No Hyper-V, Windows Sandbox, drivers or cloud LLM account is required.
+The Rust client has **zero Cargo dependencies** and builds without internet.
+Windows ARM64 and older Windows versions are not supported; Linux is used only
+as a development/test harness.
+
+## Complete portable bundle and forensic exports
+
+The **portable Windows x64 ZIP** includes the client, the actual quantized Qwen
+model, CPU llama.cpp runtime, app-local Microsoft VC runtime, pinned upstream
+REA and its npm dependencies, Node.js, Ghidra, a matching JDK, licenses/notices,
+JDK corresponding source, and a SHA-256 inventory. No separate model or tool
+download is needed after extracting this bundle. Building the bundle downloads
+about 1.5 GB from the pinned public sources; it needs internet at build time.
+Runtime does not impose firewall rules or disable internet-dependent programs.
+
+The portable build workflow uploads the ZIP/checksum under its run's artifacts.
+Release packaging also includes the portable ZIP alongside the standalone EXE.
+Only the portable ZIP includes these tools; the small standalone EXE still needs
+separately supplied tools/models for optional enriched analysis.
+
+```bat
+rem Installed programs: recursive file/folder inspection without running them.
+Analyze-Program.cmd -Target "C:\Program Files\Example" -Output "D:\Evidence\Example" -Deep -IncludeFiles -Zip
+
+rem Static installer inspection (does not execute the installer).
+Analyze-Program.cmd -Target "D:\Downloads\setup.exe" -Output "D:\Evidence\Setup" -Deep
+
+rem Explicit installer execution; use only in a disposable analysis machine.
+Analyze-Program.cmd -Target "D:\Downloads\setup.msi" -Output "D:\Evidence\Installed" -RunInstaller -IncludeFiles -Deep
+
+rem Bundled micro-model; defaults are supplied by the portable launcher.
+rea.cmd ask "Explain this program's imports and likely architecture" --target "C:\Program Files\Example"
+```
+
+**`-RunInstaller` executes code on the current Windows host.** Job Objects,
+profile redirection and filesystem deltas are not secure malware isolation.
+Use a disposable VM for untrusted installers. No elevated account is required
+by the client, but an installer may require privileges, target-specific runtimes,
+license activation or remote services. Those requirements cannot be bundled
+universally. Execution is never implicit when selecting an installed folder.
+
+The native standalone command is also available:
+`rea-offline forensic <installer-or-installed-folder> --output <new-folder>`.
+`--include-files` includes verified originals; `--run-installer` explicitly
+enables the existing installer workflow. Destinations must be new and outside
+the analyzed folder. Evidence is local; nothing is automatically uploaded.
+
+Exports contain `report.json`, `report.md`, ASCII/UTF-16 string observations
+with offsets, UTF-8 configuration/source excerpts, a resource map, optional
+original files, `reconstruction.json`, `AI_RECONSTRUCTION_BRIEF.md` and a
+SHA-256 manifest. With explicit installer execution and file inclusion,
+installed files are copied and hashed **before** sandbox cleanup, with a
+separate `installed-report.json`. Installer reports retain coverage limitations.
+
+The portable orchestrator adds upstream REA observations, optional managed
+artifact/member evidence, and `-Deep` Ghidra pseudocode, assembly, symbols,
+memory blocks and call relationships. Each deep export checks the imported
+program's SHA-256 against the initial scan. `analysis-status.json` records tool
+failures, interrupted exports and scope limits. Local model output is advisory.
+The final manifest includes all these tool outputs.
+
+Deep defaults are 20 PE files, 2000 functions per file, a 900-second per-file
+process deadline, 64 MiB per JSONL export, and bounded per-function
+decompilation/assembly. Configure `-MaxFiles`, `-MaxFunctions` and
+`-DeepTimeoutSeconds` for larger programs. Native string extraction retains
+the first 1 MiB per input, up to 2000 strings per file and 1024 characters per
+string; text excerpts retain up to 64 KiB. Limits and omissions are reported,
+not silently interpreted as a lack of functionality.
+
+**No forensic export can promise a perfect replica.** Static inspection cannot
+prove all UI workflows, remote/server behavior, encrypted code, credentials,
+shared dependencies or unseen edge cases. Reports separate observed facts,
+tool failures and unknowns, and explicitly set `replication_complete: false`.
+An AI should use them to draft an evidence-backed specification and equivalence
+tests, not invent missing behavior. Only examine/reproduce software and assets
+you are authorized to use. Review/redact evidence before sharing it with an AI.
+
+Maintainers can build the complete ZIP with:
+
+```powershell
+.\scripts\package-portable.ps1 -BinaryPath .\target\x86_64-pc-windows-msvc\release\rea-offline.exe -OutputDirectory .\portable-build -CreateZip
+```
+
+The Windows builder needs licensed Visual Studio Build Tools redistributables.
+Download hashes and the upstream npm tarball integrity are pinned in
+`portable/dependencies.json`; the installed npm lock and all package notices
+are retained. Dependency lifecycle scripts are disabled. Commercial providers,
+Frida's native runtime and optional browser downloads are not included/verified.
+
+## Local micro-LLM requests
+
+The `ask` command uses a locally supplied **llama.cpp `llama-completion.exe` (Windows
+x64)** and **Qwen2.5-Coder-0.5B-Instruct GGUF**, preferably Q4_K_M. This is the
+recommended micro-model: the prompt uses Qwen's ChatML instruction format.
+Use an instruction-tuned Qwen-compatible GGUF, not a base model. Model quality,
+latency and RAM use depend on quantization and hardware.
+
+Download the trusted x64 runner and model separately on an internet-connected
+machine, or copy both from removable storage. The runner's required DLLs must
+remain beside it. **The executable does not bundle model weights or llama.cpp,
+and does not silently download them; the full portable ZIP includes both.** Use a recent llama.cpp build that
+supports `--offline`. No API key or local HTTP model server is needed.
+Modern llama.cpp separates the interactive `llama-cli` from non-interactive
+completion; use `llama-completion.exe` for this client. Compatible older CLI
+builds can still be supplied explicitly. Extract the portable ZIP to a short
+path such as `C:\REA` to avoid Windows path-length limits.
+
+```bat
+rea-offline.exe ask "Explain the suspicious imports and what to inspect next" ^
+  --target "C:\Apps\sample.exe" ^
+  --model "C:\REA\models\qwen2.5-coder-0.5b-instruct-q4_k_m.gguf" ^
+  --llm "C:\REA\llama.cpp\llama-completion.exe" ^
+  --output answer.json
+```
+
+`--target` is optional. With it, the client runs its native static analyzer
+(not the target executable) and sends a bounded evidence summary to the model.
+An optional `--upstream-cache rea-upstream.json` adds cached repository/commit
+provenance; it never refreshes the network implicitly. Output is JSON containing
+the advisory answer, evidence, model/runner paths and truncation/coverage
+information. Default inference timeout is 180 seconds; `--timeout` accepts
+1–1800 seconds. Input is limited to 4096 UTF-8 bytes, evidence to 6000 bytes,
+and generation to 384 tokens with a 4096-token context.
+
+Model inference runs as a direct local subprocess with `--offline`, no shell,
+and no cloud fallback. Temporary prompts are removed on normal success/failure.
+Generated commands are **never executed**, and model text never changes the
+deterministic scan verdict. Small models can be wrong: validate their suggestions.
+This is an evidence assistant, not a replacement for upstream REA's complete
+decompiler, browser, device, runtime and MCP tool catalog. The new assistant is
+currently available through the CLI; existing GUI inspection is unchanged.
+
+## Network behavior and upstream details
+
+**Offline-first does not mean a network firewall.** Static scans, cached reports
+and properly configured local model inference need no internet. Existing external
+REA, installer and browser workflows remain enabled: the client does not block
+their networking, disable Windows connectivity or install firewall rules.
+Job Objects are not a network isolation boundary. Trusted local runner/model
+files are your responsibility; paths to network shares can also cause OS traffic.
+The application cannot promise that third-party tools or Windows never connect.
+
+The client's new outbound HTTP feature is a separate, explicit refresh of
+`morluto/rea` repository details:
+
+```bat
+rem Online only when explicitly requested:
+rea-offline.exe upstream rea-upstream.json --refresh
+rem View the last fetched details offline:
+rea-offline.exe upstream rea-upstream.json
+```
+
+Refresh retrieves repository metadata, the latest default-branch commit,
+the README pinned to that commit and the latest release metadata. It uses
+Windows WinHTTP with TLS 1.2/1.3 to `api.github.com`, only under
+`/repos/morluto/rea`. It does not follow redirects, README links, images,
+download URLs or release assets; it never installs or executes upstream code.
+No local targets, prompts or reports are uploaded. Each response is bounded
+to 2 MiB, with timeouts; a failed refresh leaves an existing cache untouched.
+The cache is replaced atomically only after all required requests succeed.
+No published release (HTTP 404) is represented as `latest_release: null`.
+GitHub rate limits or a network/proxy failure produce an error, not an implicit
+alternate service or cloud fallback. Direct HTTPS access to GitHub is required
+for refresh; the other workflows keep their original network behavior.
 
 ## Modes
 
@@ -509,6 +670,24 @@ these checks cover the explicit supported fixture matrix, not arbitrary malforme
 inputs or signature trust. Existing Rust adversarial-input tests remain necessary.
 
 ## Changelog
+
+### 0.36.0
+
+- Added a complete Windows x64 portable bundle with pinned local model, inference
+  runtime, REA/Node, Ghidra/JDK, app-local CRT, notices, source and file hashes.
+- Added AI-readable forensic export for both installers and installed program
+  folders, with optional verified originals and installer file retention.
+- Added bounded Ghidra pseudocode/assembly/call exports, managed metadata
+  collection, tool status records and explicit reconstruction unknowns.
+- Corrected upstream REA invocation to `analyze PATH --json` and supported `.mjs`.
+
+- Added `ask` for local Qwen-compatible GGUF micro-LLM assistance through a
+  supplied llama.cpp runner, with bounded native evidence and advisory JSON.
+- Added explicit, repository-scoped GitHub details refresh and offline cache
+  viewing; failed refreshes preserve the previous cache.
+- Clarified offline-first behavior without network blocking or disabling
+  external REA, installer or browser workflows.
+- Documented Windows 11 x64 as the supported client target.
 
 ### 0.35.0
 

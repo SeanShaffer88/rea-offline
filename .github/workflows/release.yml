@@ -21,6 +21,8 @@ jobs:
           # release and collect every changelog section shipped since it.
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
 
       - name: Validate release tag
         shell: pwsh
@@ -29,13 +31,25 @@ jobs:
         run: .\scripts\package-release.ps1 -Tag $env:RELEASE_TAG
 
       - name: Build Windows x64 executable
-        run: cargo build --release --locked
+        run: cargo build --release --offline --locked --target x86_64-pc-windows-msvc
 
       - name: Package executable and checksum
         shell: pwsh
         env:
           RELEASE_TAG: ${{ github.ref_name }}
-        run: .\scripts\package-release.ps1 -Tag $env:RELEASE_TAG -BinaryPath .\target\release\rea-offline.exe -OutputDirectory .\dist
+        run: .\scripts\package-release.ps1 -Tag $env:RELEASE_TAG -BinaryPath .\target\x86_64-pc-windows-msvc\release\rea-offline.exe -OutputDirectory .\dist
+
+      - name: Package complete Windows x64 forensic bundle
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          .\scripts\package-portable.ps1 -BinaryPath .\target\x86_64-pc-windows-msvc\release\rea-offline.exe -OutputDirectory .\portable-build -CreateZip
+          $name = "rea-offline-$env:RELEASE_TAG-windows-x86_64-portable.zip"
+          $destination = Join-Path .\dist $name
+          Move-Item -LiteralPath .\portable-build.zip -Destination $destination
+          $hash = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $name" | Set-Content -LiteralPath "$destination.sha256" -Encoding ascii
 
       - name: Generate grouped release notes
         shell: bash
