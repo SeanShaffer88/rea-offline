@@ -12,6 +12,7 @@ param(
     [ValidateRange(30,7200)][int] $DeepTimeoutSeconds = 900
 )
 $ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = New-Object Text.UTF8Encoding($false)
 $root = Split-Path -Parent $PSScriptRoot
 $targetPath = (Resolve-Path -LiteralPath $Target).Path
 $outputPath = [IO.Path]::GetFullPath($Output)

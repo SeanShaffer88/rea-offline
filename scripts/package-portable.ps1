@@ -65,8 +65,10 @@ try {
     # dependency lifecycle scripts or fetch native provider installers.
     & $node $npm install --prefix $rea --ignore-scripts --omit=dev --no-audit --no-fund --registry=https://registry.npmjs.org "rea-agents@$($pins.rea_version)"
     if ($LASTEXITCODE -ne 0) { throw 'Pinned upstream REA dependency installation failed.' }
-    $lock = Get-Content -Raw -LiteralPath (Join-Path $rea 'package-lock.json') | ConvertFrom-Json
-    if ($lock.packages.'node_modules/rea-agents'.integrity -ne $pins.rea_integrity) {
+    # npm locks legitimately have packages[""]; PSCustomObject JSON parsing
+    # rejects that empty property. Parse with the bundled Node runtime.
+    $integrity = & $node -e "const fs=require('node:fs');process.stdout.write(JSON.parse(fs.readFileSync(process.argv[1],'utf8')).packages['node_modules/rea-agents'].integrity)" (Join-Path $rea 'package-lock.json')
+    if ($LASTEXITCODE -ne 0 -or $integrity -ne $pins.rea_integrity) {
         throw 'Installed REA package integrity did not match the pinned npm tarball.'
     }
     @'
@@ -107,7 +109,7 @@ exit /b %errorlevel%
             }
         }
     }
-    $notices += "- Microsoft Visual C++ x64 app-local runtime: copied from the build toolchain redistributable CRT directory; Microsoft redistribution terms apply. Source toolchain directory: $crt"
+    $notices += '- Microsoft Visual C++ x64 app-local runtime: copied from the licensed build toolchain redistributable CRT directory; Microsoft redistribution terms apply. Runtime bytes are recorded in bundle-manifest.json.'
     $crtLicense = Get-ChildItem -LiteralPath (Split-Path -Parent (Split-Path -Parent $crt)) -File |
         Where-Object { $_.Name -match 'license|eula' }
     foreach ($license in $crtLicense) { Copy-Item -LiteralPath $license.FullName -Destination (Join-Path $stage 'licenses') }

@@ -1,5 +1,6 @@
 # Launch without changing the user's global PATH, registry or firewall.
 $ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = New-Object Text.UTF8Encoding($false)
 $root = Split-Path -Parent $PSScriptRoot
 $env:JAVA_HOME = Join-Path $root 'tools/jdk'
 $env:GHIDRA_INSTALL_DIR = Join-Path $root 'tools/ghidra'
