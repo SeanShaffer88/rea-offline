@@ -128,6 +128,9 @@ if ($Deep) {
             $process = Start-Process -FilePath $env:ComSpec -ArgumentList $commandLine -PassThru -NoNewWindow `
                 -RedirectStandardOutput (Join-Path $outputPath "deep/$name.stdout.txt") `
                 -RedirectStandardError (Join-Path $outputPath "deep/$name.stderr.txt")
+            # Windows PowerShell 5's Start-Process can otherwise expose a null
+            # ExitCode after WaitForExit. Retain the real process handle now.
+            $null = $process.Handle
             $timedOut = -not $process.WaitForExit($DeepTimeoutSeconds * 1000)
             if ($timedOut) {
                 & taskkill.exe /PID $process.Id /T /F | Out-Null
